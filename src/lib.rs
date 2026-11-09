@@ -1,7 +1,7 @@
 //! Kubera: template driven secret detection, verification, analysis and
 //! rotation.
 //!
-//! Architecture (see `docs/ARCHITECTURE.md`):
+//! Architecture (see `docs/src/architecture.md`):
 //!
 //! ```text
 //!  sources (fs / git / stdin)
