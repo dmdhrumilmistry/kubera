@@ -273,6 +273,8 @@ impl App {
                         options: GitOptions::default(),
                         // The TUI owns the terminal: never let ssh prompt.
                         auth: Auth::default(),
+                        baseline: None,
+                        mirror: None,
                     },
                     label,
                 ))
