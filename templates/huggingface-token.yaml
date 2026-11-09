@@ -1,0 +1,51 @@
+id: huggingface-token
+name: Hugging Face Access Token
+platform: Hugging Face
+description: Hugging Face user access token.
+severity: high
+tags: [ai, supply-chain]
+references:
+  - https://huggingface.co/docs/hub/security-tokens
+
+detect:
+  keywords: [hf_]
+  patterns:
+    - name: token
+      regex: '\b(hf_[A-Za-z]{34})\b'
+      min_entropy: 3.5
+
+verify:
+  request:
+    url: https://huggingface.co/api/whoami-v2
+    auth: { type: bearer, token: "{{ token }}" }
+  valid: { status: [200] }
+  invalid: { status: [401] }
+  extract:
+    - { name: user, label: User, json: name }
+    - { name: email, label: Email, json: email }
+    - { name: role, label: Token role, json: auth.accessToken.role }
+    - { name: token_name, label: Token name, json: auth.accessToken.displayName }
+    - { name: orgs, label: Organizations, json: "orgs.*.name" }
+
+analyze:
+  steps:
+    - name: models
+      description: Models owned by the user
+      request:
+        url: https://huggingface.co/api/models
+        query: { author: "{{ user }}", limit: "100" }
+        auth: { type: bearer, token: "{{ token }}" }
+      extract:
+        - { name: models, label: Models, json: "*.id" }
+
+rotate:
+  instructions: |
+    1. https://huggingface.co/settings/tokens -> "Invalidate and refresh" the
+       leaked token (or delete it and create a fine-grained replacement).
+    2. Deploy the new token.
+
+tests:
+  positive:
+    - "HF_TOKEN=h{{'f'}}_QmZpLxVtRkNwHsJdFbGcYuEiOaTsLqMzXn"
+  negative:
+    - "hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"

@@ -1,0 +1,27 @@
+id: google-api-key
+name: Google API Key
+platform: Google Cloud
+description: Google Cloud / Firebase API key. Many are meant to be public but unrestricted keys can be abused for billable APIs.
+severity: medium
+tags: [cloud]
+references:
+  - https://cloud.google.com/docs/authentication/api-keys
+
+detect:
+  keywords: [AIza]
+  patterns:
+    - name: key
+      regex: '\b(AIza[0-9A-Za-z_-]{35})(?:[^0-9A-Za-z_-]|$)'
+      min_entropy: 3.5
+
+rotate:
+  instructions: |
+    1. Console -> APIs & Services -> Credentials: add application and API
+       restrictions to the key, or "Regenerate key" / delete it.
+    2. Deploy the new key and check billing for unexpected usage.
+
+tests:
+  positive:
+    - "apiKey: \"AI{{'za'}}SyD3f9Lm2Qp8Rx7Tv1Wy4Ab6Cq9Ef2Gh5Jk\""
+  negative:
+    - "AIzaxxxxxxxx"
