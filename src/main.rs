@@ -346,6 +346,9 @@ struct ScanArgs {
     /// Glob of paths to skip, relative to the scan root (repeatable).
     #[arg(long = "exclude-path", value_name = "GLOB")]
     exclude_paths: Vec<String>,
+    /// Do not decode base64 / URL-encoded / escaped text before scanning.
+    #[arg(long)]
+    no_decode: bool,
     /// Also scan dependency directories and lockfiles (node_modules,
     /// vendor, package-lock.json, ...), which are skipped by default.
     #[arg(long)]
@@ -632,6 +635,8 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         | ScanSource::Stdin { opts } => opts,
     };
     let engine = Engine::new(ctx.templates.iter().map(|l| l.template.clone()).collect())?;
+    let mut engine = engine;
+    engine.decode = !opts.no_decode;
     let excludes = ctx
         .cfg
         .excludes(&opts.exclude_paths, opts.no_default_excludes);

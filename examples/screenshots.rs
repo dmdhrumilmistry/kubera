@@ -77,6 +77,7 @@ fn finding(
                 "https://github.com/acme/payments/blob/9f3c1e7/{path}#L{line}"
             )),
             layer: None,
+            ..Default::default()
         },
     );
     f.verification = status.map(|s| Verification {

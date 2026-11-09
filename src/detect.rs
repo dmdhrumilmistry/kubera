@@ -54,6 +54,8 @@ pub struct Engine {
     keywords: AhoCorasick,
     /// keyword index -> detectors using it.
     keyword_owners: Vec<Vec<usize>>,
+    /// Also scan base64 / URL-encoded / escaped text (see [`crate::decode`]).
+    pub decode: bool,
 }
 
 impl CompiledPattern {
@@ -245,6 +247,7 @@ impl Engine {
             detectors,
             keywords,
             keyword_owners,
+            decode: true,
         })
     }
 

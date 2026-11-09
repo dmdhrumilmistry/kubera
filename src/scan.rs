@@ -10,20 +10,42 @@ use crate::detect::{Engine, line_of};
 use crate::finding::Finding;
 use crate::sources::Chunk;
 
-/// Turn the candidates of one chunk into findings.
+/// Turn the candidates of one chunk into findings: the raw text, then
+/// (unless disabled) its decoded form.
 pub fn scan_chunk(engine: &Engine, filter: &Filter, chunk: &Chunk) -> Vec<Finding> {
     let mut out = Vec::new();
+    let real_line = |idx: usize| match &chunk.line_map {
+        Some(map) => map.get(idx - 1).copied().unwrap_or(idx),
+        None => idx,
+    };
+    let mut raw = std::collections::HashSet::new();
     for c in engine.scan(&chunk.text) {
         let det = &engine.detectors[c.detector];
-        let line_idx = line_of(&chunk.text, c.offset);
-        let line = match &chunk.line_map {
-            Some(map) => map.get(line_idx - 1).copied().unwrap_or(line_idx),
-            None => line_idx,
-        };
         let mut loc = chunk.location.clone();
-        loc.line = line;
+        loc.line = real_line(line_of(&chunk.text, c.offset));
         let f = Finding::new(&det.template, c.parts, loc);
+        raw.insert(f.fingerprint.clone());
         if filter.allowed(&f.fingerprint, f.secret.values()) {
+            continue;
+        }
+        out.push(f);
+    }
+    if !engine.decode {
+        return out;
+    }
+    let decoded = crate::decode::decode(&chunk.text);
+    if decoded.is_empty() {
+        return out;
+    }
+    for c in engine.scan(&decoded.text) {
+        let det = &engine.detectors[c.detector];
+        let idx = line_of(&decoded.text, c.offset);
+        let mut loc = chunk.location.clone();
+        loc.line = real_line(decoded.line_map.get(idx - 1).copied().unwrap_or(1));
+        loc.decoder = decoded.decoders.get(idx - 1).map(|d| d.name().to_string());
+        let f = Finding::new(&det.template, c.parts, loc);
+        // Already reported in plain text (e.g. the decoded line repeats it).
+        if raw.contains(&f.fingerprint) || filter.allowed(&f.fingerprint, f.secret.values()) {
             continue;
         }
         out.push(f);

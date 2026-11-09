@@ -43,6 +43,12 @@ pub struct Location {
     /// Container images: digest of the layer holding the file.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub layer: Option<String>,
+    /// The secret was found after decoding (`base64`, `url`, `escape`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decoder: Option<String>,
+    /// Archives: path of the entry inside `path` (`a.zip!/dir/b.env`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entry: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]

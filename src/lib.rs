@@ -24,6 +24,7 @@ pub mod analyze;
 pub mod brand;
 pub mod checkpoint;
 pub mod config;
+pub mod decode;
 pub mod detect;
 pub mod finding;
 pub mod forge;

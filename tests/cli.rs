@@ -587,3 +587,57 @@ fn checkpoint_is_removed_on_success_and_never_mixes_scans() {
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("different scan"));
 }
+
+fn scan_stdin_with(args: &[&str], input: &str) -> Vec<serde_json::Value> {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_kubera"))
+        .args(["scan", "stdin", "-f", "jsonl"])
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+#[test]
+fn encoded_secrets_are_decoded() {
+    use base64::Engine as _;
+    let b64 = |s: &str| base64::engine::general_purpose::STANDARD.encode(s);
+    // `kubectl get secret -o yaml`: values are base64.
+    let manifest = format!(
+        "apiVersion: v1\nkind: Secret\nmetadata:\n  name: ci\ndata:\n  GITHUB_TOKEN: {}\n",
+        b64(&fake_github_token())
+    );
+    let found = scan_stdin_with(&[], &manifest);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0]["location"]["line"], 6);
+    assert_eq!(found[0]["location"]["decoder"], "base64");
+    assert!(scan_stdin_with(&["--no-decode"], &manifest).is_empty());
+
+    // Percent-encoded inside a URL, and a JSON-escaped one.
+    let tok = fake_github_token();
+    let url = format!("x=https%3A%2F%2Fapi.example.com%3Ftoken%3D{tok}%26a%3D1\n");
+    // `%3Dghp_...` hides the token's word boundary from the raw scan.
+    let found = scan_stdin_with(&[], &url);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0]["location"]["decoder"], "url");
+    // Plain text that decodes to itself is reported once, undecoded.
+    let found = scan_stdin_with(&[], &format!("t={tok} %41\n"));
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0]["location"].get("decoder").is_none());
+    let esc = format!("{{\"t\": \"{}\"}}\n", tok.replace('_', "\\u005f"));
+    let found = scan_stdin_with(&[], &esc);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0]["location"]["decoder"], "escape");
+}

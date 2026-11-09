@@ -187,7 +187,18 @@ fn pretty(out: &mut dyn Write, findings: &[Finding], st: &Style) -> Result<()> {
         let bar = st.gold("│");
         let loc = &f.location;
         match &loc.path {
-            Some(p) => writeln!(out, "{bar} {}", st.cyan(&format!("{p}:{}", loc.line)))?,
+            Some(p) => {
+                let entry = loc
+                    .entry
+                    .as_deref()
+                    .map(|e| format!("!/{e}"))
+                    .unwrap_or_default();
+                writeln!(
+                    out,
+                    "{bar} {}",
+                    st.cyan(&format!("{p}{entry}:{}", loc.line))
+                )?
+            }
             None => writeln!(
                 out,
                 "{bar} {}",
@@ -217,6 +228,9 @@ fn pretty(out: &mut dyn Write, findings: &[Finding], st: &Style) -> Result<()> {
                 st.dim("layer"),
                 st.gold(&layer[..layer.len().min(19)])
             )?;
+        }
+        if let Some(d) = &loc.decoder {
+            writeln!(out, "{bar} {} {}", st.dim("decoded from"), st.gold(d))?;
         }
         if let Some(l) = &loc.link {
             writeln!(out, "{bar} {} {}", st.dim("↗"), st.cyan(l))?;
