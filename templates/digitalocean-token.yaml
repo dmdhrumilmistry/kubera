@@ -1,0 +1,55 @@
+id: digitalocean-token
+name: DigitalOcean Token
+platform: DigitalOcean
+description: DigitalOcean personal access, OAuth or refresh token.
+severity: critical
+tags: [cloud]
+references:
+  - https://docs.digitalocean.com/reference/api/create-personal-access-token/
+
+detect:
+  keywords: [dop_v1_, doo_v1_, dor_v1_]
+  patterns:
+    - name: token
+      regex: '\b(do[por]_v1_[a-f0-9]{64})\b'
+
+verify:
+  request:
+    url: https://api.digitalocean.com/v2/account
+    auth: { type: bearer, token: "{{ token }}" }
+  valid: { status: [200] }
+  invalid: { status: [401] }
+  extract:
+    - { name: email, label: Email, json: account.email }
+    - { name: status, label: Status, json: account.status }
+    - { name: team, label: Team, json: account.team.name }
+
+analyze:
+  steps:
+    - name: droplets
+      description: Number of droplets
+      request:
+        url: https://api.digitalocean.com/v2/droplets
+        query: { per_page: "1" }
+        auth: { type: bearer, token: "{{ token }}" }
+      extract:
+        - { name: droplets, label: Droplets, json: meta.total }
+    - name: projects
+      description: Projects
+      request:
+        url: https://api.digitalocean.com/v2/projects
+        auth: { type: bearer, token: "{{ token }}" }
+      extract:
+        - { name: projects, label: Projects, json: "projects.*.name" }
+
+rotate:
+  instructions: |
+    1. https://cloud.digitalocean.com/account/api/tokens -> "Regenerate" the
+       leaked token (or delete it and create a scoped replacement).
+    2. Deploy the new token and review the account's security history.
+
+tests:
+  positive:
+    - "DO_TOKEN=do{{'p'}}_v1_3f9a1c7e5b2d8f40a6c1e9b7d3f5a8c2e4b6d9f1a3c5e7b9d2f4a6c8e0b1d3f5"
+  negative:
+    - "dop_v1_xyz"

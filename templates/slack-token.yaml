@@ -1,0 +1,82 @@
+id: slack-token
+name: Slack Token
+platform: Slack
+description: Slack bot, user, app or workspace token.
+severity: high
+tags: [chat]
+references:
+  - https://api.slack.com/authentication/token-types
+  - https://api.slack.com/methods/auth.test
+  - https://api.slack.com/methods/auth.revoke
+
+detect:
+  keywords: [xoxb-, xoxp-, xoxa-, xoxr-, xoxs-]
+  patterns:
+    - name: token
+      regex: '\b(xox[baprs]-[0-9]{8,15}-[0-9A-Za-z-]{10,250})\b'
+      min_entropy: 3.2
+
+verify:
+  request:
+    method: POST
+    url: https://slack.com/api/auth.test
+    auth: { type: bearer, token: "{{ token }}" }
+  valid:
+    status: [200]
+    json: [{ path: ok, equals: true }]
+  invalid:
+    status: [200]
+    json: [{ path: ok, equals: false }]
+    body_not_contains: [ratelimited]
+  extract:
+    - { name: team, label: Workspace, json: team }
+    - { name: url, label: URL, json: url }
+    - { name: user, label: User, json: user }
+    - { name: bot_id, label: Bot id, json: bot_id }
+    - { name: scopes, label: Scopes, header: x-oauth-scopes }
+
+analyze:
+  steps:
+    - name: channels
+      description: Channels visible to the token (first 200)
+      request:
+        url: https://slack.com/api/conversations.list
+        query: { types: "public_channel,private_channel", limit: "200", exclude_archived: "true" }
+        auth: { type: bearer, token: "{{ token }}" }
+      expect: { status: [200], json: [{ path: ok, equals: true }] }
+      extract:
+        - { name: channels, label: Channels, json: "channels.*.name" }
+    - name: team
+      description: Workspace details
+      request:
+        url: https://slack.com/api/team.info
+        auth: { type: bearer, token: "{{ token }}" }
+      expect: { status: [200], json: [{ path: ok, equals: true }] }
+      extract:
+        - { name: domain, label: Domain, json: team.domain }
+        - { name: enterprise, label: Enterprise, json: team.enterprise_name }
+
+rotate:
+  instructions: |
+    1. Reissue the token: reinstall the app / regenerate it at
+       https://api.slack.com/apps -> your app -> OAuth & Permissions
+       (enable token rotation for long-lived apps).
+    2. Deploy the new token.
+    3. `--execute` revokes the leaked token via auth.revoke.
+    4. Review workspace access logs for unexpected usage.
+  steps:
+    - name: revoke
+      description: Revoke the leaked token via auth.revoke
+      request:
+        method: POST
+        url: https://slack.com/api/auth.revoke
+        auth: { type: bearer, token: "{{ token }}" }
+      expect:
+        status: [200]
+        json: [{ path: revoked, equals: true }]
+
+tests:
+  positive:
+    - "SLACK_BOT_TOKEN=xox{{'b'}}-2048196311-4712983340921-Qh7nKd02LwXzPr5sTyVu9bMe"
+  negative:
+    - "xoxb-0000000000-0000000000000-aaaaaaaaaaaaaaaaaaaaaaaa"

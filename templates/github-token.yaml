@@ -1,0 +1,96 @@
+id: github-token
+name: GitHub Token
+platform: GitHub
+description: Classic / fine-grained personal access token, OAuth, user-to-server, server-to-server or refresh token.
+severity: critical
+tags: [vcs, supply-chain]
+references:
+  - https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/about-authentication-to-github#githubs-token-formats
+  - https://docs.github.com/en/rest/credentials/revoke
+
+detect:
+  keywords: [ghp_, gho_, ghu_, ghs_, ghr_, github_pat_]
+  patterns:
+    - name: token
+      regex: '\b((?:gh[pousr]_[A-Za-z0-9]{36,251})|(?:github_pat_[A-Za-z0-9_]{80,251}))\b'
+      min_entropy: 3.5
+
+verify:
+  request:
+    url: https://api.github.com/user
+    headers: &gh
+      Accept: application/vnd.github+json
+      X-GitHub-Api-Version: "2022-11-28"
+    auth: { type: bearer, token: "{{ token }}" }
+  valid:
+    status: [200]
+  invalid:
+    status: [401]
+  extract:
+    - { name: login, label: User, json: login }
+    - { name: user_type, label: Type, json: type }
+    - { name: site_admin, label: Site admin, json: site_admin }
+    - { name: scopes, label: Scopes, header: x-oauth-scopes }
+    - { name: expires, label: Expires, header: github-authentication-token-expiration }
+
+analyze:
+  notes: |
+    Classic PAT scopes come from the X-OAuth-Scopes header. Fine-grained tokens
+    do not report scopes; the repository list shows what they can reach.
+  steps:
+    - name: rate_limit
+      description: API quota of the token
+      request:
+        url: https://api.github.com/rate_limit
+        headers: *gh
+        auth: { type: bearer, token: "{{ token }}" }
+      extract:
+        - { name: core_limit, label: Core limit, json: resources.core.limit }
+        - { name: core_remaining, label: Core remaining, json: resources.core.remaining }
+    - name: organizations
+      description: Organizations visible to the token
+      request:
+        url: https://api.github.com/user/orgs
+        query: { per_page: "100" }
+        headers: *gh
+        auth: { type: bearer, token: "{{ token }}" }
+      extract:
+        - { name: orgs, label: Organizations, json: "*.login" }
+    - name: repositories
+      description: Repositories the token can access (first 100)
+      request:
+        url: https://api.github.com/user/repos
+        query: { per_page: "100", sort: pushed }
+        headers: *gh
+        auth: { type: bearer, token: "{{ token }}" }
+      extract:
+        - { name: repos, label: Repositories, json: "*.full_name" }
+        - { name: admin, label: Admin on, json: "*.permissions.admin" }
+
+rotate:
+  instructions: |
+    GitHub has no API to mint a replacement personal access token.
+    1. Create a new token with the minimum scopes / repositories needed:
+       https://github.com/settings/tokens (classic) or
+       https://github.com/settings/personal-access-tokens (fine-grained)
+    2. Deploy it, then revoke the leaked token. `--execute` revokes it via
+       GitHub's credential revocation API (no authentication required).
+    3. Review the security log: https://github.com/settings/security-log
+  steps:
+    - name: revoke
+      description: Revoke the leaked token via POST /credentials/revoke
+      request:
+        method: POST
+        url: https://api.github.com/credentials/revoke
+        headers: *gh
+        json:
+          credentials: ["{{ token }}"]
+      expect: { status: [202] }
+
+tests:
+  positive:
+    - "GITHUB_TOKEN=gh{{'p'}}_9nVq3kZ1Lr8XwT2pYb6Hd4Fs7Jc0Mg5Ae1Uo"
+    - "token: github{{'_pat_'}}11ABCDEFG0aB3dE5fG7hJ9kL_mN2pQ4rS6tU8vW0xY2zA4bC6dE8fG0hJ2kL4mN6pQ8rS0tU2vW4xY6zA8"
+  negative:
+    - "GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    - "ghp_short"

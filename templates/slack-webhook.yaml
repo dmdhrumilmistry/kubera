@@ -1,0 +1,39 @@
+id: slack-webhook
+name: Slack Incoming Webhook
+platform: Slack
+description: Incoming webhook URL that can post messages into a channel.
+severity: medium
+tags: [chat, webhook]
+references:
+  - https://api.slack.com/messaging/webhooks
+
+detect:
+  keywords: [hooks.slack.com/services/]
+  patterns:
+    - name: url
+      regex: '(https://hooks\.slack\.com/services/T[A-Z0-9]{6,12}/B[A-Z0-9]{6,12}/[A-Za-z0-9]{20,32})'
+      exclude: ['X{8}']
+
+verify:
+  # An empty payload is rejected with HTTP 400 by a live webhook without
+  # posting anything; dead webhooks answer 403/404.
+  request:
+    method: POST
+    url: "{{ url }}"
+    json: {}
+  valid:
+    status: [400]
+  invalid:
+    status: [403, 404, 410]
+
+rotate:
+  instructions: |
+    Webhook URLs cannot be rotated in place.
+    1. Create a new webhook: https://api.slack.com/apps -> Incoming Webhooks.
+    2. Deploy it, then remove the leaked webhook from the same page.
+
+tests:
+  positive:
+    - "https://hooks.slack.com/services/T{{'0'}}4Q7ZK2M/B05R8LN3VX/kW8zP3qR6tY9uI2oA5sD8fG1"
+  negative:
+    - "https://hooks.slack.com/services/TXXXXXXXX/BXXXXXXXX/XXXXXXXXXXXXXXXXXXXXXXXX"

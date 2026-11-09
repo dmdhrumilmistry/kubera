@@ -1,0 +1,90 @@
+id: sendgrid-api-key
+name: SendGrid API Key
+platform: SendGrid
+description: Twilio SendGrid API key (can send email as your domain).
+severity: high
+tags: [email]
+references:
+  - https://www.twilio.com/docs/sendgrid/api-reference/api-keys
+  - https://www.twilio.com/docs/sendgrid/api-reference/api-key-permissions
+
+detect:
+  keywords: [SG.]
+  patterns:
+    - name: key
+      # The middle segment is the key id, used for rotation.
+      regex: '\b(SG\.(?P<key_id>[A-Za-z0-9_-]{22})\.[A-Za-z0-9_-]{43})\b'
+      captures: [key_id]
+      min_entropy: 4.0
+
+verify:
+  request:
+    url: https://api.sendgrid.com/v3/scopes
+    auth: { type: bearer, token: "{{ key }}" }
+  valid: { status: [200] }
+  invalid: { status: [401, 403] }
+  extract:
+    - { name: scopes, label: Scopes, json: scopes }
+
+analyze:
+  steps:
+    - name: key_info
+      description: Name of the key
+      request:
+        url: "https://api.sendgrid.com/v3/api_keys/{{ key_id }}"
+        auth: { type: bearer, token: "{{ key }}" }
+      extract:
+        - { name: key_name, label: Key name, json: name }
+    - name: account
+      description: Account type and reputation
+      request:
+        url: https://api.sendgrid.com/v3/user/account
+        auth: { type: bearer, token: "{{ key }}" }
+      extract:
+        - { name: type, label: Plan, json: type }
+        - { name: reputation, label: Reputation, json: reputation }
+    - name: senders
+      description: Verified senders the key can send as
+      request:
+        url: https://api.sendgrid.com/v3/verified_senders
+        auth: { type: bearer, token: "{{ key }}" }
+      extract:
+        - { name: senders, label: Senders, json: "results.*.from_email" }
+
+rotate:
+  instructions: |
+    Kubera creates a new key with the same scopes as the leaked one, then
+    deletes the leaked key. The leaked key needs the `api_keys.create` and
+    `api_keys.delete` scopes; otherwise rotate manually at
+    https://app.sendgrid.com/settings/api_keys
+  inputs:
+    - name: key_name
+      description: Name of the replacement key
+      default: "rotated-by-kubera-{{ date }}"
+  steps:
+    - name: create
+      description: Create a replacement key with identical scopes
+      request:
+        method: POST
+        url: https://api.sendgrid.com/v3/api_keys
+        auth: { type: bearer, token: "{{ key }}" }
+        headers: { Content-Type: application/json }
+        body: '{"name": "{{ key_name | json }}", "scopes": {{ scopes }}}'
+      expect: { status: [201] }
+      extract:
+        - { name: new_key, json: api_key, secret: true }
+        - { name: new_key_id, json: api_key_id }
+    - name: delete_leaked
+      description: Delete the leaked key
+      request:
+        method: DELETE
+        url: "https://api.sendgrid.com/v3/api_keys/{{ key_id }}"
+        auth: { type: bearer, token: "{{ new_key }}" }
+      expect: { status: [204] }
+  outputs: [new_key, new_key_id]
+
+tests:
+  positive:
+    - "SENDGRID_API_KEY=S{{'G'}}.Zk3Lm8Qp2Rx7Tv1Wy4Ab6C.Dq9Ef2Gh5Jk8Lm1Np4Qr7St0Uv3Wx6Yz9Ab2Cd5Ef8G"
+  negative:
+    - "SG.xxxxxxxxxxxxxxxxxxxxxx.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"

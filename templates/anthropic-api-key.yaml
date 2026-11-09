@@ -1,0 +1,52 @@
+id: anthropic-api-key
+name: Anthropic API Key
+platform: Anthropic
+description: Anthropic API key (sk-ant-api03-).
+severity: high
+tags: [ai]
+references:
+  - https://docs.anthropic.com/en/api/getting-started
+  - https://docs.anthropic.com/en/api/admin-api/apikeys/update-api-key
+
+detect:
+  keywords: [sk-ant-api]
+  patterns:
+    - name: key
+      regex: '\b(sk-ant-api0[0-9]-[A-Za-z0-9_-]{80,120})'
+      min_entropy: 4.0
+
+verify:
+  request:
+    url: https://api.anthropic.com/v1/models
+    headers:
+      x-api-key: "{{ key }}"
+      anthropic-version: "2023-06-01"
+  valid: { status: [200] }
+  invalid: { status: [401] }
+
+analyze:
+  steps:
+    - name: models
+      description: Models available to the key
+      request:
+        url: https://api.anthropic.com/v1/models
+        query: { limit: "100" }
+        headers:
+          x-api-key: "{{ key }}"
+          anthropic-version: "2023-06-01"
+      extract:
+        - { name: models, label: Models, json: "data.*.id" }
+
+rotate:
+  instructions: |
+    1. Create a replacement key in the Console: https://console.anthropic.com/settings/keys
+    2. Deploy it, then disable or delete the leaked key on the same page.
+       Organization admins can also deactivate it with the Admin API:
+       POST /v1/organizations/api_keys/{api_key_id} {"status": "inactive"}
+    3. Review usage in the Console for unexpected activity.
+
+tests:
+  positive:
+    - "ANTHROPIC_API_KEY=sk-ant-{{'api03'}}-Qm7Zp2Lx9Vt4Rk8Nw3Hs6Jd1Fb5Gc0Yu2Ei7Oa4Ts9Lq3Mz8Xn6Pv1Kr5Bw0Cy4Dh7Gj2Fk9Sl3Ae6Iu8Ox1Wq5Rt0Ny4Mz7Lp2KvAA"
+  negative:
+    - "sk-ant-api03-xxxx"
