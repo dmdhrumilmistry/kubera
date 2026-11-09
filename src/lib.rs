@@ -22,6 +22,7 @@
 
 pub mod analyze;
 pub mod brand;
+pub mod checkpoint;
 pub mod config;
 pub mod detect;
 pub mod finding;

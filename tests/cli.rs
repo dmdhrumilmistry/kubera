@@ -457,3 +457,133 @@ async fn mass_scan_github_org_rate_limited_incremental() {
     let err = String::from_utf8_lossy(&out.stderr).to_string();
     assert!(err.contains("1 new commit(s), clean"), "{err}");
 }
+
+/// A repository with `n` commits built with `git fast-import` (fast even for
+/// thousands of commits). Every 50th commit adds a token; one commit adds a
+/// token under `node_modules/` (skipped by default).
+fn big_history_repo(n: usize) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    git(d, &["init", "-q", "-b", "main"]);
+    let mut stream = String::new();
+    for i in 0..n {
+        let mut files = vec![(format!("src/f{i}.txt"), format!("line {i}\n"))];
+        if i % 50 == 0 {
+            let tok = format!("gh{}_{}{i:04}", "p", "9nVq3kZ1Lr8XwT2pYb6Hd4Fs7Jc0Mg5A");
+            files.push((format!("conf/c{i}.env"), format!("TOKEN={tok}\n")));
+        }
+        if i == 7 {
+            let tok = format!("gh{}_{}", "p", "Zz9nVq3kZ1Lr8XwT2pYb6Hd4Fs7Jc0Mg5Ae1");
+            files.push(("node_modules/pkg/index.js".into(), format!("t='{tok}'\n")));
+        }
+        stream.push_str(&format!(
+            "commit refs/heads/main\nmark :{}\ncommitter T <t@example.com> {} +0000\ndata 2\nc\n",
+            i + 1,
+            1_700_000_000 + i
+        ));
+        if i > 0 {
+            stream.push_str(&format!("from :{i}\n"));
+        }
+        for (path, body) in files {
+            stream.push_str(&format!(
+                "M 644 inline {path}\ndata {}\n{body}\n",
+                body.len()
+            ));
+        }
+    }
+    let mut child = Command::new("git")
+        .args(["fast-import", "--quiet"])
+        .current_dir(d)
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(stream.as_bytes())
+        .unwrap();
+    assert!(child.wait().unwrap().success());
+    dir
+}
+
+fn finding_keys(v: &serde_json::Value) -> Vec<(String, String, String)> {
+    let mut keys: Vec<_> = v
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| {
+            (
+                f["fingerprint"].as_str().unwrap().to_string(),
+                f["location"]["commit"].as_str().unwrap().to_string(),
+                f["location"]["path"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    keys.sort();
+    keys
+}
+
+#[test]
+fn parallel_history_scan_matches_serial_and_skips_dependencies() {
+    let dir = big_history_repo(300);
+    let d = dir.path();
+    let serial = json(&kubera(&["scan", "git", ".", "-f", "json", "-j", "1"], d));
+    let parallel = json(&kubera(&["scan", "git", ".", "-f", "json", "-j", "4"], d));
+    assert_eq!(finding_keys(&serial).len(), 6, "{serial:#}");
+    assert_eq!(finding_keys(&serial), finding_keys(&parallel));
+    // Output order is deterministic despite parallel workers.
+    assert_eq!(serial, parallel);
+
+    let all = json(&kubera(
+        &["scan", "git", ".", "-f", "json", "--no-default-excludes"],
+        d,
+    ));
+    let keys = finding_keys(&all);
+    assert_eq!(keys.len(), 7);
+    assert!(keys.iter().any(|k| k.2 == "node_modules/pkg/index.js"));
+
+    // A user exclude is pushed down to git and still honoured.
+    let some = json(&kubera(
+        &[
+            "scan",
+            "git",
+            ".",
+            "-f",
+            "json",
+            "--exclude-path",
+            "conf/c1*.env",
+        ],
+        d,
+    ));
+    assert_eq!(finding_keys(&some).len(), 4, "{some:#}");
+}
+
+#[test]
+fn checkpoint_is_removed_on_success_and_never_mixes_scans() {
+    let dir = big_history_repo(120);
+    let d = dir.path();
+    let cp = d.join("scan.checkpoint");
+    let cp_s = cp.to_str().unwrap();
+    let out = kubera(&["scan", "git", ".", "-f", "json", "--checkpoint", cp_s], d);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(finding_keys(&json(&out)).len(), 3);
+    assert!(
+        !cp.exists(),
+        "checkpoint must be deleted after a completed scan"
+    );
+
+    // A checkpoint written by a different scan is refused, not merged.
+    std::fs::write(
+        &cp,
+        r#"{"version":1,"scope":"other","done":[],"findings":[]}"#,
+    )
+    .unwrap();
+    let out = kubera(&["scan", "git", ".", "-f", "json", "--checkpoint", cp_s], d);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("different scan"));
+}

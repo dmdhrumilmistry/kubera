@@ -94,28 +94,34 @@ impl State {
 
     /// Write atomically (temp file + rename) with mode 0600.
     pub fn save(&self) -> Result<()> {
-        let dir = self
-            .path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
-        std::fs::create_dir_all(dir)?;
-        let mut tmp = tempfile::Builder::new()
-            .prefix(".kubera-state-")
-            .tempfile_in(dir)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            tmp.as_file()
-                .set_permissions(std::fs::Permissions::from_mode(0o600))?;
-        }
-        serde_json::to_writer_pretty(&mut tmp, &self.file)?;
-        tmp.write_all(b"\n")?;
-        tmp.as_file().sync_all()?;
-        tmp.persist(&self.path)
-            .with_context(|| format!("writing {}", self.path.display()))?;
-        Ok(())
+        let mut data = serde_json::to_vec_pretty(&self.file)?;
+        data.push(b'\n');
+        write_private(&self.path, &data)
     }
+}
+
+/// Write `data` to `path` atomically (temp file in the same directory,
+/// fsync, rename) with mode 0600 on Unix.
+pub fn write_private(path: &Path, data: &[u8]) -> Result<()> {
+    let dir = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    std::fs::create_dir_all(dir)?;
+    let mut tmp = tempfile::Builder::new()
+        .prefix(".kubera-tmp-")
+        .tempfile_in(dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tmp.as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    tmp.write_all(data)?;
+    tmp.as_file().sync_all()?;
+    tmp.persist(path)
+        .with_context(|| format!("writing {}", path.display()))?;
+    Ok(())
 }
 
 /// Stable key for a repository: the credential-free remote URL, or the

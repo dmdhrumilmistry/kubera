@@ -217,6 +217,11 @@ enum ScanSource {
         /// When the state baseline may advance.
         #[arg(long, value_enum, default_value_t = kubera::state::Policy::Pass, requires = "state")]
         state_policy: kubera::state::Policy,
+        /// Make the scan resumable: progress and findings are saved to FILE
+        /// (mode 0600, holds raw secrets) and an interrupted scan run again
+        /// with the same FILE continues where it stopped. Deleted on success.
+        #[arg(long, value_name = "FILE")]
+        checkpoint: Option<PathBuf>,
         #[command(flatten)]
         opts: ScanArgs,
     },
@@ -341,9 +346,17 @@ struct ScanArgs {
     /// Glob of paths to skip, relative to the scan root (repeatable).
     #[arg(long = "exclude-path", value_name = "GLOB")]
     exclude_paths: Vec<String>,
-    /// Skip files larger than this many bytes.
+    /// Also scan dependency directories and lockfiles (node_modules,
+    /// vendor, package-lock.json, ...), which are skipped by default.
+    #[arg(long)]
+    no_default_excludes: bool,
+    /// Skip files larger than this many bytes (git history: larger files
+    /// are not diffed at all).
     #[arg(long, value_name = "BYTES")]
     max_file_size: Option<u64>,
+    /// Parallel workers for git history (0: one per CPU).
+    #[arg(short = 'j', long, default_value_t = 0, value_name = "N")]
+    jobs: usize,
     /// Concurrent verification requests.
     #[arg(long, default_value_t = 8)]
     concurrency: usize,
@@ -575,7 +588,7 @@ async fn run(cli: Cli) -> Result<u8> {
         } => {
             let ctx = context(&cli.global)?;
             let engine = Engine::new(ctx.templates.iter().map(|l| l.template.clone()).collect())?;
-            let filter = Filter::new(&ctx.cfg.exclude_paths, &ctx.cfg.allowlist)?;
+            let filter = Filter::new(&ctx.cfg.excludes(&[], false), &ctx.cfg.allowlist)?;
             let token = match git_token_env {
                 Some(var) => Some(std::env::var(&var).with_context(|| {
                     format!("environment variable `{var}` (from --git-token-env) is not set")
@@ -619,8 +632,9 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         | ScanSource::Stdin { opts } => opts,
     };
     let engine = Engine::new(ctx.templates.iter().map(|l| l.template.clone()).collect())?;
-    let mut excludes = ctx.cfg.exclude_paths.clone();
-    excludes.extend(opts.exclude_paths.iter().cloned());
+    let excludes = ctx
+        .cfg
+        .excludes(&opts.exclude_paths, opts.no_default_excludes);
     let filter = Filter::new(&excludes, &ctx.cfg.allowlist)?;
     let max_size = opts
         .max_file_size
@@ -636,6 +650,7 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
             token_env,
             token_user,
             state,
+            checkpoint,
             ..
         } => {
             let token = match token_env {
@@ -644,12 +659,32 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
                 })?),
                 None => None,
             };
+            if let Some(cp) = checkpoint {
+                let cp = cp.display().to_string();
+                // First Ctrl-C: stop after the current commit and save the
+                // checkpoint; a second one exits at once.
+                tokio::spawn(async move {
+                    let mut first = true;
+                    while tokio::signal::ctrl_c().await.is_ok() {
+                        if !first {
+                            std::process::exit(130);
+                        }
+                        first = false;
+                        eprintln!(
+                            "\ninterrupted: saving progress to {cp} (Ctrl-C again to quit now)"
+                        );
+                        kubera::checkpoint::request_stop();
+                    }
+                });
+            }
             scan::Target::Git {
                 repo: repo.clone(),
                 options: git::GitOptions {
                     branch: branch.clone(),
                     since_commit: since_commit.clone(),
                     max_depth: *max_depth,
+                    jobs: opts.jobs,
+                    checkpoint: checkpoint.clone(),
                     ..Default::default()
                 },
                 baseline: match state {
@@ -1017,6 +1052,7 @@ async fn cmd_scan_repos(
         state,
         max_rate_wait,
         max_depth,
+        opts,
         ..
     } = source
     else {
@@ -1099,6 +1135,12 @@ async fn cmd_scan_repos(
         cache_dir: cache_dir.clone(),
         git: git::GitOptions {
             max_depth: *max_depth,
+            // Repositories already run in parallel: share the CPUs.
+            jobs: if opts.jobs > 0 {
+                opts.jobs
+            } else {
+                (git::effective_jobs(0) / (*repo_concurrency).max(1)).max(1)
+            },
             ..Default::default()
         },
         auth: kubera::sources::remote::Auth {
@@ -1238,7 +1280,7 @@ fn cmd_tui(g: &GlobalArgs, target: Option<String>, git: bool, verify: bool) -> R
     }
     let ctx = context(g)?;
     let engine = Engine::new(ctx.templates.iter().map(|l| l.template.clone()).collect())?;
-    let filter = Filter::new(&ctx.cfg.exclude_paths, &ctx.cfg.allowlist)?;
+    let filter = Filter::new(&ctx.cfg.excludes(&[], false), &ctx.cfg.allowlist)?;
     let max = ctx
         .cfg
         .max_file_size

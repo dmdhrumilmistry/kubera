@@ -35,6 +35,10 @@ pub struct GitOptions {
     /// Commits whose history is already scanned (`^sha`): only commits
     /// reachable from `include` but not from these are scanned.
     pub exclude: Vec<String>,
+    /// Parallel `git log` processes (0: one per CPU).
+    pub jobs: usize,
+    /// Resume file for long scans (see [`crate::checkpoint`]).
+    pub checkpoint: Option<PathBuf>,
 }
 
 fn is_sha(s: &str) -> bool {
@@ -270,20 +274,30 @@ struct FileDiff {
     lines: Vec<usize>,
 }
 
-/// Stream every added hunk of every commit to `sink`.
-/// Returns the number of commits scanned.
-pub fn scan(repo: &Path, opts: &GitOptions, mut sink: impl FnMut(Chunk)) -> Result<usize> {
-    let mut cmd = git();
-    cmd.arg("-C").arg(repo).args([
-        "log",
-        "-p",
-        "-U0",
-        "--no-color",
-        "--no-ext-diff",
-        "--no-textconv",
-        "--full-history",
-        "--format=%x01kubera-commit %H%x00%an%x00%ae%x00%aI",
-    ]);
+/// Performance knobs for [`scan_commits`].
+#[derive(Debug, Clone, Default)]
+pub struct ScanPlan {
+    /// Parallel `git log` processes (0: one per CPU).
+    pub jobs: usize,
+    /// Path globs git should not diff at all. Only an optimisation: callers
+    /// still apply their own path filter to every chunk.
+    pub exclude_globs: Vec<String>,
+    /// Files larger than this are treated as binary by git (not diffed).
+    pub max_file_size: Option<u64>,
+}
+
+/// Number of worker processes for `jobs` (0 = one per CPU).
+pub fn effective_jobs(jobs: usize) -> usize {
+    if jobs > 0 {
+        jobs
+    } else {
+        std::thread::available_parallelism().map_or(4, |n| n.get())
+    }
+}
+
+/// Append the revision selection described by `opts` to a `git log` /
+/// `git rev-list` command, ending with `--`.
+fn push_revisions(cmd: &mut Command, opts: &GitOptions) -> Result<()> {
     if let Some(n) = opts.max_depth {
         cmd.arg(format!("--max-count={n}"));
     }
@@ -323,42 +337,224 @@ pub fn scan(repo: &Path, opts: &GitOptions, mut sink: impl FnMut(Chunk)) -> Resu
         (None, None) => {}
     }
     cmd.arg("--");
-    let mut child = cmd
-        .stdout(Stdio::piped())
+    Ok(())
+}
+
+/// Commits selected by `opts`, newest first.
+pub fn rev_list(repo: &Path, opts: &GitOptions) -> Result<Vec<String>> {
+    let mut cmd = git();
+    cmd.arg("-C").arg(repo).arg("rev-list");
+    push_revisions(&mut cmd, opts)?;
+    let out = cmd
         .stdin(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .context("running git rev-list (is git installed?)")?;
+    if !out.status.success() {
+        bail!(
+            "git rev-list failed ({}); is {} a git repository?",
+            String::from_utf8_lossy(&out.stderr)
+                .trim()
+                .lines()
+                .last()
+                .unwrap_or("unknown error"),
+            repo.display()
+        );
+    }
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| is_sha(l))
+        .map(str::to_string)
+        .collect())
+}
+
+/// Stream every added hunk of every commit selected by `opts` to `sink`.
+/// Returns the number of commits scanned.
+pub fn scan(
+    repo: &Path,
+    opts: &GitOptions,
+    plan: &ScanPlan,
+    sink: &(dyn Fn(Chunk) + Sync),
+) -> Result<usize> {
+    let commits = rev_list(repo, opts)?;
+    scan_commits(repo, &commits, plan, sink, &|_| {})?;
+    Ok(commits.len())
+}
+
+/// Turn a user exclude glob into a git `:(exclude,glob)` pathspec when git's
+/// matching is guaranteed to be at most as broad as the caller's filter
+/// (git's `*` never crosses `/`; a literal name would also match a whole
+/// directory, so those are left to the post-filter).
+fn exclude_pathspec(glob: &str) -> Option<String> {
+    let last = glob.rsplit('/').next().unwrap_or(glob);
+    let wild = last.contains('*') || last.contains('?') || last.contains('[');
+    if glob.is_empty() || !wild || glob.contains('{') || glob.starts_with(':') {
+        return None;
+    }
+    Some(format!(":(exclude,glob){glob}"))
+}
+
+/// Scan the diffs of `commits` (each against its first parent) with
+/// `plan.jobs` parallel `git log` processes. Commits are split into
+/// partitions handed out to workers; each worker parses its process's output
+/// while git is still producing it. `sink` is called from worker threads,
+/// and `done` with each partition once every chunk of it went through
+/// `sink` (used for checkpoints).
+pub fn scan_commits(
+    repo: &Path,
+    commits: &[String],
+    plan: &ScanPlan,
+    sink: &(dyn Fn(Chunk) + Sync),
+    done: &(dyn Fn(&[String]) + Sync),
+) -> Result<()> {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    if commits.is_empty() {
+        return Ok(());
+    }
+    let jobs = effective_jobs(plan.jobs);
+    // Several partitions per worker balance uneven commits and bound the
+    // work an interrupted scan repeats; large ones keep git's caches warm.
+    let size = (commits.len() / (jobs * 8)).clamp(64, 2000);
+    let parts: Vec<&[String]> = commits.chunks(size).collect();
+    let next = AtomicUsize::new(0);
+    let stop = AtomicBool::new(false);
+    let failed: Mutex<Option<anyhow::Error>> = Mutex::new(None);
+    std::thread::scope(|s| {
+        for _ in 0..jobs.min(parts.len()) {
+            s.spawn(|| {
+                while !stop.load(Ordering::Relaxed) {
+                    if crate::checkpoint::stop_requested() {
+                        stop.store(true, Ordering::Relaxed);
+                        failed
+                            .lock()
+                            .unwrap()
+                            .get_or_insert_with(|| anyhow::anyhow!("interrupted"));
+                        break;
+                    }
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(part) = parts.get(i) else { break };
+                    match log_partition(repo, part, plan, sink) {
+                        Ok(()) => done(part),
+                        Err(e) => {
+                            stop.store(true, Ordering::Relaxed);
+                            failed.lock().unwrap().get_or_insert(e);
+                            break;
+                        }
+                    }
+                }
+            });
+        }
+    });
+    match failed.into_inner().unwrap() {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+fn log_partition(
+    repo: &Path,
+    commits: &[String],
+    plan: &ScanPlan,
+    sink: &(dyn Fn(Chunk) + Sync),
+) -> Result<()> {
+    use std::io::Write;
+
+    let mut cmd = git();
+    if let Some(n) = plan.max_file_size {
+        cmd.arg("-c").arg(format!("core.bigFileThreshold={n}"));
+    }
+    cmd.arg("-C").arg(repo).args([
+        "log",
+        "-p",
+        "-U0",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--full-history",
+        "--no-walk=unsorted",
+        "--stdin",
+        "--format=%x01kubera-commit %H%x00%an%x00%ae%x00%aI",
+        "--",
+    ]);
+    let specs: Vec<String> = plan
+        .exclude_globs
+        .iter()
+        .filter_map(|g| exclude_pathspec(g))
+        .collect();
+    if !specs.is_empty() {
+        cmd.arg(".").args(specs);
+    }
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .context("running git log (is git installed?)")?;
+    let mut stdin = child.stdin.take().expect("piped stdin");
     let stdout = child.stdout.take().expect("piped stdout");
-    let mut reader = BufReader::new(stdout);
+    let mut stderr = child.stderr.take().expect("piped stderr");
+    // Feed commit ids from a separate thread: git starts writing output
+    // before it has read all of its input.
+    let ids = commits.join("\n") + "\n";
+    let (parsed, err) = std::thread::scope(|s| {
+        s.spawn(move || {
+            let _ = stdin.write_all(ids.as_bytes());
+        });
+        let e = s.spawn(move || {
+            let mut buf = String::new();
+            let _ = std::io::Read::read_to_string(&mut stderr, &mut buf);
+            buf
+        });
+        let parsed = parse_log(BufReader::with_capacity(256 * 1024, stdout), sink);
+        (parsed, e.join().unwrap_or_default())
+    });
+    let status = child.wait()?;
+    parsed?;
+    if !status.success() && crate::checkpoint::stop_requested() {
+        // Ctrl-C reached git too.
+        bail!("interrupted");
+    }
+    if !status.success() {
+        bail!(
+            "git log failed ({status}): {}",
+            err.trim().lines().last().unwrap_or("unknown error")
+        );
+    }
+    Ok(())
+}
 
+/// Parse `git log -p -U0` output into one chunk per (commit, file) holding
+/// the added lines. Returns the number of commits seen.
+fn parse_log(mut reader: impl BufRead, sink: &(dyn Fn(Chunk) + Sync)) -> Result<usize> {
     let mut commits = 0usize;
     let mut commit: Option<Commit> = None;
     let mut file: Option<FileDiff> = None;
     let mut in_hunk = false;
     let mut next_line = 0usize;
 
-    let flush =
-        |commit: &Option<Commit>, file: &mut Option<FileDiff>, sink: &mut dyn FnMut(Chunk)| {
-            if let (Some(c), Some(f)) = (commit, file.take()) {
-                if f.text.is_empty() || f.path.is_none() {
-                    return;
-                }
-                sink(Chunk {
-                    text: f.text,
-                    location: Location {
-                        source: SourceKind::Git,
-                        path: f.path,
-                        line: 0,
-                        commit: Some(c.hash.clone()),
-                        author: Some(c.author.clone()),
-                        email: Some(c.email.clone()),
-                        date: Some(c.date.clone()),
-                        ..Default::default()
-                    },
-                    line_map: Some(f.lines),
-                });
+    let flush = |commit: &Option<Commit>, file: &mut Option<FileDiff>| {
+        if let (Some(c), Some(f)) = (commit, file.take()) {
+            if f.text.is_empty() || f.path.is_none() {
+                return;
             }
-        };
+            sink(Chunk {
+                text: f.text,
+                location: Location {
+                    source: SourceKind::Git,
+                    path: f.path,
+                    line: 0,
+                    commit: Some(c.hash.clone()),
+                    author: Some(c.author.clone()),
+                    email: Some(c.email.clone()),
+                    date: Some(c.date.clone()),
+                    ..Default::default()
+                },
+                line_map: Some(f.lines),
+            });
+        }
+    };
 
     let mut raw = Vec::new();
     loop {
@@ -371,8 +567,11 @@ pub fn scan(repo: &Path, opts: &GitOptions, mut sink: impl FnMut(Chunk)) -> Resu
         let line = line.strip_suffix('\r').unwrap_or(line);
 
         if let Some(rest) = line.strip_prefix(COMMIT_MARKER) {
+            if crate::checkpoint::stop_requested() {
+                bail!("interrupted");
+            }
             commits += 1;
-            flush(&commit, &mut file, &mut sink);
+            flush(&commit, &mut file);
             let mut it = rest.split('\0');
             commit = Some(Commit {
                 hash: it.next().unwrap_or_default().to_string(),
@@ -384,7 +583,7 @@ pub fn scan(repo: &Path, opts: &GitOptions, mut sink: impl FnMut(Chunk)) -> Resu
             continue;
         }
         if line.starts_with("diff --git ") {
-            flush(&commit, &mut file, &mut sink);
+            flush(&commit, &mut file);
             file = Some(FileDiff {
                 path: None,
                 text: String::new(),
@@ -416,14 +615,7 @@ pub fn scan(repo: &Path, opts: &GitOptions, mut sink: impl FnMut(Chunk)) -> Resu
             next_line += 1;
         }
     }
-    flush(&commit, &mut file, &mut sink);
-    let status = child.wait()?;
-    if !status.success() {
-        bail!(
-            "git log failed ({status}); is {} a git repository?",
-            repo.display()
-        );
-    }
+    flush(&commit, &mut file);
     Ok(commits)
 }
 
@@ -445,6 +637,19 @@ mod tests {
     fn hunk_header() {
         assert_eq!(parse_hunk_start("-0,0 +12,3 @@ fn x"), Some(12));
         assert_eq!(parse_hunk_start("-1 +7 @@"), Some(7));
+    }
+
+    #[test]
+    fn exclude_pathspecs_never_widen_the_filter() {
+        assert_eq!(
+            exclude_pathspec("**/node_modules/**").as_deref(),
+            Some(":(exclude,glob)**/node_modules/**")
+        );
+        assert!(exclude_pathspec("*.min.js").is_some());
+        // A literal name would also exclude a directory's contents.
+        assert!(exclude_pathspec("vendor").is_none());
+        assert!(exclude_pathspec("{a,b}/*.js").is_none());
+        assert!(exclude_pathspec(":(top)x*").is_none());
     }
 
     #[test]

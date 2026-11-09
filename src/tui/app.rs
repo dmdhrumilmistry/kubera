@@ -464,6 +464,13 @@ impl App {
                     self.progress.done = done;
                     self.progress.total = total;
                 }
+                Progress::Commits { done, total } => {
+                    self.progress.phase = "Scanning history (commits)".into();
+                    self.progress.done = done;
+                    self.progress.total = total;
+                }
+                // Commit counts are the better measure once known.
+                Progress::Diffs(_) if self.progress.total > 0 => {}
                 Progress::Diffs(n) => {
                     self.progress.phase = "Scanning history".into();
                     self.progress.done = n;

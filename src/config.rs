@@ -27,7 +27,40 @@ pub struct Config {
     pub allowlist: Allowlist,
     /// Skip files larger than this many bytes.
     pub max_file_size: Option<u64>,
+    /// Skip [`DEFAULT_EXCLUDES`] (dependency directories and lockfiles).
+    /// Set to `false` to scan them too.
+    pub default_excludes: Option<bool>,
 }
+
+/// Paths skipped unless disabled (`--no-default-excludes` or
+/// `default_excludes: false`): third-party dependency trees and lockfiles.
+/// They are large, generated, and rarely hold your own credentials.
+/// Minified bundles and source maps are deliberately *not* here: frontend
+/// builds are a common place for real keys to leak.
+pub const DEFAULT_EXCLUDES: &[&str] = &[
+    "**/node_modules/**",
+    "**/bower_components/**",
+    "**/vendor/**",
+    "**/.venv/**",
+    "**/site-packages/**",
+    "**/Pods/**",
+    "**/package-lock.json",
+    "**/npm-shrinkwrap.json",
+    "**/yarn.lock",
+    "**/pnpm-lock.yaml",
+    "**/bun.lockb",
+    "**/Cargo.lock",
+    "**/go.sum",
+    "**/poetry.lock",
+    "**/uv.lock",
+    "**/Pipfile.lock",
+    "**/composer.lock",
+    "**/Gemfile.lock",
+    "**/Podfile.lock",
+    "**/packages.lock.json",
+    "**/gradle.lockfile",
+    "**/flake.lock",
+];
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -62,9 +95,25 @@ impl Config {
     }
 }
 
+impl Config {
+    /// Every exclude glob in effect: the defaults (unless disabled by the
+    /// config or `no_defaults`), the config's, then `extra`.
+    pub fn excludes(&self, extra: &[String], no_defaults: bool) -> Vec<String> {
+        let mut v: Vec<String> = Vec::new();
+        if !no_defaults && self.default_excludes.unwrap_or(true) {
+            v.extend(DEFAULT_EXCLUDES.iter().map(|s| s.to_string()));
+        }
+        v.extend(self.exclude_paths.iter().cloned());
+        v.extend(extra.iter().cloned());
+        v
+    }
+}
+
 /// Post-detection filter built from config + CLI flags.
 pub struct Filter {
     pub exclude_paths: GlobSet,
+    /// The exclude globs as written (handed to git as pathspecs).
+    pub exclude_globs: Vec<String>,
     fingerprints: HashSet<String>,
     secrets: Vec<Regex>,
 }
@@ -77,6 +126,7 @@ impl Filter {
         }
         Ok(Self {
             exclude_paths: b.build()?,
+            exclude_globs: exclude_paths.to_vec(),
             fingerprints: allow.fingerprints.iter().cloned().collect(),
             secrets: allow
                 .secrets
