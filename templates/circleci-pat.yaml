@@ -1,0 +1,31 @@
+id: circleci-pat
+name: CircleCI Personal API Token
+platform: CircleCI
+description: CircleCI personal API token (projects, env vars, pipelines).
+severity: high
+tags: [ci, supply-chain]
+references:
+  - https://circleci.com/docs/api/v2/index.html#operation/getCurrentUser
+detect:
+  keywords: [CCIPAT_]
+  patterns:
+    - name: token
+      regex: '\b(CCIPAT_[A-Za-z0-9]{22}_[a-f0-9]{40})\b'
+verify:
+  request:
+    url: https://circleci.com/api/v2/me
+    headers: { Circle-Token: "{{ token }}" }
+  valid: { status: [200] }
+  invalid: { status: [401] }
+  extract:
+    - { name: login, label: User, json: login }
+    - { name: name, label: Name, json: name }
+rotate:
+  instructions: |
+    CircleCI -> User settings -> Personal API Tokens: delete the leaked token.
+    Rotate project environment variables it could read.
+tests:
+  positive:
+    - "CIRCLE_TOKEN=C{{'C'}}IPAT_ZnU30bj2Ip0cszDDQacDsZ_aa59ca3bb5333d59f46c53ea11215a97ab8b9dae"
+  negative:
+    - "CCIPAT_short"

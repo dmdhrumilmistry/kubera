@@ -1,0 +1,40 @@
+id: postman-api-key
+name: Postman API Key
+platform: Postman
+description: Postman API key (collections, environments, often with embedded secrets).
+severity: high
+tags: [developer-tools]
+references:
+  - https://learning.postman.com/docs/developer/postman-api/authentication/
+detect:
+  keywords: [PMAK-]
+  patterns:
+    - name: key
+      regex: '\b(PMAK-[a-f0-9]{24}-[a-f0-9]{34})\b'
+verify:
+  request:
+    url: https://api.getpostman.com/me
+    headers: { X-Api-Key: "{{ key }}" }
+  valid: { status: [200] }
+  invalid: { status: [401] }
+  extract:
+    - { name: username, label: User, json: user.username }
+    - { name: email, label: Email, json: user.email }
+analyze:
+  steps:
+    - name: collections
+      description: Collections readable with the key
+      request:
+        url: https://api.getpostman.com/collections
+        headers: { X-Api-Key: "{{ key }}" }
+      extract:
+        - { name: collections, label: Collections, json: "collections.*.name" }
+rotate:
+  instructions: |
+    Postman -> Settings -> API keys: revoke the leaked key and generate a new
+    one. Check collections and environments for secrets stored in them.
+tests:
+  positive:
+    - "POSTMAN_API_KEY=P{{'M'}}AK-69d57cd09517f3e4c47cb537-13e47f6c53730e313b82a3a34594848870"
+  negative:
+    - "PMAK-xxxx"

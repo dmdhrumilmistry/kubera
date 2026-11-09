@@ -1,0 +1,31 @@
+id: typeform-pat
+name: Typeform Personal Access Token
+platform: Typeform
+description: Typeform personal access token (forms and responses, often PII).
+severity: medium
+tags: [forms]
+references:
+  - https://www.typeform.com/developers/get-started/personal-access-token/
+detect:
+  keywords: [tfp_]
+  patterns:
+    - name: token
+      regex: '\b(tfp_[A-Za-z0-9_-]{40,70})\b'
+      min_entropy: 3.5
+verify:
+  request:
+    url: https://api.typeform.com/me
+    auth: { type: bearer, token: "{{ token }}" }
+  valid: { status: [200] }
+  invalid: { status: [401, 403] }
+  extract:
+    - { name: alias, label: User, json: alias }
+    - { name: email, label: Email, json: email }
+rotate:
+  instructions: |
+    Typeform -> Account -> Personal tokens: revoke the leaked token.
+tests:
+  positive:
+    - "TYPEFORM_TOKEN=t{{'f'}}p_XM6IKmJoTy68lCPDGvYQrofxOzWXsED4zYGIt1eO2Hdn_1twqIpizhcbD8k"
+  negative:
+    - "tfp_short"

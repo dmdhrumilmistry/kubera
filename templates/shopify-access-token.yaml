@@ -1,0 +1,40 @@
+id: shopify-access-token
+name: Shopify Access Token
+platform: Shopify
+description: Shopify Admin API access token (custom, private or public app), paired with the shop domain.
+severity: critical
+tags: [ecommerce]
+references:
+  - https://shopify.dev/docs/api/admin-rest/latest/resources/accessscope
+detect:
+  keywords: [shpat_, shpca_, shppa_]
+  max_distance: 2048
+  patterns:
+    - name: token
+      regex: '\b(shp(?:at|ca|pa)_[a-fA-F0-9]{32})\b'
+      min_entropy: 3.0
+    - name: domain
+      regex: '\b([a-z0-9][a-z0-9-]*\.myshopify\.com)\b'
+      secret: false
+      optional: true
+verify:
+  request:
+    url: "https://{{ domain }}/admin/oauth/access_scopes.json"
+    headers: { X-Shopify-Access-Token: "{{ token }}" }
+  valid: { status: [200] }
+  # 404: the shop does not exist, so the token cannot be live there.
+  invalid: { status: [401, 403, 404] }
+  extract:
+    - { name: scopes, label: Scopes, json: "access_scopes.*.handle" }
+rotate:
+  instructions: |
+    1. Shopify admin -> Apps -> Develop apps -> your app -> API credentials:
+       rotate / reinstall to issue a new Admin API access token.
+    2. Deploy it and uninstall unused apps.
+tests:
+  positive:
+    - |
+      SHOP=acme-store.myshopify.com
+      SHOPIFY_TOKEN=s{{'h'}}pat_eae1c74c5cf6886c3790f066ec353e43
+  negative:
+    - "shp{{'a'}}t_00000000000000000000000000000000"

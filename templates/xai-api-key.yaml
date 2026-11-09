@@ -1,0 +1,30 @@
+id: xai-api-key
+name: xAI API Key
+platform: xAI
+description: xAI (Grok) API key.
+severity: medium
+tags: [ai]
+references:
+  - https://docs.x.ai/docs/api-reference#api-key
+detect:
+  keywords: [xai-]
+  patterns:
+    - name: key
+      regex: '\b(xai-[A-Za-z0-9]{80})\b'
+verify:
+  request:
+    url: https://api.x.ai/v1/api-key
+    auth: { type: bearer, token: "{{ key }}" }
+  valid: { status: [200] }
+  invalid: { status: [400, 401, 403] }
+  extract:
+    - { name: name, label: Key name, json: name }
+    - { name: acls, label: Permissions, json: acls }
+rotate:
+  instructions: |
+    console.x.ai -> API Keys: delete the leaked key and create a new one.
+tests:
+  positive:
+    - "XAI_API_KEY=x{{'a'}}i-W6C7XAOWBXn0SPwVCTxIwrscLfyUP5bLhgh7NkM5bVj3p8WRZDBnH8hdpos96DxA1OyeeryHWqXs0RXi"
+  negative:
+    - "xai-short"

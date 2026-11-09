@@ -389,3 +389,182 @@ verify:
     assert!(!msg.contains("private-path"), "url path leaked: {msg}");
     assert!(!msg.contains("pt_x"), "token leaked: {msg}");
 }
+
+fn parts_token(v: &str) -> BTreeMap<String, String> {
+    let mut p = BTreeMap::new();
+    p.insert("token".to_string(), v.to_string());
+    p
+}
+
+#[tokio::test]
+async fn every_http_method_and_body_kind_is_configurable() {
+    use wiremock::matchers::{body_json, body_string};
+    let server = MockServer::start().await;
+    let cases = [
+        ("PUT", "json: { name: \"{{ token }}\" }"),
+        ("PATCH", "body: 'raw={{ token }}'"),
+        ("DELETE", "query: { id: \"{{ token }}\" }"),
+        ("HEAD", "headers: { X-Key: \"{{ token }}\" }"),
+        ("POST", "form: { key: \"{{ token }}\" }"),
+        ("OPTIONS", "headers: { X-Key: \"{{ token }}\" }"),
+    ];
+    Mock::given(method("PUT"))
+        .and(body_json(serde_json::json!({"name": "tok123"})))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(body_string("raw=tok123"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(wiremock::matchers::query_param("id", "tok123"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&server)
+        .await;
+    Mock::given(method("HEAD"))
+        .and(header("x-key", "tok123"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(body_string("key=tok123"))
+        .and(header("content-type", "application/x-www-form-urlencoded"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    Mock::given(method("OPTIONS"))
+        .and(header("x-key", "tok123"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    for (m, extra) in cases {
+        let yaml = format!(
+            r#"
+id: m
+name: M
+detect:
+  keywords: [tok]
+  patterns: [{{ name: token, regex: '(tok[0-9]+)' }}]
+verify:
+  request:
+    method: {m}
+    url: {base}/endpoint
+    {extra}
+  valid: {{ status: [200, 204] }}
+"#,
+            base = server.uri()
+        );
+        let t = template::parse(&yaml, "t").unwrap();
+        let out = verify::verify(&http(), &t, &parts_token("tok123")).await;
+        assert_eq!(
+            out.verification.status,
+            Status::Verified,
+            "method {m}: {:?}",
+            out.verification.message
+        );
+    }
+}
+
+#[tokio::test]
+async fn any_matcher_is_an_or() {
+    let server = MockServer::start().await;
+    Mock::given(path("/a"))
+        .respond_with(ResponseTemplate::new(403).set_body_string("insufficient_scope"))
+        .mount(&server)
+        .await;
+    let yaml = r#"
+id: any
+name: Any
+detect:
+  keywords: [tok]
+  patterns: [{ name: token, regex: '(tok[0-9]+)' }]
+verify:
+  request: { url: BASE/a }
+  valid:
+    any:
+      - { status: [200] }
+      - { status: [403], body_contains: [insufficient_scope] }
+  invalid: { status: [401] }
+"#
+    .replace("BASE", &server.uri());
+    let t = template::parse(&yaml, "t").unwrap();
+    let out = verify::verify(&http(), &t, &parts_token("tok1")).await;
+    assert_eq!(out.verification.status, Status::Verified);
+}
+
+fn fallback_template(server: &MockServer) -> Template {
+    let yaml = r#"
+id: regional
+name: Regional
+detect:
+  keywords: [tok]
+  patterns: [{ name: token, regex: '(tok[0-9]+)' }]
+verify:
+  request: { url: BASE/us/validate, headers: { K: "{{ token }}" } }
+  valid: { status: [200] }
+  invalid: { status: [403] }
+  extract: [{ name: org, label: Org, json: org }]
+  fallbacks:
+    - label: EU
+      request: { url: BASE/eu/validate, headers: { K: "{{ token }}" } }
+    - label: AP
+      request: { method: POST, url: BASE/ap/validate, json: { key: "{{ token }}" } }
+      valid: { status: [201] }
+"#
+    .replace("BASE", &server.uri());
+    template::parse(&yaml, "t").unwrap()
+}
+
+#[tokio::test]
+async fn fallbacks_verify_on_any_endpoint() {
+    let server = MockServer::start().await;
+    Mock::given(path("/us/validate"))
+        .respond_with(ResponseTemplate::new(403))
+        .mount(&server)
+        .await;
+    Mock::given(path("/eu/validate"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"org": "acme"})))
+        .mount(&server)
+        .await;
+    Mock::given(path("/ap/validate"))
+        .respond_with(ResponseTemplate::new(201))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let out = verify::verify(&http(), &fallback_template(&server), &parts_token("tok1")).await;
+    assert_eq!(out.verification.status, Status::Verified);
+    assert_eq!(out.verification.details["Endpoint"], "EU");
+    assert_eq!(out.verification.details["Org"], "acme");
+}
+
+#[tokio::test]
+async fn fallbacks_invalid_only_when_every_endpoint_rejects() {
+    let server = MockServer::start().await;
+    for p in ["/us/validate", "/eu/validate", "/ap/validate"] {
+        Mock::given(path(p))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+    }
+    let out = verify::verify(&http(), &fallback_template(&server), &parts_token("tok1")).await;
+    assert_eq!(out.verification.status, Status::Invalid);
+
+    // One endpoint erroring makes the overall result inconclusive.
+    let server = MockServer::start().await;
+    Mock::given(path("/us/validate"))
+        .respond_with(ResponseTemplate::new(403))
+        .mount(&server)
+        .await;
+    Mock::given(path("/eu/validate"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+    Mock::given(path("/ap/validate"))
+        .respond_with(ResponseTemplate::new(403))
+        .mount(&server)
+        .await;
+    let out = verify::verify(&http(), &fallback_template(&server), &parts_token("tok1")).await;
+    assert_eq!(out.verification.status, Status::Unknown);
+}

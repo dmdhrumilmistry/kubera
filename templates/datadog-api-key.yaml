@@ -1,0 +1,54 @@
+id: datadog-api-key
+name: Datadog API Key
+platform: Datadog
+description: Datadog API key (submit metrics, logs and events). Checked against every Datadog site.
+severity: high
+tags: [observability]
+references:
+  - https://docs.datadoghq.com/api/latest/authentication/#validate-api-key
+  - https://docs.datadoghq.com/getting_started/site/
+detect:
+  keywords: [datadog, dd_api, dd-api, ddapi]
+  patterns:
+    - name: key
+      regex: '(?i)(?:datadog|dd)[_-]?(?:api)?[_-]?key[^\n]{0,24}?\b([a-f0-9]{32})\b'
+      min_entropy: 3.2
+verify:
+  request:
+    url: https://api.datadoghq.com/api/v1/validate
+    headers: { DD-API-KEY: "{{ key }}" }
+  valid:
+    status: [200]
+    json: [{ path: valid, equals: true }]
+  invalid: { status: [403] }
+  fallbacks:
+    - label: EU
+      request:
+        url: https://api.datadoghq.eu/api/v1/validate
+        headers: { DD-API-KEY: "{{ key }}" }
+    - label: US3
+      request:
+        url: https://api.us3.datadoghq.com/api/v1/validate
+        headers: { DD-API-KEY: "{{ key }}" }
+    - label: US5
+      request:
+        url: https://api.us5.datadoghq.com/api/v1/validate
+        headers: { DD-API-KEY: "{{ key }}" }
+    - label: AP1
+      request:
+        url: https://api.ap1.datadoghq.com/api/v1/validate
+        headers: { DD-API-KEY: "{{ key }}" }
+    - label: US1-FED
+      request:
+        url: https://api.ddog-gov.com/api/v1/validate
+        headers: { DD-API-KEY: "{{ key }}" }
+rotate:
+  instructions: |
+    1. Organization Settings -> API Keys: create a new key.
+    2. Deploy it (agents, integrations, CI), then revoke the leaked key.
+tests:
+  positive:
+    - "D{{'D'}}_API_KEY=02f645f04e8cef608158b635f0ccc77c"
+    - "d{{'a'}}tadog_api_key: c2cdd0077a844fea59c0776a4f450377"
+  negative:
+    - "D{{'D'}}_API_KEY=00000000000000000000000000000000"

@@ -1,0 +1,29 @@
+id: database-connection-uri
+name: Database Connection URI with Password
+platform: Generic
+description: Connection string with an inline password (PostgreSQL, MySQL, MongoDB, Redis, AMQP, SQL Server).
+severity: high
+tags: [database]
+detect:
+  keywords: ["://"]
+  patterns:
+    - name: uri
+      regex: '(?P<uri>\b(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|rediss?|amqps?|mssql|sqlserver)://[^\s:@/''"]{1,64}:(?P<password>[^\s:@/''"]{4,128})@[A-Za-z0-9.\-]+(?::[0-9]+)?)'
+      captures: [password]
+      exclude:
+        - '(?i):(?:password|passwd|pass|pwd|changeme|secret|example|admin|root|test|postgres|mysql|redis|guest)@'
+        - ':(?:x+|\*+)@'
+        - ':[<{$%]'
+        - '@(?:localhost|127\.0\.0\.1|example\.(?:com|org)|host|hostname|db)(?:[:/]|$)'
+rotate:
+  instructions: |
+    Change the database user's password (or create a new user and drop the
+    old one), update the applications, and restrict network access to the
+    database. Prefer secrets managers or IAM auth over inline credentials.
+tests:
+  positive:
+    - "DATABASE_URL=p{{'o'}}stgres://app:6aqOY5wzp7Man1fRSYJV@db.internal.acme.io:5432/app"
+    - "MONGO_URI=mongo{{'db'}}+srv://svc:Qh21hwSEAiGUEyUkETQfIkXX@cluster0.ab12c.mongodb.net/prod"
+  negative:
+    - "postgres://user:password@localhost:5432/db"
+    - "redis://:${REDIS_PASSWORD}@cache:6379"

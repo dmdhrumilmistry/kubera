@@ -1,0 +1,42 @@
+id: netlify-token
+name: Netlify Personal Access Token
+platform: Netlify
+description: Netlify personal access token (sites, deploys, environment variables).
+severity: high
+tags: [hosting]
+references:
+  - https://docs.netlify.com/api/get-started/#authentication
+detect:
+  keywords: [nfp_]
+  patterns:
+    - name: token
+      regex: '\b(nfp_[A-Za-z0-9]{36,40})\b'
+      min_entropy: 3.5
+verify:
+  request:
+    url: https://api.netlify.com/api/v1/user
+    auth: { type: bearer, token: "{{ token }}" }
+  valid: { status: [200] }
+  invalid: { status: [401] }
+  extract:
+    - { name: email, label: Email, json: email }
+    - { name: full_name, label: Name, json: full_name }
+analyze:
+  steps:
+    - name: sites
+      description: Sites the token can deploy
+      request:
+        url: https://api.netlify.com/api/v1/sites
+        query: { per_page: "100" }
+        auth: { type: bearer, token: "{{ token }}" }
+      extract:
+        - { name: sites, label: Sites, json: "*.name" }
+rotate:
+  instructions: |
+    User settings -> Applications -> Personal access tokens: delete the leaked
+    token and create a new one with an expiry.
+tests:
+  positive:
+    - "NETLIFY_AUTH_TOKEN=n{{'f'}}p_ACw7dReeAe1f23pNGqDXzglaX50lcYw7rpkyK1sV"
+  negative:
+    - "nfp_short"

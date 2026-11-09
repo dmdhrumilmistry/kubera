@@ -1,0 +1,39 @@
+id: contentful-pat
+name: Contentful Personal Access Token
+platform: Contentful
+description: Contentful Content Management API personal access token.
+severity: high
+tags: [cms]
+references:
+  - https://www.contentful.com/developers/docs/references/content-management-api/#/reference/users
+detect:
+  keywords: [CFPAT-]
+  patterns:
+    - name: token
+      regex: '\b(CFPAT-[A-Za-z0-9_-]{43})\b'
+verify:
+  request:
+    url: https://api.contentful.com/users/me
+    auth: { type: bearer, token: "{{ token }}" }
+  valid: { status: [200] }
+  invalid: { status: [401] }
+  extract:
+    - { name: email, label: Email, json: email }
+analyze:
+  steps:
+    - name: spaces
+      description: Spaces the token can manage
+      request:
+        url: https://api.contentful.com/spaces
+        auth: { type: bearer, token: "{{ token }}" }
+      extract:
+        - { name: spaces, label: Spaces, json: "items.*.name" }
+rotate:
+  instructions: |
+    Contentful -> Account settings -> CMA tokens: revoke the leaked token and
+    generate a new one.
+tests:
+  positive:
+    - "CONTENTFUL_TOKEN=C{{'F'}}PAT-lRLPLR6jHtuaMCrQXtTE7XIQTGS8Z2UhrZtIFtUFNW4"
+  negative:
+    - "CFPAT-x"

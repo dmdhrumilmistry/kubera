@@ -1,0 +1,27 @@
+id: groq-api-key
+name: Groq API Key
+platform: Groq
+description: Groq API key.
+severity: medium
+tags: [ai]
+references:
+  - https://console.groq.com/docs/api-reference#models-list
+detect:
+  keywords: [gsk_]
+  patterns:
+    - name: key
+      regex: '\b(gsk_[A-Za-z0-9]{52})\b'
+verify:
+  request:
+    url: https://api.groq.com/openai/v1/models
+    auth: { type: bearer, token: "{{ key }}" }
+  valid: { status: [200] }
+  invalid: { status: [401] }
+rotate:
+  instructions: |
+    console.groq.com/keys: delete the leaked key and create a new one.
+tests:
+  positive:
+    - "GROQ_API_KEY=g{{'s'}}k_3mFpbzGAaJnvr7s6YN7j0g8WkhvlB4sCy0K6mXIfGU0H7OsCHc8l"
+  negative:
+    - "gsk_short"

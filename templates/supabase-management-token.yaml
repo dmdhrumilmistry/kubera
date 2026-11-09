@@ -1,0 +1,30 @@
+id: supabase-management-token
+name: Supabase Access Token
+platform: Supabase
+description: Supabase management API personal access token (all projects of the user).
+severity: critical
+tags: [database]
+references:
+  - https://supabase.com/docs/reference/api/v1-list-all-projects
+detect:
+  keywords: [sbp_]
+  patterns:
+    - name: token
+      regex: '\b(sbp_[a-f0-9]{40})\b'
+verify:
+  request:
+    url: https://api.supabase.com/v1/projects
+    auth: { type: bearer, token: "{{ token }}" }
+  valid: { status: [200] }
+  invalid: { status: [401] }
+  extract:
+    - { name: projects, label: Projects, json: "*.name" }
+rotate:
+  instructions: |
+    supabase.com/dashboard/account/tokens: revoke the leaked token and create
+    a new one.
+tests:
+  positive:
+    - "SUPABASE_ACCESS_TOKEN=s{{'b'}}p_d56eb0d84bb5d7d7ecdceb457a25746c607dabad"
+  negative:
+    - "sbp_xyz"

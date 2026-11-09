@@ -1,0 +1,44 @@
+id: heroku-api-key
+name: Heroku API Key
+platform: Heroku
+description: Heroku platform API key / OAuth token (deploy, config vars, add-ons).
+severity: critical
+tags: [cloud]
+references:
+  - https://devcenter.heroku.com/articles/platform-api-reference#account
+detect:
+  keywords: [HRKU-, heroku]
+  patterns:
+    - name: token
+      regex: '(?:\b(HRKU-[A-Za-z0-9_-]{60})\b|(?i:heroku)[^\n]{0,40}?\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b)'
+      min_entropy: 3.0
+verify:
+  request:
+    url: https://api.heroku.com/account
+    headers: { Accept: "application/vnd.heroku+json; version=3" }
+    auth: { type: bearer, token: "{{ token }}" }
+  valid: { status: [200] }
+  invalid: { status: [401] }
+  extract:
+    - { name: email, label: Email, json: email }
+analyze:
+  steps:
+    - name: apps
+      description: Apps the key can manage
+      request:
+        url: https://api.heroku.com/apps
+        headers: { Accept: "application/vnd.heroku+json; version=3" }
+        auth: { type: bearer, token: "{{ token }}" }
+      extract:
+        - { name: apps, label: Apps, json: "*.name" }
+rotate:
+  instructions: |
+    1. Account settings -> API Key -> Regenerate (or `heroku authorizations:rotate`
+       for OAuth authorizations).
+    2. Update CI and tooling that used the old key.
+tests:
+  positive:
+    - "HEROKU_API_KEY=H{{'R'}}KU-Gx3cLV1cxc9j1BIubBvVxqxPidwebnun5ms3MoRdYwELRxSCaiJoLcuyybln"
+    - "h{{'e'}}roku_api_key = d9fae4af-15c4-69ec-8096-d6cb6a2c43bf"
+  negative:
+    - "api_key = a17c846f-c4b5-d823-f835-404af238fd03"

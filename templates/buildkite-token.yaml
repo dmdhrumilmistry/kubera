@@ -1,0 +1,38 @@
+id: buildkite-token
+name: Buildkite API Access Token
+platform: Buildkite
+description: Buildkite user API access token.
+severity: high
+tags: [ci, supply-chain]
+references:
+  - https://buildkite.com/docs/apis/rest-api/access-token
+detect:
+  keywords: [bkua_]
+  patterns:
+    - name: token
+      regex: '\b(bkua_[a-f0-9]{40})\b'
+verify:
+  request:
+    url: https://api.buildkite.com/v2/access-token
+    auth: { type: bearer, token: "{{ token }}" }
+  valid: { status: [200] }
+  invalid: { status: [401] }
+  extract:
+    - { name: scopes, label: Scopes, json: scopes }
+rotate:
+  instructions: |
+    Create a replacement token first (Personal Settings -> API Access Tokens).
+    `--execute` then revokes the leaked token with DELETE /v2/access-token.
+  steps:
+    - name: revoke
+      description: Revoke the leaked token
+      request:
+        method: DELETE
+        url: https://api.buildkite.com/v2/access-token
+        auth: { type: bearer, token: "{{ token }}" }
+      expect: { status: [204] }
+tests:
+  positive:
+    - "BUILDKITE_TOKEN=b{{'k'}}ua_ef61359c48373be523fa2f37ae4c18096f720c5a"
+  negative:
+    - "bkua_xyz"

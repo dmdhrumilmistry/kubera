@@ -1,0 +1,76 @@
+id: twilio
+name: Twilio Account Credentials
+platform: Twilio
+description: Account SID + auth token. Full control of the Twilio account (calls, SMS, billing).
+severity: critical
+tags: [communications]
+references:
+  - https://www.twilio.com/docs/iam/api/account
+  - https://www.twilio.com/docs/iam/api/authtoken
+detect:
+  keywords: [twilio]
+  max_distance: 512
+  patterns:
+    - name: account_sid
+      regex: '\b(AC[a-f0-9]{32})\b'
+      secret: false
+    - name: auth_token
+      regex: '(?:^|[^A-Za-z0-9])([a-f0-9]{32})(?:[^A-Za-z0-9]|$)'
+      min_entropy: 3.2
+verify:
+  request:
+    url: "https://api.twilio.com/2010-04-01/Accounts/{{ account_sid }}.json"
+    auth: { type: basic, username: "{{ account_sid }}", password: "{{ auth_token }}" }
+  valid: { status: [200] }
+  invalid: { status: [401] }
+  extract:
+    - { name: friendly_name, label: Account, json: friendly_name }
+    - { name: account_status, label: Status, json: status }
+    - { name: account_type, label: Type, json: type }
+analyze:
+  steps:
+    - name: phone_numbers
+      description: Phone numbers owned by the account
+      request:
+        url: "https://api.twilio.com/2010-04-01/Accounts/{{ account_sid }}/IncomingPhoneNumbers.json"
+        query: { PageSize: "50" }
+        auth: { type: basic, username: "{{ account_sid }}", password: "{{ auth_token }}" }
+      extract:
+        - { name: numbers, label: Numbers, json: "incoming_phone_numbers.*.phone_number" }
+    - name: api_keys
+      description: API keys on the account
+      request:
+        url: "https://api.twilio.com/2010-04-01/Accounts/{{ account_sid }}/Keys.json"
+        auth: { type: basic, username: "{{ account_sid }}", password: "{{ auth_token }}" }
+      extract:
+        - { name: keys, label: API keys, json: "keys.*.friendly_name" }
+rotate:
+  instructions: |
+    Kubera creates a secondary auth token and promotes it to primary, which
+    immediately invalidates the leaked token. Deploy the new token right away
+    (it is printed once, or written with --output-file).
+  steps:
+    - name: create_secondary
+      description: Create a secondary auth token
+      request:
+        method: POST
+        url: https://accounts.twilio.com/v1/AuthTokens/Secondary
+        auth: { type: basic, username: "{{ account_sid }}", password: "{{ auth_token }}" }
+      expect: { status: [200, 201] }
+      extract:
+        - { name: new_auth_token, json: secondary_auth_token, secret: true }
+    - name: promote
+      description: Promote the secondary token (revokes the leaked one)
+      request:
+        method: POST
+        url: https://accounts.twilio.com/v1/AuthTokens/Promote
+        auth: { type: basic, username: "{{ account_sid }}", password: "{{ auth_token }}" }
+      expect: { status: [200] }
+  outputs: [new_auth_token]
+tests:
+  positive:
+    - |
+      TWILIO_ACCOUNT_SID=A{{'C'}}51f94db50e36f6b5a95bdc6d26585e49
+      TWILIO_AUTH_TOKEN=abf5e46a21471c8794ecf0e537016231
+  negative:
+    - "TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
