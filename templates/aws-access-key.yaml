@@ -1,0 +1,149 @@
+id: aws-access-key
+name: AWS Access Key
+platform: AWS
+description: Long-term IAM access key (access key id + secret access key).
+severity: critical
+tags: [cloud, iam]
+references:
+  - https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html
+  - https://docs.aws.amazon.com/STS/latest/APIReference/API_GetCallerIdentity.html
+
+detect:
+  keywords: [AKIA, ABIA, ACCA]
+  max_distance: 2048
+  patterns:
+    - name: access_key_id
+      regex: '\b((?:AKIA|ABIA|ACCA)[A-Z2-7]{16})\b'
+      secret: false
+      exclude: ['EXAMPLE$']
+    - name: secret_access_key
+      # 40 base64-ish chars not embedded in a longer token. Entropy > 4.3
+      # rules out 40-char hex strings such as git SHAs.
+      regex: '(?:^|[^A-Za-z0-9/+])([A-Za-z0-9/+]{40})(?:[^A-Za-z0-9/+=]|$)'
+      min_entropy: 4.3
+      exclude: ['EXAMPLEKEY$']
+
+verify:
+  request:
+    method: POST
+    url: https://sts.amazonaws.com/
+    headers:
+      Accept: application/json
+    form:
+      Action: GetCallerIdentity
+      Version: "2011-06-15"
+    auth:
+      type: aws_sigv4
+      access_key: "{{ access_key_id }}"
+      secret_key: "{{ secret_access_key }}"
+      region: us-east-1
+      service: sts
+  valid:
+    status: [200]
+  invalid:
+    status: [403]
+  extract:
+    # Regexes match both the JSON and the XML response shapes.
+    - { name: arn, label: ARN, regex: '"Arn":"([^"]+)"|<Arn>([^<]+)</Arn>' }
+    - { name: account, label: Account, regex: '"Account":"([^"]+)"|<Account>([^<]+)</Account>' }
+    - { name: user_id, label: UserId, regex: '"UserId":"([^"]+)"|<UserId>([^<]+)</UserId>' }
+    - { name: user_name, label: IAM user, regex: ':user/(?:[^"<]*/)?([^"</]+)["<]' }
+
+analyze:
+  notes: |
+    Uses read-only IAM calls signed with the leaked key. Steps fail when the
+    key lacks the corresponding iam:Get*/List* permission, which itself tells
+    you something about its scope.
+  steps:
+    - name: get_user
+      description: IAM user that owns the key
+      request: &iam
+        method: POST
+        url: https://iam.amazonaws.com/
+        headers: { Accept: application/json }
+        form: { Action: GetUser, Version: "2010-05-08" }
+        auth:
+          type: aws_sigv4
+          access_key: "{{ access_key_id }}"
+          secret_key: "{{ secret_access_key }}"
+          region: us-east-1
+          service: iam
+      extract:
+        - { name: created, label: Created, regex: '"CreateDate":"?([^",]+)|<CreateDate>([^<]+)</CreateDate>' }
+        - { name: password_last_used, label: Console last used, regex: '"PasswordLastUsed":"?([^",]+)|<PasswordLastUsed>([^<]+)</PasswordLastUsed>' }
+    - name: attached_policies
+      description: Managed policies attached to the user
+      request:
+        <<: *iam
+        form: { Action: ListAttachedUserPolicies, UserName: "{{ user_name }}", Version: "2010-05-08" }
+      extract:
+        - { name: policies, label: Policies, all: true, regex: '"PolicyName":"([^"]+)"|<PolicyName>([^<]+)</PolicyName>' }
+    - name: groups
+      description: Groups the user belongs to (inherit their policies)
+      request:
+        <<: *iam
+        form: { Action: ListGroupsForUser, UserName: "{{ user_name }}", Version: "2010-05-08" }
+      extract:
+        - { name: groups, label: Groups, all: true, regex: '"GroupName":"([^"]+)"|<GroupName>([^<]+)</GroupName>' }
+    - name: access_keys
+      description: All access keys of the user (max 2 - relevant for rotation)
+      request:
+        <<: *iam
+        form: { Action: ListAccessKeys, Version: "2010-05-08" }
+      extract:
+        - { name: key_ids, label: Access keys, all: true, regex: '"AccessKeyId":"([^"]+)"|<AccessKeyId>([^<]+)</AccessKeyId>' }
+        - { name: key_status, label: Status, all: true, regex: '"Status":"([^"]+)"|<Status>([^<]+)</Status>' }
+
+rotate:
+  instructions: |
+    Kubera creates a new access key for the same IAM user, then DEACTIVATES
+    (does not delete) the leaked key so you can roll back if something breaks.
+    - IAM users can hold at most two keys; delete an unused one first if needed.
+    - After deploying the new key, delete the old one:
+        aws iam delete-access-key --access-key-id <leaked key id>
+    - Review CloudTrail for activity by the leaked key id.
+  steps:
+    - name: create_access_key
+      description: Create a replacement key for the same user
+      request:
+        method: POST
+        url: https://iam.amazonaws.com/
+        headers: { Accept: application/json }
+        form: { Action: CreateAccessKey, Version: "2010-05-08" }
+        auth: &old
+          type: aws_sigv4
+          access_key: "{{ access_key_id }}"
+          secret_key: "{{ secret_access_key }}"
+          region: us-east-1
+          service: iam
+      expect: { status: [200] }
+      extract:
+        - { name: new_access_key_id, regex: '"AccessKeyId":"([^"]+)"|<AccessKeyId>([^<]+)</AccessKeyId>' }
+        - { name: new_secret_access_key, secret: true, regex: '"SecretAccessKey":"([^"]+)"|<SecretAccessKey>([^<]+)</SecretAccessKey>' }
+    - name: deactivate_leaked_key
+      description: Mark the leaked key Inactive
+      request:
+        method: POST
+        url: https://iam.amazonaws.com/
+        headers: { Accept: application/json }
+        form:
+          Action: UpdateAccessKey
+          AccessKeyId: "{{ access_key_id }}"
+          Status: Inactive
+          Version: "2010-05-08"
+        auth: *old
+      expect: { status: [200] }
+  outputs: [new_access_key_id, new_secret_access_key]
+
+tests:
+  positive:
+    - |
+      aws_access_key_id = AKI{{'A'}}BCMGMW46CHRFS6TG
+      aws_secret_access_key = Modl+6QI9Dl+hHHwkCbZYbSLJebCHamz5trzDrTd
+  negative:
+    # AWS documentation example values.
+    - |
+      aws_access_key_id = AKIAIOSFODNN7EXAMPLE
+      aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+    # Key id with a git SHA nearby is not a pair.
+    - "AKI{{'A'}}BCMGMW46CHRFS6TG commit 0123456789abcdef0123456789abcdef01234567"

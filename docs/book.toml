@@ -1,0 +1,16 @@
+[book]
+title = "Kubera"
+description = "Template-driven secret detection, verification, analysis and rotation"
+authors = ["dmdhrumilmistry"]
+language = "en"
+src = "src"
+
+[output.html]
+git-repository-url = "https://github.com/dmdhrumilmistry/kubera"
+edit-url-template = "https://github.com/dmdhrumilmistry/kubera/edit/main/docs/{path}"
+site-url = "/kubera/"
+default-theme = "light"
+preferred-dark-theme = "ayu"
+
+[output.html.search]
+enable = true

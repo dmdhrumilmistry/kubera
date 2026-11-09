@@ -1,0 +1,58 @@
+id: npm-token
+name: npm Access Token
+platform: npm
+description: npm registry access token (can publish packages - supply chain risk).
+severity: critical
+tags: [registry, supply-chain]
+references:
+  - https://docs.npmjs.com/about-access-tokens
+  - https://docs.npmjs.com/revoking-access-tokens
+
+detect:
+  keywords: [npm_]
+  patterns:
+    - name: token
+      regex: '\b(npm_[A-Za-z0-9]{36})\b'
+      min_entropy: 3.5
+
+verify:
+  request:
+    url: https://registry.npmjs.org/-/whoami
+    auth: { type: bearer, token: "{{ token }}" }
+  valid: { status: [200] }
+  invalid: { status: [401, 403] }
+  extract:
+    - { name: username, label: User, json: username }
+
+analyze:
+  steps:
+    - name: tokens
+      description: Tokens on the account (npm masks them)
+      request:
+        url: https://registry.npmjs.org/-/npm/v1/tokens
+        auth: { type: bearer, token: "{{ token }}" }
+      extract:
+        - { name: tokens, label: Tokens, json: "objects.*.token" }
+        - { name: readonly, label: Read-only, json: "objects.*.readonly" }
+        - { name: cidr, label: CIDR allowlist, json: "objects.*.cidr_whitelist" }
+    - name: packages
+      description: Packages maintained by the user (publish blast radius)
+      request:
+        url: https://registry.npmjs.org/-/v1/search
+        query: { text: "maintainer:{{ username }}", size: "100" }
+      extract:
+        - { name: packages, label: Packages, json: "objects.*.package.name" }
+
+rotate:
+  instructions: |
+    1. Create a replacement granular token with the minimum packages/scopes and
+       an expiry: https://www.npmjs.com/settings/~/tokens
+    2. Deploy it, then revoke the leaked token on the same page
+       (or `npm token revoke <id>`).
+    3. Check recent versions of your packages for unexpected publishes.
+
+tests:
+  positive:
+    - "//registry.npmjs.org/:_authToken=np{{'m'}}_Zq8Lw2Pm9Xa1Bc4De7Fg0Hi3Jk6Lm9No2Pq5"
+  negative:
+    - "npm_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
