@@ -1,4 +1,56 @@
-# Incremental and mass scanning
+# Large, incremental and mass scans
+
+## Large repositories
+
+```bash
+kubera scan git ~/src/monorepo                                    # one git log per CPU
+kubera scan git ~/src/monorepo -j 2                               # leave some CPU for others
+kubera scan git ~/src/monorepo --exclude-path "third_party/**"    # skip what you don't own
+kubera scan git ~/src/monorepo --checkpoint monorepo.ckpt         # resumable
+```
+
+### Parallel history
+
+A single `git log -p` uses one CPU, and on a big repository git, not the detectors, is the bottleneck. Kubera lists the commits to scan with `git rev-list`, splits them into partitions, and runs one `git log` per CPU over them. Each worker parses its process's output while git is still producing it. The findings are the same as a sequential scan.
+
+`-j N` sets the number of workers (default `0`: one per CPU). It applies to every history scan: `scan git`, `scan repos`, and the wikis and gists of `scan github`. In `scan repos`, the CPUs are divided between the `--repo-concurrency` repositories scanned at the same time, so the machine is not oversubscribed.
+
+Measured on [rust-lang/cargo](https://github.com/rust-lang/cargo) (24,445 commits) on 4 vCPUs:
+
+| Full history scan | Time |
+|---|---:|
+| Before parallel scanning (one `git log`) | 10.6 s |
+| Parallel, default `-j 0` | **3.7 s** |
+| Parallel, with `--exclude-path` on a heavy directory | **2.5 s** |
+
+See [Benchmarks](benchmarks.md#parallel-history-scanning) for the setup.
+
+### Skip junk early
+
+The cheapest diff is the one git never produces:
+
+- Files larger than `--max-file-size` (default 10 MiB) are **not diffed at all**: Kubera sets git's `core.bigFileThreshold`, so git skips the diff instead of Kubera discarding it afterwards.
+- Your `--exclude-path` and `exclude_paths` globs are **handed to git as exclude pathspecs**, so excluded files are never diffed either.
+- The [default excludes](scanning.md#default-excludes) (dependency directories and lockfiles) are applied inside Kubera instead. Passing that long list to git as pathspecs cost about 16% on every commit, more than it saved.
+
+### Resumable scans
+
+A full scan of a very large repository, or one over a slow disk, can take a long time. `--checkpoint FILE` makes it resumable:
+
+```bash
+kubera scan git ~/src/monorepo --verify --checkpoint monorepo.ckpt
+# ... Ctrl-C ...
+# interrupted: saving progress to monorepo.ckpt (Ctrl-C again to quit now)
+kubera scan git ~/src/monorepo --verify --checkpoint monorepo.ckpt   # continues where it stopped
+```
+
+- The first **Ctrl-C** stops cleanly and saves the checkpoint. A second Ctrl-C exits immediately.
+- **Run the same command again** to resume. Finished commits are skipped, and the findings saved so far are reported, verified and filtered as usual at the end.
+- Progress is saved every couple of seconds as partitions of commits finish, so a crash or a killed job loses only the partitions in flight.
+- A checkpoint belongs to one scan. A checkpoint from a different scan (another repository, refs, revisions or detector set, or new commits on the scanned refs) is refused; delete it to start over.
+- When the scan completes, the file is deleted.
+
+The checkpoint **holds raw secrets** (they are needed to verify and report on resume). It is written atomically with mode `0600`. Keep it out of shared or synced folders, and delete it if you abandon the scan.
 
 ## Scan only what changed
 
@@ -56,7 +108,7 @@ Forks and archived repositories are skipped unless `--include-forks` / `--includ
 1. **First run:** every repository is cloned once (bare) into `--cache-dir`.
 2. **Later runs:** each mirror is updated with `git fetch --prune`, which downloads only new objects. With `--state`, only never-scanned commits are read.
 
-Network, disk I/O and CPU scale with **what changed** since the last passing scan, not with the size of the organization. Repositories are processed `--repo-concurrency` at a time, and each one's file diffs are scanned in parallel. A failure in one repository is reported and doesn't stop the others.
+Network, disk I/O and CPU scale with **what changed** since the last passing scan, not with the size of the organization. Repositories are processed `--repo-concurrency` at a time, and each one's history is scanned in [parallel](#parallel-history) with its share of the CPUs. A failure in one repository is reported and doesn't stop the others.
 
 ### Rate limiting
 
@@ -72,7 +124,7 @@ Pagination follows `Link: rel="next"` (GitHub, GitLab) or `next` (Bitbucket) **o
 
 ### Scheduling
 
-A nightly job that only reports new leaks:
+A nightly job that only reports new leaks (add `--notify-env` to get a Slack message, see [Alerts](alerts.md)):
 
 ```yaml
 - uses: actions/cache@v4

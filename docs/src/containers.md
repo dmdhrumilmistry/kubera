@@ -16,6 +16,8 @@ kubera scan image ghcr.io/acme/app:1 --platform linux/arm64
 - **Every layer.** A secret copied in one layer and deleted in a later one (`RUN rm creds.env`) still ships inside the image, and Kubera finds it. Each finding names the layer digest.
 - **The image config**: `ENV` values, labels and the build history (`created_by`), where `--build-arg` secrets often end up.
 - Text files up to `--max-file-size`. Binaries and whiteout markers are skipped.
+- **Archives inside layers** up to 64 MiB: jar, war, whl, zip, tar.gz and the rest of the [supported formats](scanning.md#archives), nested, read in memory. A finding names the entry, e.g. `/app/lib/app.jar!/application.yml`.
+- Base64 and other [encoded](scanning.md#decoders) values, for example a Docker `config.json` with `auths`.
 
 ```text
 ╭─ CRITICAL  GitHub Token ─────────────────────────────────────
@@ -44,3 +46,13 @@ Multi-architecture images are resolved to `--platform` (default `linux/amd64`).
 - Layers larger than `--max-layer-size` (default 4 GiB) are refused.
 - Archives are **streamed, never unpacked to disk**, so path-traversal or symlink tricks inside a hostile image cannot write anywhere.
 - Registry and token-service URLs must be HTTPS (unless `--plain-http`). Credentials go only to the registry's own token service.
+
+## Running Kubera from a container
+
+Kubera has its own image, `ghcr.io/dmdhrumilmistry/kubera`, which can scan images too:
+
+```bash
+docker run --rm ghcr.io/dmdhrumilmistry/kubera scan image alpine:3.20
+```
+
+See [Installation](installation.md#container-image) for tags and mounting a repository.

@@ -13,9 +13,10 @@
 
 <p align="center">
   <b>Kubera</b> is a fast, template-driven secret scanner written in Rust.<br>
-  It finds leaked credentials in code, git history, whole GitHub/GitLab/Bitbucket orgs and container images,<br>
+  It finds leaked credentials in code, git history, whole GitHub/GitLab/Bitbucket orgs, container images,<br>
+  GitHub issues and Actions logs, S3/GCS buckets and live Kubernetes clusters,<br>
   checks whether they are <b>live</b>, shows what they can <b>access</b>, and <b>rotates or revokes</b> them.<br>
-  64 detectors; adding a platform takes one YAML file, not new code.
+  89 detectors; adding a platform takes one YAML file, not new code.
 </p>
 
 <p align="center">
@@ -27,6 +28,7 @@
   <a href="#quick-start">Quick start</a> ·
   <a href="#interactive-tui">TUI</a> ·
   <a href="#scanning-remote-repositories">Remote repos</a> ·
+  <a href="#ci-and-pre-commit">CI</a> ·
   <a href="#builtin-detectors">Detectors</a> ·
   <a href="#adding-a-platform">Templates</a> ·
   <a href="https://dmdhrumilmistry.github.io/kubera/">Docs</a>
@@ -40,16 +42,20 @@
 
 |  |  |
 |---|---|
-| 🔍 **Detect** | Files, full git history (local, HTTPS, SSH or `github.com/org/repo`), **container images** and stdin, including secrets committed and later deleted, or deleted in a later image layer. 64 detectors. |
-| 🏢 **At scale** | Scan whole **GitHub / GitLab / Bitbucket orgs** with rate-limit handling and cached mirrors; **incremental** runs only read commits added since the last passing scan (47× faster re-scans). |
+| 🔍 **Detect** | Files, full git history (local, HTTPS, SSH or `github.com/org/repo`), **container images** and stdin, including secrets committed and later deleted, or deleted in a later image layer. Opens **archives** (jar, zip, whl, tar.gz, nested) and **decodes** base64, URL-encoded and escaped values. 89 detectors. |
+| 🌐 **Beyond code** | **GitHub** issues, PRs, review comments, **Actions logs**, wikis and gists; **S3 / GCS buckets** (and MinIO, R2); **live Kubernetes** Secrets, ConfigMaps and workload env. [GitHub →](https://dmdhrumilmistry.github.io/kubera/github.html) · [Buckets →](https://dmdhrumilmistry.github.io/kubera/buckets.html) · [Kubernetes →](https://dmdhrumilmistry.github.io/kubera/kubernetes.html) |
+| 🏢 **At scale** | Scan whole **GitHub / GitLab / Bitbucket orgs** with rate-limit handling and cached mirrors; **incremental** runs only read commits added since the last passing scan (47× faster re-scans); **resumable** long scans with `--checkpoint`. |
 | ✅ **Verify** | Asks each platform whether the secret is live, concurrently and de-duplicated. |
 | 🧭 **Analyze** | Owner, scopes, reachable resources and permission probes. |
 | 🔁 **Rotate** | Dry-run plan by default; vendor API calls only with `--execute` and confirmation. Manual runbooks for platforms with no API. |
 | 🖥️ **Interactive** | A keyboard-driven TUI, hidden secret prompts, and auto-identification of pasted secrets. |
+| 🗂️ **Triage** | A committed **baseline** so CI only fails on new leaks; mark false positives (`x`) or accepted risks (`m`) in the TUI. [Details →](https://dmdhrumilmistry.github.io/kubera/triage.html) |
+| 🛡️ **Prevent** | A **pre-commit hook** (`kubera hook install`, or the pre-commit framework), a **GitHub Action** with code scanning, and a **Docker image**. [CI →](https://dmdhrumilmistry.github.io/kubera/ci.html) |
 | 🧩 **Templates** | Everything per-platform lives in validated YAML, with built-in test samples. |
-| 📤 **Outputs** | Pretty cards, JSON, JSONL and SARIF 2.1.0, with links to the exact line on GitHub, GitLab and Bitbucket. Secrets redacted by default. |
+| 📤 **Outputs** | Pretty cards, JSON, JSONL, SARIF 2.1.0 and a self-contained **HTML report**, with links to the exact line on GitHub, GitLab and Bitbucket. Secrets redacted by default. |
+| 🔔 **Alerts** | **Slack** and HMAC-signed **webhooks** when a scheduled scan finds live secrets. [Details →](https://dmdhrumilmistry.github.io/kubera/alerts.html) |
 | 🤖 **MCP server** | `kubera mcp` lets AI assistants scan and verify, while secrets never reach the model. |
-| ⚡ **Fast** | ~875 MB/s on 4 vCPUs (333 MB of real code in 0.38 s, 38 MiB RAM); 3,000 commits of history in 2.2 s. [Benchmarks →](https://dmdhrumilmistry.github.io/kubera/benchmarks.html) |
+| ⚡ **Fast** | ~875 MB/s on 4 vCPUs (333 MB of real code in 0.38 s, 38 MiB RAM); one `git log` per CPU scans all 24,445 commits of rust-lang/cargo in 3.7 s (10.6 s single-process). [Benchmarks →](https://dmdhrumilmistry.github.io/kubera/benchmarks.html) |
 | 📱 **Everywhere** | Linux, macOS, Windows and Android (Termux), with layouts that adapt to phone screens. |
 
 ## Install
@@ -57,9 +63,10 @@
 ```bash
 curl -fsSL https://raw.githubusercontent.com/dmdhrumilmistry/kubera/main/install.sh | sh   # Linux, macOS, Termux
 cargo install kubera-cli --locked                                                        # any platform with Rust 1.88+
+docker run --rm -v "$PWD:/scan" ghcr.io/dmdhrumilmistry/kubera scan git /scan              # container image
 ```
 
-The installer downloads the release binary for your platform, **verifies its SHA-256**, and installs `kubera` to `~/.local/bin` (or `$PREFIX/bin` on Termux). Prebuilt archives for Linux, macOS, Windows and Android are on the [releases page](https://github.com/dmdhrumilmistry/kubera/releases). The crate is `kubera-cli`; the command is `kubera`.
+The installer downloads the release binary for your platform, **verifies its SHA-256**, and installs `kubera` to `~/.local/bin` (or `$PREFIX/bin` on Termux). Prebuilt archives for Linux, macOS, Windows and Android are on the [releases page](https://github.com/dmdhrumilmistry/kubera/releases). The crate is `kubera-cli`; the command is `kubera`. The image (`ghcr.io/dmdhrumilmistry/kubera`, linux/amd64 and arm64) runs as non-root and includes git. [Installation →](https://dmdhrumilmistry.github.io/kubera/installation.html)
 
 ## Quick start
 
@@ -72,7 +79,12 @@ kubera scan image ghcr.io/org/app:1.4     # every layer + ENV/history, no Docker
 kubera scan repos --github-org acme --token-env GH_TOKEN --cache-dir ~/.cache/kubera --state state.json
 kubera scan git . --state .kubera-state.json --fail   # CI: only new commits
 kubera scan fs . --fail -f sarif > kubera.sarif     # CI: SARIF + exit code 183
-kubectl get secrets -A -o yaml | kubera scan stdin --verify
+kubera scan git . --verify -f html > report.html    # self-contained HTML report
+kubera scan github --org acme --token-env GH_TOKEN   # issues, PRs, Actions logs, wikis
+kubera scan bucket s3://acme-backups --verify        # S3 / GCS, archives opened
+kubera scan k8s --verify                             # live cluster: Secrets, ConfigMaps, env
+kubera hook install                                  # block commits that add secrets
+kubera scan git . --update-baseline                  # accept today's findings; fail only on new ones
 ```
 
 Check a single credential. Paste it at a hidden prompt, and Kubera works out what it is:
@@ -114,19 +126,19 @@ Repositories are cloned bare into a temp dir and deleted afterwards. Tokens reac
 
 ## Builtin detectors
 
-**64 detectors**, 56 with live verification, 19 with analysis, 11 with API rotation/revocation. Every verifier is checked against the real vendor API with fake credentials.
+**89 detectors**, 81 with live verification, 25 with analysis, 11 with API rotation/revocation. Every verifier is checked against the real vendor API with fake credentials.
 
 | Category | Detectors |
 |---|---|
-| Cloud & infra | AWS (SigV4, API rotation), Cloudflare (PUT roll), DigitalOcean, Heroku, Netlify, Pulumi, Terraform Cloud, Databricks, Supabase, Azure storage, GCP service accounts, Google API keys, Vault, database URIs |
+| Cloud & infra | AWS (SigV4, API rotation), Cloudflare (PUT roll), DigitalOcean, Heroku, Netlify, Render, Pulumi, Terraform Cloud, Infracost, Databricks, Prefect, Supabase, Neon, Tailscale, Azure storage, GCP service accounts, Google API keys, Vault, database URIs |
 | Source control & CI | GitHub (revoke), GitLab PAT (rotate) + runner tokens, CircleCI, Buildkite (revoke) |
-| Package registries | npm, PyPI, RubyGems |
-| Payments | Stripe, Square, PayPal, Razorpay, Shopify |
-| Communication | Slack token (revoke) + webhook, Discord bot + webhook (DELETE), Telegram, Twilio (API rotation) |
-| Email | SendGrid (API rotation), Mailgun, Mailchimp, Postmark, Brevo |
-| AI | OpenAI, Anthropic, Hugging Face, Groq, Replicate, xAI, Pinecone |
-| Observability | Datadog (all sites), New Relic, Sentry |
-| SaaS & productivity | Notion, Linear, Asana, Airtable, Figma, Contentful, Postman, Typeform, Algolia, Mapbox, Dropbox, Snyk, Doppler, Okta (revoke) |
+| Package registries | npm, PyPI, RubyGems, Docker Hub |
+| Payments & commerce | Stripe, Square, PayPal, Razorpay, Shopify, Shippo, EasyPost, Duffel |
+| Communication | Slack token (revoke) + webhook, Discord bot + webhook (DELETE), Telegram, Twilio (API rotation), Intercom |
+| Email | SendGrid (API rotation), Mailgun, Mailchimp, Postmark, Brevo, Resend |
+| AI | OpenAI, Anthropic, Hugging Face, Groq, Replicate, xAI, Pinecone, OpenRouter, Perplexity, DeepSeek, Cerebras, ElevenLabs, LangSmith, Langfuse |
+| Observability | Datadog (all sites), New Relic, Sentry, Grafana Cloud + service accounts |
+| SaaS & productivity | Notion, Linear, Asana, ClickUp, Airtable, Figma, Contentful, Postman, Typeform, Algolia, Mapbox, Cloudinary, Dropbox, HubSpot, ReadMe, LaunchDarkly, Snyk, Doppler, Okta (revoke) |
 | Keys | PEM/OpenSSH/PGP private keys, age |
 
 Full table with endpoints: [Builtin detectors](https://dmdhrumilmistry.github.io/kubera/detectors.html), or `kubera templates list`.
@@ -162,6 +174,28 @@ verify:
 
 The [template reference](https://dmdhrumilmistry.github.io/kubera/templates.html) covers every field: auth types including AWS SigV4, matchers, extractors, rotation inputs and outputs, and samples.
 
+## CI and pre-commit
+
+```yaml
+# .github/workflows/secrets.yml: PRs scan only their own commits, pushes only the pushed ones
+permissions: { contents: read, security-events: write }
+on: [push, pull_request]
+jobs:
+  kubera:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: dmdhrumilmistry/kubera@v0.2.0   # SARIF to code scanning, job summary, annotations
+```
+
+```bash
+kubera hook install          # pre-commit hook: scans only the lines a commit adds
+kubera scan staged --fail    # what the hook runs
+```
+
+Also available for the [pre-commit framework](https://pre-commit.com) (`id: kubera` or `kubera-system`) and as a Docker image for any CI. Adopt Kubera on an old codebase with `--update-baseline` and commit `.kubera-baseline.json`: CI then fails only on new secrets. [CI →](https://dmdhrumilmistry.github.io/kubera/ci.html) · [Pre-commit →](https://dmdhrumilmistry.github.io/kubera/hooks.html) · [Baselines →](https://dmdhrumilmistry.github.io/kubera/triage.html)
+
 ## MCP server
 
 ```bash
@@ -177,7 +211,7 @@ AI assistants get `scan_path`, `scan_git`, `scan_image`, `scan_text` and fingerp
 ```yaml
 templates: [./templates.d]
 exclude_detectors: [google-api-key]
-exclude_paths: ["**/testdata/**", "**/*.min.js"]
+exclude_paths: ["**/testdata/**"]     # node_modules, vendor, lockfiles are skipped by default
 allowlist:
   fingerprints: [bc0458ecc5e4611e9dde21f8]
   secrets: ['^AKIA.*EXAMPLE$']
@@ -187,8 +221,8 @@ Add `kubera:ignore` to a line to suppress findings on it.
 
 ## Security model
 
-- **Opt-in network.** A plain scan sends nothing anywhere. With `--verify`, each secret goes only to the endpoint its own template names, over HTTPS, without following redirects.
-- **Redacted by default** in every output, the TUI and exports. Secrets come in through env vars, stdin or hidden prompts rather than argv.
+- **Opt-in network.** A plain scan of local files or history sends nothing anywhere. With `--verify`, each secret goes only to the endpoint its own template names, over HTTPS, without following redirects.
+- **Redacted by default** in every output, the TUI, exports, HTML reports and alerts. Secrets, tokens and webhook URLs come in through env vars, stdin or hidden prompts rather than argv. Baselines hold fingerprints only; checkpoints, which must hold secrets, are `0600` and deleted when the scan completes.
 - **Rotation is a dry run** unless `--execute`. It re-verifies first, asks for confirmation, stops at the first failure without losing a newly created key, and writes output files with mode `0600`.
 - **Hostile repositories are safe to scan.** There's no external diff, textconv, hooks or fsmonitor, revisions go after `--end-of-options`, there are no credential prompts, and symlinks are never followed.
 

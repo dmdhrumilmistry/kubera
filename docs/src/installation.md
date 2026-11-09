@@ -20,6 +20,45 @@ The crate is called `kubera-cli` (the `kubera` name on crates.io belongs to an u
 
 Every [GitHub release](https://github.com/dmdhrumilmistry/kubera/releases) has archives for Linux (x86_64/aarch64, static), macOS (x86_64/arm64), Windows (x86_64) and Android (aarch64), each with a `.sha256` file.
 
+## Container image
+
+Every release publishes a multi-architecture image (linux/amd64, linux/arm64) to GitHub Container Registry, built from the same static binaries as the release archives:
+
+```bash
+docker run --rm ghcr.io/dmdhrumilmistry/kubera --version
+docker run --rm -v "$PWD:/scan" ghcr.io/dmdhrumilmistry/kubera scan git /scan
+docker run --rm -v "$PWD:/scan" ghcr.io/dmdhrumilmistry/kubera scan fs /scan --fail
+docker run --rm ghcr.io/dmdhrumilmistry/kubera scan image alpine:3.20
+```
+
+| Tag | Meaning |
+|---|---|
+| `0.2.0` | One release |
+| `0.2` | Latest patch release of 0.2 |
+| `latest` | Latest release |
+
+- The entrypoint is `kubera`, and the working directory is `/scan`: mount what you want scanned there.
+- The image runs as a **non-root** user (uid 10001) and includes `git` and CA certificates. Mounted repositories owned by another uid are accepted by git.
+- Pass credentials as environment variables, for example `-e GH_TOKEN` with `--token-env GH_TOKEN`.
+
+To build it yourself from a checkout:
+
+```bash
+docker build -t kubera .
+docker run --rm -v "$PWD:/scan" kubera scan git /scan
+```
+
+## GitHub Action
+
+```yaml
+- uses: actions/checkout@v4
+  with:
+    fetch-depth: 0
+- uses: dmdhrumilmistry/kubera@v0.2.0
+```
+
+The action installs a release binary and scans the repository, with SARIF upload to code scanning. See [CI integration](ci.md#github-action) for inputs and outputs.
+
 ## From source
 
 ```bash
@@ -83,7 +122,7 @@ make install DESTDIR=/tmp/pkg PREFIX=/usr   # staged install for packaging
 
 ## Runtime requirements
 
-- `git` on `PATH` for `kubera scan git`.
+- `git` on `PATH` for `kubera scan git`, `scan repos`, `scan staged` and the pre-commit hook.
 - Outbound HTTPS to vendor APIs, only when you use `--verify`, `verify`, `analyze` or `rotate`.
 
 ## Checking the install

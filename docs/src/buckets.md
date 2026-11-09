@@ -1,0 +1,63 @@
+# Cloud storage buckets
+
+Backups, build artifacts and exported configs often end up in object storage. `kubera scan bucket` lists a bucket, downloads the objects worth scanning and scans them like files on disk, archives included.
+
+```bash
+kubera scan bucket s3://acme-backups                       # a whole S3 bucket
+kubera scan bucket s3://acme-artifacts/releases/ --verify  # only a prefix
+kubera scan bucket s3://public-data --anonymous            # a public bucket, unsigned
+kubera scan bucket gs://acme-exports --token-env GCS_TOKEN # Google Cloud Storage
+```
+
+## Amazon S3 and S3-compatible stores
+
+Requests are signed with SigV4, using the standard environment variables:
+
+```bash
+export AWS_ACCESS_KEY_ID=<key id>
+export AWS_SECRET_ACCESS_KEY=<secret>
+export AWS_SESSION_TOKEN=<session token>   # only for temporary credentials
+kubera scan bucket s3://acme-backups
+```
+
+Without these variables, an S3 scan needs `--anonymous` (unsigned requests, for public buckets).
+
+The region is detected from the bucket. Set `--region` to skip the lookup. For MinIO, Cloudflare R2 and other S3-compatible stores, pass the endpoint:
+
+```bash
+kubera scan bucket s3://builds --endpoint-url https://<account>.r2.cloudflarestorage.com
+kubera scan bucket s3://backups --endpoint-url https://minio.internal.example:9000
+```
+
+## Google Cloud Storage
+
+GCS takes an OAuth access token from an environment variable:
+
+```bash
+export GCS_TOKEN="$(gcloud auth print-access-token)"
+kubera scan bucket gs://acme-exports --token-env GCS_TOKEN
+```
+
+## What gets scanned
+
+- Objects are listed first. **Path excludes and the size limit are checked before anything is downloaded**, so skipped objects cost nothing. `--exclude-path`, `exclude_paths` and the [default excludes](scanning.md#default-excludes) all apply to object keys.
+- Text objects up to `--max-file-size` are scanned. Binaries are skipped.
+- Archives (zip, jar, tar, tar.gz, ...) up to 512 MiB are opened in memory and their entries scanned, with the same [limits](scanning.md#archives) as filesystem scans.
+- Each finding links to the object in the AWS or Google Cloud console.
+
+## Options
+
+| Flag | Meaning |
+|---|---|
+| `--anonymous` | Send unsigned requests (public S3 buckets). |
+| `--region REGION` | S3 region (default: detected from the bucket). |
+| `--endpoint-url URL` | S3-compatible endpoint (MinIO, R2, ...). |
+| `--token-env VAR` | Environment variable with a GCS OAuth access token. |
+| `--downloads N` | Parallel downloads (default 16). |
+| `--max-objects N` | List at most N objects (default 100000). |
+
+All [common scan options](scanning.md#common-options) work too.
+
+## Safety
+
+Credentials are only ever sent to the storage endpoint, over HTTPS, without following redirects. An `http://` endpoint is refused. Objects are never written to disk.

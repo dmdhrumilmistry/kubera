@@ -44,11 +44,18 @@ The list shows each finding's verification status (`●` live, `✓` invalid, `?
 | `/` | Filter by text (detector, name, path, commit) |
 | `f` | Filter by status: all → live → not invalid → invalid |
 | `e` | Export findings to `kubera-findings-<time>.json` |
+| `x` | Mark the selected finding as a false positive (saved to the baseline) |
+| `m` | Mark it as an accepted risk (saved to the baseline) |
+| `u` | Undo the last mark |
 | `?` | Help |
 | `q` / `Esc` | Back / quit |
 | `Ctrl+C` | Quit |
 
 Network work (verification, analysis, rotation plans) runs in the background, so the interface never freezes. A spinner marks findings that are being checked.
+
+## Triage
+
+`x` and `m` remove the finding from the list and record the decision in `.kubera-baseline.json` in the current directory, straight away. Findings already in that file are not shown, in this session or later ones, and CLI scans, the pre-commit hook and CI skip them too once you commit the file. `u` undoes the last mark. See [Baselines and triage](triage.md).
 
 ## Safe by design
 
