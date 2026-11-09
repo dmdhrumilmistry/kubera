@@ -19,6 +19,7 @@ pub use app::{App, Services};
 use theme::Theme;
 
 /// Where the TUI starts.
+#[allow(clippy::large_enum_variant)] // constructed once
 pub enum Start {
     Home,
     Scan(crate::scan::Target, String),

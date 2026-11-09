@@ -76,6 +76,7 @@ fn finding(
             link: Some(format!(
                 "https://github.com/acme/payments/blob/9f3c1e7/{path}#L{line}"
             )),
+            layer: None,
         },
     );
     f.verification = status.map(|s| Verification {

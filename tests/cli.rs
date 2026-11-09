@@ -335,3 +335,125 @@ async fn private_repo_token_is_sent_as_scoped_header() {
         "no request carried the expected Authorization header"
     );
 }
+
+fn make_repo(dir: &Path, secret: bool) {
+    git(dir, &["init", "-q", "-b", "main"]);
+    std::fs::write(dir.join("a.txt"), "hello\n").unwrap();
+    if secret {
+        std::fs::write(dir.join("b.env"), format!("T={}\n", fake_github_token())).unwrap();
+    }
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-q", "-m", "init"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mass_scan_github_org_rate_limited_incremental() {
+    use wiremock::matchers::{method, path, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let repos = tempfile::tempdir().unwrap();
+    let (clean, leaky, fork) = (
+        repos.path().join("clean"),
+        repos.path().join("leaky"),
+        repos.path().join("fork"),
+    );
+    for (d, s) in [(&clean, false), (&leaky, true), (&fork, true)] {
+        std::fs::create_dir(d).unwrap();
+        make_repo(d, s);
+    }
+    let url = |p: &Path| format!("file://{}", p.display());
+
+    let server = MockServer::start().await;
+    // Page 1 is rate limited once (Retry-After), then served.
+    Mock::given(method("GET"))
+        .and(path("/orgs/acme/repos"))
+        .and(query_param("page", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+            {"full_name": "acme/fork", "clone_url": url(&fork), "fork": true, "archived": false}
+        ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/orgs/acme/repos"))
+        .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "1"))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/orgs/acme/repos"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header(
+                    "link",
+                    format!(r#"<{}/orgs/acme/repos?page=2>; rel="next""#, server.uri()).as_str(),
+                )
+                .set_body_json(serde_json::json!([
+                    {"full_name": "acme/clean", "clone_url": url(&clean), "fork": false, "archived": false},
+                    {"full_name": "acme/leaky", "clone_url": url(&leaky), "fork": false, "archived": false}
+                ])),
+        )
+        .mount(&server)
+        .await;
+
+    let work = tempfile::tempdir().unwrap();
+    let cache = work.path().join("cache");
+    let state = work.path().join("state.json");
+    let api = server.uri();
+    let run =
+        move |cwd: std::path::PathBuf, cache: std::path::PathBuf, state: std::path::PathBuf| {
+            let api = api.clone();
+            tokio::task::spawn_blocking(move || {
+                Command::new(env!("CARGO_BIN_EXE_kubera"))
+                    .args([
+                        "--allow-http",
+                        "scan",
+                        "repos",
+                        "--github-org",
+                        "acme",
+                        "--api-url",
+                    ])
+                    .arg(&api)
+                    .arg("--cache-dir")
+                    .arg(&cache)
+                    .arg("--state")
+                    .arg(&state)
+                    .args(["-f", "json"])
+                    .current_dir(cwd)
+                    .env("NO_COLOR", "1")
+                    .output()
+                    .unwrap()
+            })
+        };
+
+    // Run 1: discovers 2 repos (fork skipped), clones, finds the leak.
+    let out = run(work.path().into(), cache.clone(), state.clone())
+        .await
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(out.status.success(), "{err}");
+    assert!(err.contains("rate limited"), "{err}");
+    assert!(err.contains("2 repositories (1 skipped"), "{err}");
+    let v = json(&out);
+    assert_eq!(v.as_array().unwrap().len(), 1, "{v:#}");
+    assert!(err.contains("1 baseline(s) advanced, 1 kept"), "{err}");
+    assert_eq!(std::fs::read_dir(&cache).unwrap().count(), 2);
+
+    // Run 2: nothing new in the clean repo; the leaky one is still reported.
+    let out = run(work.path().into(), cache.clone(), state.clone())
+        .await
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(err.contains("clean.git") || err.contains("/clean"), "{err}");
+    assert!(err.contains("0 new commit(s), clean"), "{err}");
+    assert_eq!(json(&out).as_array().unwrap().len(), 1);
+
+    // Run 3: one new commit in the clean repo is all that gets scanned there.
+    std::fs::write(clean.join("c.txt"), "more\n").unwrap();
+    git(&clean, &["add", "."]);
+    git(&clean, &["commit", "-q", "-m", "next"]);
+    let out = run(work.path().into(), cache.clone(), state.clone())
+        .await
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(err.contains("1 new commit(s), clean"), "{err}");
+}

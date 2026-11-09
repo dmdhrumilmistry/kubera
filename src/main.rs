@@ -81,6 +81,7 @@ struct GlobalArgs {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)] // parsed once from argv
 enum Command {
     /// Scan for secrets.
     Scan {
@@ -149,6 +150,25 @@ enum Command {
         #[arg(long)]
         verify: bool,
     },
+    /// Run an MCP (Model Context Protocol) server on stdio so AI
+    /// assistants can scan for secrets. Findings are redacted; secrets never
+    /// reach the model.
+    Mcp {
+        /// Enable verify/analyze/rotation-plan tools (they contact vendor
+        /// APIs with the found secret).
+        #[arg(long)]
+        allow_verify: bool,
+        /// Only allow filesystem / local-repository scans under this directory.
+        #[arg(long, value_name = "DIR")]
+        root: Option<PathBuf>,
+        /// Environment variable with a token for cloning private HTTPS
+        /// repositories (set by you, never by the model).
+        #[arg(long, value_name = "ENV_VAR")]
+        git_token_env: Option<String>,
+        /// Username sent with the git token.
+        #[arg(long, value_name = "USER")]
+        git_token_user: Option<String>,
+    },
     /// Manage detector templates.
     Templates {
         #[command(subcommand)]
@@ -157,6 +177,7 @@ enum Command {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)] // parsed once from argv
 enum ScanSource {
     /// Scan files and directories.
     Fs {
@@ -189,6 +210,104 @@ enum ScanSource {
         /// accepts any, Bitbucket needs `x-token-auth` or your username).
         #[arg(long, value_name = "USER")]
         token_user: Option<String>,
+        /// Incremental scanning: remember the ref tips of the last passing
+        /// scan in FILE and only scan commits added since then.
+        #[arg(long, value_name = "FILE")]
+        state: Option<PathBuf>,
+        /// When the state baseline may advance.
+        #[arg(long, value_enum, default_value_t = kubera::state::Policy::Pass, requires = "state")]
+        state_policy: kubera::state::Policy,
+        #[command(flatten)]
+        opts: ScanArgs,
+    },
+    /// Scan many repositories: whole GitHub orgs/users, GitLab groups,
+    /// Bitbucket workspaces, a list file, or URLs. Rate-limit aware; with
+    /// --cache-dir and --state later runs only fetch and scan new commits.
+    Repos {
+        /// Repository URLs or local paths.
+        repos: Vec<String>,
+        /// GitHub organization (repeatable).
+        #[arg(long, value_name = "ORG")]
+        github_org: Vec<String>,
+        /// GitHub user's own repositories (repeatable).
+        #[arg(long, value_name = "USER")]
+        github_user: Vec<String>,
+        /// GitLab group, including subgroups (repeatable).
+        #[arg(long, value_name = "GROUP")]
+        gitlab_group: Vec<String>,
+        /// Bitbucket Cloud workspace (repeatable).
+        #[arg(long, value_name = "WORKSPACE")]
+        bitbucket_workspace: Vec<String>,
+        /// File with one repository URL or path per line (`#` comments).
+        #[arg(long, value_name = "FILE")]
+        repo_list: Option<PathBuf>,
+        /// API base for GitHub Enterprise / self-managed GitLab, e.g.
+        /// https://ghe.example.com/api/v3 or https://gitlab.example.com/api/v4.
+        #[arg(long, value_name = "URL")]
+        api_url: Option<String>,
+        /// Environment variable with a token for the forge API and clones.
+        #[arg(long, value_name = "ENV_VAR")]
+        token_env: Option<String>,
+        /// Username for the token (clones; Bitbucket app passwords).
+        #[arg(long, value_name = "USER")]
+        token_user: Option<String>,
+        /// Include forks.
+        #[arg(long)]
+        include_forks: bool,
+        /// Include archived repositories.
+        #[arg(long)]
+        include_archived: bool,
+        /// Scan at most N repositories.
+        #[arg(long, value_name = "N")]
+        limit: Option<usize>,
+        /// Repositories scanned in parallel.
+        #[arg(long, default_value_t = 4, value_name = "N")]
+        repo_concurrency: usize,
+        /// Keep bare mirrors here and only fetch changes on later runs.
+        #[arg(long, value_name = "DIR")]
+        cache_dir: Option<PathBuf>,
+        /// Incremental state file (see `scan git --state`).
+        #[arg(long, value_name = "FILE")]
+        state: Option<PathBuf>,
+        /// When a repository's baseline may advance.
+        #[arg(long, value_enum, default_value_t = kubera::state::Policy::Pass, requires = "state")]
+        state_policy: kubera::state::Policy,
+        /// Longest rate-limit wait (seconds) before giving up.
+        #[arg(long, default_value_t = 900, value_name = "SECS")]
+        max_rate_wait: u64,
+        /// Maximum commits per repository (shallow first clone).
+        #[arg(long)]
+        max_depth: Option<usize>,
+        #[command(flatten)]
+        opts: ScanArgs,
+    },
+    /// Scan a container image: every layer (including files deleted in
+    /// later layers) plus the image config (ENV, labels, build history).
+    ///
+    /// IMAGE is a registry reference (alpine:3.20, ghcr.io/org/app:tag,
+    /// repo@sha256:...) pulled without Docker, a `docker save` / OCI-layout
+    /// tarball path, or a local Docker image with --docker.
+    Image {
+        image: String,
+        /// Platform to pick from multi-arch images.
+        #[arg(long, default_value = "linux/amd64", value_name = "OS/ARCH")]
+        platform: String,
+        /// Export the image from the local Docker daemon (`docker save`).
+        #[arg(long)]
+        docker: bool,
+        /// Registry username (with --registry-token-env).
+        #[arg(long, value_name = "USER")]
+        registry_user: Option<String>,
+        /// Environment variable with a registry password / token.
+        #[arg(long, value_name = "ENV_VAR")]
+        registry_token_env: Option<String>,
+        /// Refuse layers larger than this many bytes.
+        #[arg(long, value_name = "BYTES", default_value_t = kubera::sources::image::DEFAULT_MAX_LAYER_SIZE)]
+        max_layer_size: u64,
+        /// Talk to the registry over plain HTTP (local / insecure registries
+        /// only; credentials would be sent unencrypted).
+        #[arg(long)]
+        plain_http: bool,
         #[command(flatten)]
         opts: ScanArgs,
     },
@@ -448,15 +567,56 @@ async fn run(cli: Cli) -> Result<u8> {
             .await
         }
         Command::Templates { cmd } => cmd_templates(&cli.global, cmd),
+        Command::Mcp {
+            allow_verify,
+            root,
+            git_token_env,
+            git_token_user,
+        } => {
+            let ctx = context(&cli.global)?;
+            let engine = Engine::new(ctx.templates.iter().map(|l| l.template.clone()).collect())?;
+            let filter = Filter::new(&ctx.cfg.exclude_paths, &ctx.cfg.allowlist)?;
+            let token = match git_token_env {
+                Some(var) => Some(std::env::var(&var).with_context(|| {
+                    format!("environment variable `{var}` (from --git-token-env) is not set")
+                })?),
+                None => None,
+            };
+            let server = kubera::mcp::Server::new(
+                engine,
+                filter,
+                ctx.templates,
+                ctx.http,
+                kubera::mcp::Options {
+                    allow_verify,
+                    root,
+                    git_auth: kubera::sources::remote::Auth {
+                        token,
+                        user: git_token_user,
+                        allow_http: cli.global.allow_http,
+                        interactive: false,
+                    },
+                    max_file_size: ctx
+                        .cfg
+                        .max_file_size
+                        .unwrap_or(sources::fs::DEFAULT_MAX_FILE_SIZE),
+                    allow_http: cli.global.allow_http,
+                },
+            );
+            server.serve().await?;
+            Ok(0)
+        }
     }
 }
 
 async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
     let ctx = context(g)?;
     let opts = match &source {
-        ScanSource::Fs { opts, .. } | ScanSource::Git { opts, .. } | ScanSource::Stdin { opts } => {
-            opts
-        }
+        ScanSource::Fs { opts, .. }
+        | ScanSource::Git { opts, .. }
+        | ScanSource::Repos { opts, .. }
+        | ScanSource::Image { opts, .. }
+        | ScanSource::Stdin { opts } => opts,
     };
     let engine = Engine::new(ctx.templates.iter().map(|l| l.template.clone()).collect())?;
     let mut excludes = ctx.cfg.exclude_paths.clone();
@@ -475,6 +635,7 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
             max_depth,
             token_env,
             token_user,
+            state,
             ..
         } => {
             let token = match token_env {
@@ -489,7 +650,15 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
                     branch: branch.clone(),
                     since_commit: since_commit.clone(),
                     max_depth: *max_depth,
+                    ..Default::default()
                 },
+                baseline: match state {
+                    Some(p) => kubera::state::State::load(p)?
+                        .get(&kubera::state::repo_key(repo))
+                        .map(|r| r.refs.clone()),
+                    None => None,
+                },
+                mirror: None,
                 auth: kubera::sources::remote::Auth {
                     token,
                     user: token_user.clone(),
@@ -506,6 +675,48 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
                 .context("reading stdin")?;
             scan::Target::Text(text)
         }
+        ScanSource::Repos { .. } => scan::Target::Text(String::new()),
+        ScanSource::Image {
+            image,
+            platform,
+            docker,
+            registry_user,
+            registry_token_env,
+            max_layer_size,
+            plain_http,
+            ..
+        } => {
+            use kubera::sources::image;
+            let img = if std::path::Path::new(image).is_file() {
+                image::open_archive(std::path::Path::new(image), platform)?
+            } else if *docker {
+                image::from_docker(image, platform)?
+            } else {
+                let token = match registry_token_env {
+                    Some(var) => Some(std::env::var(var).with_context(|| {
+                        format!(
+                            "environment variable `{var}` (from --registry-token-env) is not set"
+                        )
+                    })?),
+                    None => None,
+                };
+                if show_progress_early(opts) {
+                    eprintln!("{} pulling {image} ({platform})", ctx.style.dim("›"));
+                }
+                image::pull(
+                    image,
+                    &image::PullOptions {
+                        platform: platform.clone(),
+                        user: registry_user.clone(),
+                        token,
+                        allow_http: g.allow_http || *plain_http,
+                        max_layer_size: *max_layer_size,
+                    },
+                )
+                .await?
+            };
+            scan::Target::Image(std::sync::Arc::new(img))
+        }
     };
     let show_progress = std::io::stderr().is_terminal() && opts.format == Format::Pretty;
     if show_progress && !opts.interactive {
@@ -519,7 +730,17 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
             eprintln!("{} cloning {url}", ctx.style.dim("›"));
         }
     };
-    let mut findings = scan::run(&engine, &filter, &target, max_size, &progress)?;
+    let mut mass_results: Option<Vec<kubera::mass::RepoResult>> = None;
+    let (commits_scanned, tips, mut findings) = if let ScanSource::Repos { .. } = &source {
+        let results = cmd_scan_repos(g, &source, &engine, &filter, max_size, &ctx.style).await?;
+        let commits = results.iter().map(|r| r.commits_scanned).sum();
+        let findings = results.iter().flat_map(|r| r.findings.clone()).collect();
+        mass_results = Some(results);
+        (commits, Default::default(), findings)
+    } else {
+        let outcome = scan::run_detailed(&engine, &filter, &target, max_size, &progress)?;
+        (outcome.commits_scanned, outcome.tips, outcome.findings)
+    };
     let do_verify = opts.verify || opts.only_verified;
     if do_verify && !findings.is_empty() {
         let map: HashMap<String, Arc<Template>> = engine
@@ -562,6 +783,11 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
                 .map(|r| r.display().to_string())
                 .unwrap_or_else(|| repo.clone()),
             ScanSource::Stdin { .. } => "stdin".into(),
+            ScanSource::Image { image, .. } => image.clone(),
+            ScanSource::Repos { .. } => format!(
+                "{} repositories",
+                mass_results.as_ref().map(|r| r.len()).unwrap_or(0)
+            ),
         };
         let svc = services(ctx, engine, filter, max_size);
         tokio::task::block_in_place(|| {
@@ -583,6 +809,86 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         color: ctx.style.color && std::io::stderr().is_terminal(),
     };
     eprintln!("{}", report::summary(&shown, &err_style));
+    if let ScanSource::Git {
+        repo,
+        state: Some(path),
+        state_policy,
+        ..
+    } = &source
+    {
+        let key = kubera::state::repo_key(repo);
+        let passed = shown.is_empty();
+        let mut st = kubera::state::State::load(path)?;
+        if passed || *state_policy == kubera::state::Policy::Always {
+            st.set(
+                &key,
+                kubera::state::RepoState {
+                    refs: tips,
+                    scanned_at: kubera::state::now(),
+                    commits_scanned,
+                },
+            );
+            st.save()?;
+            eprintln!(
+                "{} {commits_scanned} new commit(s) scanned; baseline advanced",
+                err_style.dim("state:")
+            );
+        } else {
+            eprintln!(
+                "{} {commits_scanned} new commit(s) scanned; baseline kept (findings must be fixed or allowlisted)",
+                err_style.dim("state:")
+            );
+        }
+    }
+    if let (
+        ScanSource::Repos {
+            state: Some(path),
+            state_policy,
+            ..
+        },
+        Some(results),
+    ) = (&source, &mass_results)
+    {
+        // A repository passes when none of its findings survived filtering.
+        let remaining: std::collections::HashSet<&str> =
+            shown.iter().map(|f| f.fingerprint.as_str()).collect();
+        let mut st = kubera::state::State::load(path)?;
+        let (mut advanced, mut kept) = (0, 0);
+        for r in results.iter().filter(|r| r.error.is_none()) {
+            let passed = !r
+                .findings
+                .iter()
+                .any(|f| remaining.contains(f.fingerprint.as_str()));
+            if passed || *state_policy == kubera::state::Policy::Always {
+                st.set(
+                    &r.key,
+                    kubera::state::RepoState {
+                        refs: r.tips.clone(),
+                        scanned_at: kubera::state::now(),
+                        commits_scanned: r.commits_scanned,
+                    },
+                );
+                advanced += 1;
+            } else {
+                kept += 1;
+            }
+        }
+        st.save()?;
+        eprintln!(
+            "{} {advanced} baseline(s) advanced, {kept} kept (unresolved findings), {commits_scanned} commit(s) scanned",
+            err_style.dim("state:")
+        );
+    }
+    let failed_repos = mass_results
+        .as_ref()
+        .map(|r| r.iter().filter(|r| r.error.is_some()).count())
+        .unwrap_or(0);
+    if failed_repos > 0 {
+        eprintln!(
+            "{} {failed_repos} repository scan(s) failed (see above)",
+            err_style.red("error:")
+        );
+    }
     Ok(if opts.fail && !shown.is_empty() {
         EXIT_FINDINGS
     } else {
@@ -681,6 +987,157 @@ fn read_secret(t: &Template, a: &SecretArgs) -> Result<BTreeMap<String, String>>
         }
     }
     Ok(parts)
+}
+
+/// Resolve the repositories to scan and run the mass scan.
+async fn cmd_scan_repos(
+    g: &GlobalArgs,
+    source: &ScanSource,
+    engine: &Engine,
+    filter: &Filter,
+    max_size: u64,
+    style: &Style,
+) -> Result<Vec<kubera::mass::RepoResult>> {
+    use kubera::forge::{Client, Source};
+    let ScanSource::Repos {
+        repos,
+        github_org,
+        github_user,
+        gitlab_group,
+        bitbucket_workspace,
+        repo_list,
+        api_url,
+        token_env,
+        token_user,
+        include_forks,
+        include_archived,
+        limit,
+        repo_concurrency,
+        cache_dir,
+        state,
+        max_rate_wait,
+        max_depth,
+        ..
+    } = source
+    else {
+        unreachable!()
+    };
+    let token = match token_env {
+        Some(var) => Some(std::env::var(var).with_context(|| {
+            format!("environment variable `{var}` (from --token-env) is not set")
+        })?),
+        None => None,
+    };
+    let mut targets: Vec<String> = repos.clone();
+    if let Some(file) = repo_list {
+        let text =
+            std::fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
+        targets.extend(
+            text.lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                .map(str::to_string),
+        );
+    }
+    let mut sources: Vec<Source> = Vec::new();
+    sources.extend(github_org.iter().cloned().map(Source::GitHubOrg));
+    sources.extend(github_user.iter().cloned().map(Source::GitHubUser));
+    sources.extend(gitlab_group.iter().cloned().map(Source::GitLabGroup));
+    sources.extend(
+        bitbucket_workspace
+            .iter()
+            .cloned()
+            .map(Source::BitbucketWorkspace),
+    );
+    let default_user = match sources.first() {
+        Some(Source::GitLabGroup(_)) => "oauth2",
+        Some(Source::BitbucketWorkspace(_)) => "x-token-auth",
+        _ => "x-access-token",
+    };
+    if !sources.is_empty() {
+        let mut client = Client::new(
+            token.clone(),
+            token_user.clone(),
+            std::time::Duration::from_secs(*max_rate_wait),
+        )?;
+        client.allow_http = g.allow_http;
+        for src in &sources {
+            let found = client.list(src, api_url.as_deref()).await?;
+            let total = found.len();
+            let kept: Vec<_> = found
+                .into_iter()
+                .filter(|r| *include_forks || !r.fork)
+                .filter(|r| *include_archived || !r.archived)
+                .collect();
+            eprintln!(
+                "{} {:?}: {} repositories ({} skipped: forks/archived)",
+                style.dim("discover:"),
+                src,
+                kept.len(),
+                total - kept.len()
+            );
+            targets.extend(kept.into_iter().map(|r| r.clone_url));
+        }
+    }
+    targets.sort();
+    targets.dedup();
+    if let Some(n) = limit {
+        targets.truncate(*n);
+    }
+    if targets.is_empty() {
+        bail!("no repositories to scan");
+    }
+    let baselines = match state {
+        Some(p) => kubera::state::State::load(p)?
+            .repos()
+            .map(|(k, v)| (k.clone(), v.refs.clone()))
+            .collect(),
+        None => Default::default(),
+    };
+    let opts = kubera::mass::Options {
+        concurrency: *repo_concurrency,
+        cache_dir: cache_dir.clone(),
+        git: git::GitOptions {
+            max_depth: *max_depth,
+            ..Default::default()
+        },
+        auth: kubera::sources::remote::Auth {
+            token,
+            user: Some(
+                token_user
+                    .clone()
+                    .unwrap_or_else(|| default_user.to_string()),
+            ),
+            allow_http: g.allow_http,
+            interactive: false,
+        },
+        baselines,
+        max_file_size: max_size,
+    };
+    let total = targets.len();
+    let done = std::sync::atomic::AtomicUsize::new(0);
+    let on_done = |r: &kubera::mass::RepoResult| {
+        let n = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        let status = match &r.error {
+            Some(e) => style.red(&format!("error: {e}")),
+            None if r.findings.is_empty() => style.green("clean"),
+            None => style.yellow(&format!("{} finding(s)", r.findings.len())),
+        };
+        eprintln!(
+            "{} [{n}/{total}] {} - {} new commit(s), {status}",
+            style.dim("scan:"),
+            r.key,
+            r.commits_scanned
+        );
+    };
+    let results = tokio::task::block_in_place(|| {
+        kubera::mass::run(engine, filter, &targets, &opts, &on_done)
+    });
+    Ok(results)
+}
+
+fn show_progress_early(opts: &ScanArgs) -> bool {
+    std::io::stderr().is_terminal() && opts.format == Format::Pretty
 }
 
 fn prompt_line(label: &str) -> Result<String> {

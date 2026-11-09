@@ -29,6 +29,129 @@ pub struct GitOptions {
     pub since_commit: Option<String>,
     /// Maximum number of commits.
     pub max_depth: Option<usize>,
+    /// Explicit tips to scan (commit ids). When set, replaces `--all` /
+    /// `branch` and is combined with `exclude`.
+    pub include: Vec<String>,
+    /// Commits whose history is already scanned (`^sha`): only commits
+    /// reachable from `include` but not from these are scanned.
+    pub exclude: Vec<String>,
+}
+
+fn is_sha(s: &str) -> bool {
+    (7..=64).contains(&s.len()) && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Tips of all branches and tags (`refname -> commit id`), or of `branch`
+/// only when given.
+pub fn ref_tips(
+    repo: &Path,
+    branch: Option<&str>,
+) -> Result<std::collections::BTreeMap<String, String>> {
+    let out = git()
+        .arg("-C")
+        .arg(repo)
+        .args([
+            "for-each-ref",
+            "--format=%(objectname) %(*objectname) %(refname)",
+            "refs/heads",
+            "refs/tags",
+            "refs/remotes",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .context("running git for-each-ref")?;
+    if !out.status.success() {
+        bail!(
+            "git for-each-ref failed; is {} a git repository?",
+            repo.display()
+        );
+    }
+    let mut tips = std::collections::BTreeMap::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let mut it = line.split(' ');
+        let (Some(obj), Some(peeled), Some(name)) = (it.next(), it.next(), it.next()) else {
+            continue;
+        };
+        if name.ends_with("/HEAD") {
+            continue;
+        }
+        if let Some(b) = branch {
+            let short = name
+                .strip_prefix("refs/heads/")
+                .or_else(|| name.strip_prefix("refs/tags/"))
+                .or_else(|| name.strip_prefix("refs/remotes/origin/"));
+            if short != Some(b) {
+                continue;
+            }
+        }
+        // Annotated tags: use the commit they point to.
+        let commit = if peeled.is_empty() { obj } else { peeled };
+        tips.insert(name.to_string(), commit.to_string());
+    }
+    Ok(tips)
+}
+
+/// Whether `sha` names a commit present in the repository (history may have
+/// been rewritten or pruned since it was recorded).
+pub fn commit_exists(repo: &Path, sha: &str) -> bool {
+    is_sha(sha)
+        && git()
+            .arg("-C")
+            .arg(repo)
+            .args(["cat-file", "-e", &format!("{sha}^{{commit}}")])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+}
+
+/// Keep a persistent bare mirror of `repo` in `dir`: clone it the first
+/// time, afterwards only fetch what changed (pruning deleted refs).
+pub fn update_mirror(repo: &RemoteRepo, auth: &Auth, dir: &Path) -> Result<()> {
+    if !dir.join("HEAD").exists() {
+        let parent = dir.parent().unwrap_or(Path::new("."));
+        std::fs::create_dir_all(parent)?;
+        let tmp = tempfile::Builder::new()
+            .prefix(".clone-")
+            .tempdir_in(parent)?;
+        let (_guard, cloned) = clone_into(repo, auth, &GitOptions::default(), tmp.path())?;
+        std::fs::rename(&cloned, dir)
+            .with_context(|| format!("moving clone into {}", dir.display()))?;
+        return Ok(());
+    }
+    let mut cmd = git();
+    cmd.arg("-C").arg(dir).args([
+        "fetch",
+        "--quiet",
+        "--prune",
+        "--force",
+        "--no-write-fetch-head",
+        "--",
+    ]);
+    cmd.arg(&repo.clone_url)
+        .arg("+refs/heads/*:refs/heads/*")
+        .arg("+refs/tags/*:refs/tags/*");
+    for (k, v) in clone_env(repo, auth)? {
+        cmd.env(k, v);
+    }
+    let out = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .context("running git fetch")?;
+    if !out.status.success() {
+        bail!(
+            "git fetch of {} failed: {}",
+            repo.display(),
+            String::from_utf8_lossy(&out.stderr)
+                .trim()
+                .lines()
+                .last()
+                .unwrap_or("unknown error")
+        );
+    }
+    Ok(())
 }
 
 fn git() -> Command {
@@ -57,7 +180,17 @@ pub fn clone(
     opts: &GitOptions,
 ) -> Result<(tempfile::TempDir, PathBuf)> {
     let dir = tempfile::tempdir()?;
-    let dest = dir.path().join("repo.git");
+    let (_, dest) = clone_into(repo, auth, opts, dir.path())?;
+    Ok((dir, dest))
+}
+
+fn clone_into(
+    repo: &RemoteRepo,
+    auth: &Auth,
+    opts: &GitOptions,
+    parent: &Path,
+) -> Result<((), PathBuf)> {
+    let dest = parent.join("repo.git");
     let mut cmd = git();
     cmd.args(["clone", "--bare", "--quiet"]);
     if let (Some(n), None) = (opts.max_depth, &opts.since_commit) {
@@ -98,7 +231,7 @@ pub fn clone(
             err.trim().lines().last().unwrap_or("unknown error")
         );
     }
-    Ok((dir, dest))
+    Ok(((), dest))
 }
 
 /// The `origin` remote of a local repository, if it is a known forge
@@ -138,7 +271,8 @@ struct FileDiff {
 }
 
 /// Stream every added hunk of every commit to `sink`.
-pub fn scan(repo: &Path, opts: &GitOptions, mut sink: impl FnMut(Chunk)) -> Result<()> {
+/// Returns the number of commits scanned.
+pub fn scan(repo: &Path, opts: &GitOptions, mut sink: impl FnMut(Chunk)) -> Result<usize> {
     let mut cmd = git();
     cmd.arg("-C").arg(repo).args([
         "log",
@@ -153,11 +287,24 @@ pub fn scan(repo: &Path, opts: &GitOptions, mut sink: impl FnMut(Chunk)) -> Resu
     if let Some(n) = opts.max_depth {
         cmd.arg(format!("--max-count={n}"));
     }
-    if opts.branch.is_none() && opts.since_commit.is_none() {
+    let explicit = !opts.include.is_empty();
+    if explicit && (opts.branch.is_some() || opts.since_commit.is_some()) {
+        bail!("explicit revisions cannot be combined with branch / since-commit");
+    }
+    if !explicit && opts.branch.is_none() && opts.since_commit.is_none() {
         cmd.arg("--all");
     }
     // Everything after this is a revision, never an option.
     cmd.arg("--end-of-options");
+    if explicit {
+        for r in opts.include.iter().chain(&opts.exclude) {
+            if !is_sha(r) {
+                bail!("invalid commit id `{r}`");
+            }
+        }
+        cmd.args(&opts.include);
+        cmd.args(opts.exclude.iter().map(|e| format!("^{e}")));
+    }
     let tip = match &opts.branch {
         Some(b) => {
             check_rev(b)?;
@@ -184,6 +331,7 @@ pub fn scan(repo: &Path, opts: &GitOptions, mut sink: impl FnMut(Chunk)) -> Resu
     let stdout = child.stdout.take().expect("piped stdout");
     let mut reader = BufReader::new(stdout);
 
+    let mut commits = 0usize;
     let mut commit: Option<Commit> = None;
     let mut file: Option<FileDiff> = None;
     let mut in_hunk = false;
@@ -223,6 +371,7 @@ pub fn scan(repo: &Path, opts: &GitOptions, mut sink: impl FnMut(Chunk)) -> Resu
         let line = line.strip_suffix('\r').unwrap_or(line);
 
         if let Some(rest) = line.strip_prefix(COMMIT_MARKER) {
+            commits += 1;
             flush(&commit, &mut file, &mut sink);
             let mut it = rest.split('\0');
             commit = Some(Commit {
@@ -275,7 +424,7 @@ pub fn scan(repo: &Path, opts: &GitOptions, mut sink: impl FnMut(Chunk)) -> Resu
             repo.display()
         );
     }
-    Ok(())
+    Ok(commits)
 }
 
 /// Parse `-a,b +c,d @@` and return `c`.

@@ -1,14 +1,27 @@
 [package]
-name = "kubera"
+name = "kubera-cli"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
+homepage = "https://dmdhrumilmistry.github.io/kubera/"
+documentation = "https://dmdhrumilmistry.github.io/kubera/"
+exclude = ["docs/book/", "docs/src/images/", "/scripts/", "/.github/", "/examples/"]
 license = "MIT"
 description = "Template driven secret detection, verification, analysis and rotation"
 repository = "https://github.com/dmdhrumilmistry/kubera"
 readme = "README.md"
-keywords = ["security", "secrets", "scanner", "leak", "rotation"]
-categories = ["command-line-utilities"]
+keywords = ["security", "secrets", "scanner", "trufflehog", "gitleaks"]
+categories = ["command-line-utilities", "development-tools"]
+
+# The crate is published as `kubera-cli` (the `kubera` name on crates.io
+# belongs to another project); the library and the command stay `kubera`.
+[lib]
+name = "kubera"
+path = "src/lib.rs"
+
+[[bin]]
+name = "kubera"
+path = "src/main.rs"
 
 [dependencies]
 aho-corasick = "1.1.5"
@@ -16,6 +29,7 @@ anyhow = "1.0.104"
 base64 = "0.23.1"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 clap = { version = "4.6.7", features = ["derive", "env"] }
+flate2 = "1.1.11"
 futures = "0.3.34"
 globset = "0.4.21"
 hex = "0.4.3"
@@ -28,10 +42,12 @@ rayon = "1.12.0"
 regex = "1.13.1"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json", "form", "query", "http2", "system-proxy"] }
 rpassword = "7.5.4"
+ruzstd = "0.9.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 serde_yaml = "0.9.34"
 sha2 = "0.11.1"
+tar = "0.4.46"
 tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time"] }
 walkdir = "2.5.0"
@@ -41,7 +57,11 @@ walkdir = "2.5.0"
 webpki-root-certs = "1"
 
 [dev-dependencies]
+flate2 = "1.1.11"
+hex = "0.4.3"
 serde_json = "1.0.154"
+sha2 = "0.11.1"
+tar = "0.4.46"
 tempfile = "3.27.0"
 wiremock = "0.6.5"
 
