@@ -1041,6 +1041,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "walkdir",
+ "webpki-root-certs",
  "wiremock",
 ]
 
