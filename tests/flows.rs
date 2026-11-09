@@ -991,4 +991,19 @@ async fn kubernetes_secrets_configmaps_and_workloads() {
             "secret/prod/ci"
         ]
     );
+
+    // Path excludes apply to cluster objects too.
+    let kc = dir.path().join("config");
+    let out = tokio::task::spawn_blocking(move || {
+        std::process::Command::new(env!("CARGO_BIN_EXE_kubera"))
+            .args(["--allow-http", "scan", "k8s", "-f", "json", "--kubeconfig"])
+            .arg(&kc)
+            .args(["--exclude-path", "secret/prod/**"])
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v.as_array().unwrap().len(), 2);
 }

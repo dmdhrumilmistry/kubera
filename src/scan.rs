@@ -58,6 +58,12 @@ pub fn scan_chunks(engine: &Engine, filter: &Filter, chunks: &[Chunk]) -> Vec<Fi
     let collector = Collector::default();
     chunks
         .par_iter()
+        .filter(|c| {
+            !c.location
+                .path
+                .as_deref()
+                .is_some_and(|p| filter.path_excluded(std::path::Path::new(p)))
+        })
         .for_each(|c| collector.push(scan_chunk(engine, filter, c)));
     collector.into_findings()
 }
