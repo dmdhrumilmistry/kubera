@@ -9,6 +9,7 @@
 
 pub mod jsonpath;
 pub mod sigv4;
+pub mod tls;
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -66,12 +67,19 @@ pub struct Response {
 
 impl Http {
     pub fn new(opts: HttpOptions) -> Result<Self> {
-        let client = reqwest::Client::builder()
+        #[allow(unused_mut)]
+        let mut builder = reqwest::Client::builder()
             .user_agent(concat!("kubera/", env!("CARGO_PKG_VERSION")))
             .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(Duration::from_secs(10))
-            .build()
-            .context("building HTTP client")?;
+            .connect_timeout(Duration::from_secs(10));
+        // The OS verifier needs a JVM on Android (unavailable to a native CLI
+        // such as under Termux), so verify against explicit roots there.
+        #[cfg(target_os = "android")]
+        {
+            let (roots, _source) = tls::android_roots();
+            builder = builder.tls_certs_only(roots);
+        }
+        let client = builder.build().context("building HTTP client")?;
         Ok(Self { client, opts })
     }
 
@@ -212,6 +220,9 @@ impl Http {
         let resp = rb
             .send()
             .await
+            // reqwest embeds the full URL in its errors; paths can carry
+            // credentials (e.g. `/bot<token>/getMe`), so drop it.
+            .map_err(reqwest::Error::without_url)
             .with_context(|| format!("{} {}", p.method, redact_url(&p.url)))?;
         let status = resp.status().as_u16();
         let mut headers: BTreeMap<String, String> = BTreeMap::new();

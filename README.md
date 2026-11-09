@@ -32,7 +32,15 @@ $ kubera scan git . --verify
 cargo install --git https://github.com/dmdhrumilmistry/kubera --locked
 ```
 
-Building from source requires Rust 1.88 or newer. Git scanning uses the `git` binary.
+Building from source requires Rust 1.88 or newer. Git scanning uses the `git` binary. From a clone, `make install` builds and installs it (`make help` lists every task).
+
+**Termux (Android)** is supported, including live verification:
+
+```bash
+pkg install rust git make clang
+git clone https://github.com/dmdhrumilmistry/kubera && cd kubera
+make install     # installs to $PREFIX/bin
+```
 
 ## Quick start
 
