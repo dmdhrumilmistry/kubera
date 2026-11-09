@@ -75,16 +75,129 @@ impl Collector {
     }
 }
 
-/// Scan a list of files in parallel.
-pub fn scan_files(
+/// What to scan.
+#[derive(Debug, Clone)]
+pub enum Target {
+    /// Files and directories.
+    Paths(Vec<std::path::PathBuf>),
+    /// A git repository: local path, URL, scp-like or `host/owner/repo`.
+    Git {
+        repo: String,
+        options: crate::sources::git::GitOptions,
+        auth: crate::sources::remote::Auth,
+    },
+    /// In-memory text (stdin).
+    Text(String),
+}
+
+/// Progress notifications emitted while scanning.
+#[derive(Debug, Clone)]
+pub enum Progress {
+    /// Cloning a remote repository (URL without credentials).
+    Cloning(String),
+    /// Files scanned so far / total.
+    Files { done: usize, total: usize },
+    /// File diffs from git history scanned so far.
+    Diffs(usize),
+}
+
+/// Scan a target end to end and return de-duplicated, sorted findings.
+pub fn run(
     engine: &Engine,
     filter: &Filter,
-    files: &[std::path::PathBuf],
-    collector: &Collector,
-) {
-    files.par_iter().for_each(|p| {
-        if let Some(chunk) = crate::sources::fs::read_chunk(p) {
+    target: &Target,
+    max_file_size: u64,
+    progress: &(dyn Fn(Progress) + Sync),
+) -> anyhow::Result<Vec<Finding>> {
+    use crate::sources::{self, git, remote};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let collector = Collector::default();
+    match target {
+        Target::Paths(paths) => {
+            let mut files = Vec::new();
+            for root in paths {
+                if !root.exists() {
+                    anyhow::bail!("{} does not exist", root.display());
+                }
+                files.extend(sources::fs::list_files(root, filter, max_file_size)?);
+            }
+            let total = files.len();
+            let done = AtomicUsize::new(0);
+            progress(Progress::Files { done: 0, total });
+            files.par_iter().for_each(|p| {
+                if let Some(chunk) = sources::fs::read_chunk(p) {
+                    collector.push(scan_chunk(engine, filter, &chunk));
+                }
+                let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                progress(Progress::Files { done: n, total });
+            });
+        }
+        Target::Git {
+            repo,
+            options,
+            auth,
+        } => {
+            let remote_repo = remote::parse(repo)?;
+            let (_tmp, path, web) = match &remote_repo {
+                Some(r) => {
+                    progress(Progress::Cloning(r.display().to_string()));
+                    let (d, p) = git::clone(r, auth, options)?;
+                    (Some(d), p, Some(r.clone()))
+                }
+                None => {
+                    let p = std::path::PathBuf::from(repo);
+                    let origin = git::origin_remote(&p);
+                    (None, p, origin)
+                }
+            };
+            let diffs = AtomicUsize::new(0);
+            let mut batch: Vec<sources::Chunk> = Vec::new();
+            let flush = |batch: &mut Vec<sources::Chunk>| {
+                batch.par_iter().for_each(|c| {
+                    let excluded = c
+                        .location
+                        .path
+                        .as_deref()
+                        .is_some_and(|p| filter.path_excluded(std::path::Path::new(p)));
+                    if !excluded {
+                        collector.push(scan_chunk(engine, filter, c));
+                    }
+                });
+                let n = diffs.fetch_add(batch.len(), Ordering::Relaxed) + batch.len();
+                progress(Progress::Diffs(n));
+                batch.clear();
+            };
+            git::scan(&path, options, |chunk| {
+                batch.push(chunk);
+                if batch.len() >= 256 {
+                    flush(&mut batch);
+                }
+            })?;
+            flush(&mut batch);
+            let mut findings = collector.into_findings();
+            if let Some(r) = web {
+                for f in &mut findings {
+                    let loc = &mut f.location;
+                    loc.repository = Some(r.display().to_string());
+                    if let (Some(c), Some(p)) = (&loc.commit, &loc.path) {
+                        loc.link = r.link(c, p, loc.line);
+                    }
+                }
+            }
+            return Ok(findings);
+        }
+        Target::Text(text) => {
+            let chunk = crate::sources::Chunk {
+                text: text.clone(),
+                location: crate::finding::Location {
+                    source: crate::finding::SourceKind::Stdin,
+                    ..Default::default()
+                },
+                line_map: None,
+            };
             collector.push(scan_chunk(engine, filter, &chunk));
         }
-    });
+    }
+    Ok(collector.into_findings())
 }

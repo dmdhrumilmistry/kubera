@@ -21,6 +21,7 @@
 //! (`http`, `steps`) for a single credential.
 
 pub mod analyze;
+pub mod brand;
 pub mod config;
 pub mod detect;
 pub mod finding;
@@ -32,4 +33,5 @@ pub mod scan;
 pub mod sources;
 pub mod steps;
 pub mod template;
+pub mod tui;
 pub mod verify;

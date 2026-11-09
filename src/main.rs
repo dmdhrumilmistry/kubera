@@ -12,7 +12,7 @@ use kubera::detect::Engine;
 use kubera::finding::{Finding, Status};
 use kubera::http::{Http, HttpOptions};
 use kubera::report::{self, Format, Style};
-use kubera::scan::{self, Collector};
+use kubera::scan;
 use kubera::sources::{self, git};
 use kubera::template::{self, Loaded, Template};
 use kubera::{analyze, rotate, verify};
@@ -25,13 +25,33 @@ const EXIT_FINDINGS: u8 = 183;
     name = "kubera",
     version,
     about = "Find, verify, analyze and rotate leaked secrets using configurable templates",
-    long_about = None
+    long_about = None,
+    before_help = kubera::brand::banner_plain(),
+    styles = cli_styles(),
+    after_help = "Run `kubera` with no arguments in a terminal for the interactive TUI."
 )]
 struct Cli {
     #[command(flatten)]
     global: GlobalArgs,
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
+}
+
+fn cli_styles() -> clap::builder::Styles {
+    use clap::builder::styling::{AnsiColor, Color, Style as S};
+    let gold = Color::Ansi256(214.into());
+    clap::builder::Styles::styled()
+        .header(S::new().bold().fg_color(Some(gold)))
+        .usage(S::new().bold().fg_color(Some(gold)))
+        .literal(
+            S::new()
+                .bold()
+                .fg_color(Some(Color::Ansi(AnsiColor::BrightWhite))),
+        )
+        .placeholder(S::new().fg_color(Some(Color::Ansi(AnsiColor::BrightBlack))))
+        .error(S::new().bold().fg_color(Some(Color::Ansi(AnsiColor::Red))))
+        .valid(S::new().bold().fg_color(Some(gold)))
+        .invalid(S::new().bold().fg_color(Some(Color::Ansi(AnsiColor::Red))))
 }
 
 #[derive(Args)]
@@ -69,8 +89,9 @@ enum Command {
     },
     /// Check whether a credential is live.
     Verify {
-        /// Detector id (see `kubera templates list`).
-        detector: String,
+        /// Detector id (see `kubera templates list`). Omit it to let kubera
+        /// identify the secret.
+        detector: Option<String>,
         #[command(flatten)]
         secret: SecretArgs,
         #[arg(long, value_enum, default_value_t = OutFormat::Pretty)]
@@ -78,7 +99,8 @@ enum Command {
     },
     /// Show what a credential is and what it can access.
     Analyze {
-        detector: String,
+        /// Detector id; omit to identify the secret automatically.
+        detector: Option<String>,
         #[command(flatten)]
         secret: SecretArgs,
         /// Run analysis steps even if verification did not succeed.
@@ -92,7 +114,8 @@ enum Command {
     },
     /// Rotate or revoke a credential (dry run unless --execute).
     Rotate {
-        detector: String,
+        /// Detector id; omit to identify the secret automatically.
+        detector: Option<String>,
         #[command(flatten)]
         secret: SecretArgs,
         /// Actually perform the rotation API calls.
@@ -114,6 +137,18 @@ enum Command {
         #[arg(long, value_enum, default_value_t = OutFormat::Pretty)]
         format: OutFormat,
     },
+    /// Interactive terminal UI: scan, browse findings, verify, analyze and
+    /// plan rotations. TARGET is a folder, or a repository path/URL with --git
+    /// (URLs are detected automatically).
+    Tui {
+        target: Option<String>,
+        /// Treat TARGET as a git repository (scan its history).
+        #[arg(long)]
+        git: bool,
+        /// Verify findings as soon as the scan finishes.
+        #[arg(long)]
+        verify: bool,
+    },
     /// Manage detector templates.
     Templates {
         #[command(subcommand)]
@@ -130,7 +165,10 @@ enum ScanSource {
         #[command(flatten)]
         opts: ScanArgs,
     },
-    /// Scan the full history of a git repository (local path or remote URL).
+    /// Scan the full history of a git repository.
+    ///
+    /// REPO can be a local path, an https:// / ssh:// / git:// / file:// URL,
+    /// scp-like `git@host:org/repo.git`, or shorthand `github.com/org/repo`.
     Git {
         repo: String,
         /// Only scan this branch / ref (default: all refs).
@@ -139,9 +177,18 @@ enum ScanSource {
         /// Only scan commits after this commit.
         #[arg(long)]
         since_commit: Option<String>,
-        /// Maximum number of commits to scan.
+        /// Maximum number of commits to scan (remote clones are shallow).
         #[arg(long)]
         max_depth: Option<usize>,
+        /// Environment variable holding an access token for private HTTPS
+        /// repositories. Sent as an auth header scoped to the repository's
+        /// host; never placed on git's command line.
+        #[arg(long, value_name = "ENV_VAR")]
+        token_env: Option<String>,
+        /// Username paired with the token (default `x-access-token`; GitLab
+        /// accepts any, Bitbucket needs `x-token-auth` or your username).
+        #[arg(long, value_name = "USER")]
+        token_user: Option<String>,
         #[command(flatten)]
         opts: ScanArgs,
     },
@@ -181,6 +228,9 @@ struct ScanArgs {
     /// Concurrent verification requests.
     #[arg(long, default_value_t = 8)]
     concurrency: usize,
+    /// Browse the results in the interactive TUI instead of printing them.
+    #[arg(short = 'i', long)]
+    interactive: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -242,6 +292,15 @@ async fn main() -> ExitCode {
     let cli = Cli::parse();
     match run(cli).await {
         Ok(code) => ExitCode::from(code),
+        // `kubera ... | head` closing the pipe early is not an error.
+        Err(e)
+            if e.chain().any(|c| {
+                c.downcast_ref::<std::io::Error>()
+                    .is_some_and(|io| io.kind() == std::io::ErrorKind::BrokenPipe)
+            }) =>
+        {
+            ExitCode::from(0)
+        }
         Err(e) => {
             eprintln!("error: {e:#}");
             ExitCode::from(1)
@@ -283,16 +342,28 @@ fn context(g: &GlobalArgs) -> Result<Ctx> {
 }
 
 async fn run(cli: Cli) -> Result<u8> {
-    match cli.command {
+    let Some(command) = cli.command else {
+        if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+            return cmd_tui(&cli.global, None, false, false);
+        }
+        use clap::CommandFactory;
+        Cli::command().print_help()?;
+        return Ok(0);
+    };
+    match command {
         Command::Scan { source } => cmd_scan(&cli.global, source).await,
+        Command::Tui {
+            target,
+            git,
+            verify,
+        } => cmd_tui(&cli.global, target, git, verify),
         Command::Verify {
             detector,
             secret,
             format,
         } => {
             let ctx = context(&cli.global)?;
-            let t = template::find(&ctx.templates, &detector)?;
-            let parts = read_secret(t, &secret)?;
+            let (t, parts) = resolve_secret(&ctx, detector.as_deref(), &secret)?;
             let out = verify::verify(&ctx.http, t, &parts).await;
             let v = out.verification;
             match format {
@@ -322,11 +393,13 @@ async fn run(cli: Cli) -> Result<u8> {
             format,
         } => {
             let ctx = context(&cli.global)?;
-            let t = template::find(&ctx.templates, &detector)?;
+            let (t, parts) = resolve_secret(&ctx, detector.as_deref(), &secret)?;
             if t.analyze.is_none() && t.verify.is_none() {
-                bail!("detector `{detector}` supports neither verification nor analysis");
+                bail!(
+                    "detector `{}` supports neither verification nor analysis",
+                    t.id
+                );
             }
-            let parts = read_secret(t, &secret)?;
             let rep = analyze::analyze(&ctx.http, t, &parts, force).await;
             let rep = if show_secrets { rep } else { rep.redacted() };
             match format {
@@ -350,8 +423,7 @@ async fn run(cli: Cli) -> Result<u8> {
             format,
         } => {
             let ctx = context(&cli.global)?;
-            let t = template::find(&ctx.templates, &detector)?;
-            let parts = read_secret(t, &secret)?;
+            let (t, parts) = resolve_secret(&ctx, detector.as_deref(), &secret)?;
             let mut inputs = BTreeMap::new();
             for s in set {
                 let (k, v) = s
@@ -394,58 +466,37 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         .max_file_size
         .or(ctx.cfg.max_file_size)
         .unwrap_or(sources::fs::DEFAULT_MAX_FILE_SIZE);
-    let collector = Collector::default();
-
-    match &source {
-        ScanSource::Fs { paths, .. } => {
-            for root in paths {
-                if !root.exists() {
-                    bail!("{} does not exist", root.display());
-                }
-                let files = sources::fs::list_files(root, &filter, max_size)?;
-                scan::scan_files(&engine, &filter, &files, &collector);
-            }
-        }
+    let target = match &source {
+        ScanSource::Fs { paths, .. } => scan::Target::Paths(paths.clone()),
         ScanSource::Git {
             repo,
             branch,
             since_commit,
             max_depth,
+            token_env,
+            token_user,
             ..
         } => {
-            let (_tmp, path) = if git::is_remote(repo) {
-                let (d, p) = git::clone(repo)?;
-                (Some(d), p)
-            } else {
-                (None, PathBuf::from(repo))
+            let token = match token_env {
+                Some(var) => Some(std::env::var(var).with_context(|| {
+                    format!("environment variable `{var}` (from --token-env) is not set")
+                })?),
+                None => None,
             };
-            let gopts = git::GitOptions {
-                branch: branch.clone(),
-                since_commit: since_commit.clone(),
-                max_depth: *max_depth,
-            };
-            let mut batch: Vec<sources::Chunk> = Vec::new();
-            let flush = |batch: &mut Vec<sources::Chunk>| {
-                use rayon::prelude::*;
-                batch.par_iter().for_each(|c| {
-                    let excluded = c
-                        .location
-                        .path
-                        .as_deref()
-                        .is_some_and(|p| filter.path_excluded(std::path::Path::new(p)));
-                    if !excluded {
-                        collector.push(scan::scan_chunk(&engine, &filter, c));
-                    }
-                });
-                batch.clear();
-            };
-            git::scan(&path, &gopts, |chunk| {
-                batch.push(chunk);
-                if batch.len() >= 256 {
-                    flush(&mut batch);
-                }
-            })?;
-            flush(&mut batch);
+            scan::Target::Git {
+                repo: repo.clone(),
+                options: git::GitOptions {
+                    branch: branch.clone(),
+                    since_commit: since_commit.clone(),
+                    max_depth: *max_depth,
+                },
+                auth: kubera::sources::remote::Auth {
+                    token,
+                    user: token_user.clone(),
+                    allow_http: g.allow_http,
+                    interactive: std::io::stdin().is_terminal(),
+                },
+            }
         }
         ScanSource::Stdin { .. } => {
             let mut text = String::new();
@@ -453,24 +504,22 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
                 .take(max_size)
                 .read_to_string(&mut text)
                 .context("reading stdin")?;
-            let chunk = sources::Chunk {
-                text,
-                location: kubera::finding::Location {
-                    source: kubera::finding::SourceKind::Stdin,
-                    path: None,
-                    line: 0,
-                    commit: None,
-                    author: None,
-                    email: None,
-                    date: None,
-                },
-                line_map: None,
-            };
-            collector.push(scan::scan_chunk(&engine, &filter, &chunk));
+            scan::Target::Text(text)
         }
+    };
+    let show_progress = std::io::stderr().is_terminal() && opts.format == Format::Pretty;
+    if show_progress && !opts.interactive {
+        kubera::brand::print_banner_stderr();
     }
-
-    let mut findings = collector.into_findings();
+    let progress = |p: scan::Progress| {
+        if !show_progress {
+            return;
+        }
+        if let scan::Progress::Cloning(url) = p {
+            eprintln!("{} cloning {url}", ctx.style.dim("›"));
+        }
+    };
+    let mut findings = scan::run(&engine, &filter, &target, max_size, &progress)?;
     let do_verify = opts.verify || opts.only_verified;
     if do_verify && !findings.is_empty() {
         let map: HashMap<String, Arc<Template>> = engine
@@ -496,6 +545,29 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
             };
             kinds.contains(&k)
         });
+    }
+    if opts.interactive {
+        if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
+            bail!("--interactive needs a terminal");
+        }
+        let label = match &source {
+            ScanSource::Fs { paths, .. } => paths
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
+            ScanSource::Git { repo, .. } => kubera::sources::remote::parse(repo)
+                .ok()
+                .flatten()
+                .map(|r| r.display().to_string())
+                .unwrap_or_else(|| repo.clone()),
+            ScanSource::Stdin { .. } => "stdin".into(),
+        };
+        let svc = services(ctx, engine, filter, max_size);
+        tokio::task::block_in_place(|| {
+            kubera::tui::run(svc, kubera::tui::Start::Results(findings, label))
+        })?;
+        return Ok(0);
     }
     let shown: Vec<Finding> = if opts.show_secrets {
         findings
@@ -565,6 +637,18 @@ fn read_secret(t: &Template, a: &SecretArgs) -> Result<BTreeMap<String, String>>
             }
         }
     }
+    let nothing_given = a.secret.is_empty() && a.secret_env.is_empty() && !a.secret_stdin;
+    if nothing_given && std::io::stdin().is_terminal() {
+        for p in &t.detect.patterns {
+            let label = format!("{} - {}: ", t.name, p.name.replace('_', " "));
+            let v = if p.secret {
+                rpassword::prompt_password(format!("{label}(hidden) "))?
+            } else {
+                prompt_line(&label)?
+            };
+            parts.insert(p.name.clone(), v.trim().to_string());
+        }
+    }
     for n in &names {
         match parts.get(n) {
             Some(v) if !v.is_empty() => {}
@@ -597,6 +681,136 @@ fn read_secret(t: &Template, a: &SecretArgs) -> Result<BTreeMap<String, String>>
         }
     }
     Ok(parts)
+}
+
+fn prompt_line(label: &str) -> Result<String> {
+    eprint!("{label}");
+    std::io::stderr().flush()?;
+    let mut s = String::new();
+    std::io::stdin().read_line(&mut s)?;
+    Ok(s.trim().to_string())
+}
+
+/// Detector + secret parts for verify/analyze/rotate. With no detector id,
+/// the secret is read (flag, env, stdin or hidden prompt) and identified by
+/// running the detection engine over it.
+fn resolve_secret<'a>(
+    ctx: &'a Ctx,
+    detector: Option<&str>,
+    a: &SecretArgs,
+) -> Result<(&'a Template, BTreeMap<String, String>)> {
+    if let Some(id) = detector {
+        let t = template::find(&ctx.templates, id)?;
+        return Ok((t, read_secret(t, a)?));
+    }
+    let mut raw = String::new();
+    if let Some(v) = a.secret.first() {
+        eprintln!(
+            "warning: secrets passed with --secret can leak via shell history and process \
+             listings; prefer --secret-env or --secret-stdin"
+        );
+        raw = v.clone();
+    } else if let Some(var) = a.secret_env.first() {
+        raw =
+            std::env::var(var).with_context(|| format!("environment variable `{var}` not set"))?;
+    } else if a.secret_stdin {
+        std::io::stdin()
+            .take(1024 * 1024)
+            .read_to_string(&mut raw)
+            .context("reading secret from stdin")?;
+    } else if std::io::stdin().is_terminal() {
+        raw = rpassword::prompt_password("Paste the secret (hidden): ")?;
+    } else {
+        bail!("pass a detector id and the secret (see --help)");
+    }
+    let engine = Engine::new(ctx.templates.iter().map(|l| l.template.clone()).collect())?;
+    let mut seen = std::collections::BTreeSet::new();
+    let candidates: Vec<_> = engine
+        .scan(&raw)
+        .into_iter()
+        .filter(|c| seen.insert(c.detector))
+        .collect();
+    let chosen = match candidates.len() {
+        0 => bail!(
+            "could not identify this secret; pass the detector id (see `kubera templates list`)"
+        ),
+        1 => &candidates[0],
+        _ if std::io::stdin().is_terminal() && !a.secret_stdin => {
+            eprintln!("This could be one of:");
+            for (i, c) in candidates.iter().enumerate() {
+                eprintln!(
+                    "  {}. {}",
+                    i + 1,
+                    engine.detectors[c.detector].template.name
+                );
+            }
+            let pick: usize = prompt_line("Choose [1]: ")?.parse().unwrap_or(1);
+            candidates
+                .get(pick.saturating_sub(1))
+                .context("invalid choice")?
+        }
+        _ => bail!(
+            "the secret matches several detectors ({}); pass one explicitly",
+            candidates
+                .iter()
+                .map(|c| engine.detectors[c.detector].template.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
+    let id = engine.detectors[chosen.detector].template.id.clone();
+    let t = template::find(&ctx.templates, &id)?;
+    eprintln!("identified: {} ({})", t.name, t.id);
+    Ok((t, chosen.parts.clone()))
+}
+
+fn services(ctx: Ctx, engine: Engine, filter: Filter, max_file_size: u64) -> kubera::tui::Services {
+    kubera::tui::Services {
+        engine,
+        filter,
+        templates: ctx.templates,
+        http: ctx.http,
+        max_file_size,
+        runtime: Some(tokio::runtime::Handle::current()),
+    }
+}
+
+fn cmd_tui(g: &GlobalArgs, target: Option<String>, git: bool, verify: bool) -> Result<u8> {
+    if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
+        bail!("the TUI needs an interactive terminal");
+    }
+    let ctx = context(g)?;
+    let engine = Engine::new(ctx.templates.iter().map(|l| l.template.clone()).collect())?;
+    let filter = Filter::new(&ctx.cfg.exclude_paths, &ctx.cfg.allowlist)?;
+    let max = ctx
+        .cfg
+        .max_file_size
+        .unwrap_or(sources::fs::DEFAULT_MAX_FILE_SIZE);
+    let start = match target {
+        None => kubera::tui::Start::Home,
+        Some(t) => {
+            let is_repo = git
+                || (!std::path::Path::new(&t).exists()
+                    && kubera::sources::remote::parse(&t)?.is_some());
+            let kind = if is_repo {
+                kubera::tui::app::InputKind::Repository
+            } else {
+                kubera::tui::app::InputKind::Folder
+            };
+            let (target, label) =
+                kubera::tui::App::target_from_input(kind, &t).map_err(anyhow::Error::msg)?;
+            kubera::tui::Start::Scan(target, label)
+        }
+    };
+    let svc = services(ctx, engine, filter, max);
+    tokio::task::block_in_place(|| {
+        if verify {
+            kubera::tui::run_with(svc, start, true)
+        } else {
+            kubera::tui::run(svc, start)
+        }
+    })?;
+    Ok(0)
 }
 
 fn print_analysis(rep: &analyze::Report, st: &Style) {

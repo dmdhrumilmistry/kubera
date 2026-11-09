@@ -8,17 +8,22 @@ use sha2::{Digest, Sha256};
 
 use crate::template::{Severity, Template};
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, Default, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "lowercase")]
 pub enum SourceKind {
+    #[default]
     Filesystem,
     Git,
     Stdin,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct Location {
     pub source: SourceKind,
+    /// Repository the finding came from (remote URL without credentials, or
+    /// the local repository's `origin`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repository: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     pub line: usize,
@@ -30,6 +35,9 @@ pub struct Location {
     pub email: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub date: Option<String>,
+    /// Web link to the exact line at the commit (GitHub, GitLab, Bitbucket).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]

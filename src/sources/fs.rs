@@ -65,11 +65,7 @@ pub fn read_chunk(path: &Path) -> Option<Chunk> {
         location: Location {
             source: SourceKind::Filesystem,
             path: Some(path.display().to_string()),
-            line: 0,
-            commit: None,
-            author: None,
-            email: None,
-            date: None,
+            ..Default::default()
         },
         line_map: None,
     })

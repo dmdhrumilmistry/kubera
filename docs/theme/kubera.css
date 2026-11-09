@@ -1,0 +1,63 @@
+/* Kubera brand accents for mdBook (all built-in themes). */
+:root {
+  --kubera-gold: #f5b700;
+  --kubera-amber: #e58518;
+}
+.light, .rust {
+  --links: #b7791f;
+  --sidebar-active: #b7791f;
+}
+.navy, .coal, .ayu {
+  --links: #f5b700;
+  --sidebar-active: #f5b700;
+}
+.sidebar .chapter li a.active { font-weight: 600; }
+.menu-title::before {
+  content: "";
+  display: inline-block;
+  width: 1.1em;
+  height: 1.1em;
+  margin-right: 0.4em;
+  vertical-align: -0.15em;
+  background: url("../images/logo.svg") center / contain no-repeat;
+}
+.content h1, .content h2 { letter-spacing: -0.01em; }
+.content h1 { border-bottom: 2px solid var(--kubera-gold); padding-bottom: 0.2em; }
+
+/* Hero banner and screenshots. */
+.kubera-hero { margin: 0.5em 0 1.5em; }
+.kubera-hero img, img.kubera-shot {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+}
+img.kubera-shot { margin: 1em 0 1.5em; }
+.kubera-row {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+.kubera-row > * { flex: 1 1 280px; min-width: 0; }
+
+/* Feature cards. */
+.kubera-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 1em 0 1.5em;
+}
+.kubera-card {
+  border: 1px solid var(--table-border-color);
+  border-top: 3px solid var(--kubera-gold);
+  border-radius: 8px;
+  padding: 0.7em 0.9em;
+  background: var(--table-alternate-bg);
+}
+@media (max-width: 640px) {
+  .kubera-cards { grid-template-columns: 1fr; }
+}
+.kubera-card strong { display: block; margin-bottom: 0.25em; }
+.kubera-card p { margin: 0; font-size: 0.92em; }
