@@ -378,6 +378,36 @@ enum ScanSource {
         #[command(flatten)]
         opts: ScanArgs,
     },
+    /// Scan a cloud storage bucket: s3://bucket[/prefix] (also MinIO, R2
+    /// and other S3-compatible stores with --endpoint-url) or
+    /// gs://bucket[/prefix]. Archives inside are opened too.
+    ///
+    /// S3 uses AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN
+    /// (public buckets: --anonymous). GCS uses --token-env (an OAuth access
+    /// token, e.g. from `gcloud auth print-access-token`).
+    Bucket {
+        url: String,
+        /// S3 region (default: detected from the bucket).
+        #[arg(long)]
+        region: Option<String>,
+        /// S3-compatible endpoint, e.g. https://<account>.r2.cloudflarestorage.com.
+        #[arg(long, value_name = "URL")]
+        endpoint_url: Option<String>,
+        /// Send unsigned requests (public buckets).
+        #[arg(long)]
+        anonymous: bool,
+        /// Environment variable with a GCS OAuth access token.
+        #[arg(long, value_name = "ENV_VAR")]
+        token_env: Option<String>,
+        /// List at most N objects.
+        #[arg(long, default_value_t = 100_000, value_name = "N")]
+        max_objects: usize,
+        /// Parallel downloads.
+        #[arg(long, default_value_t = 16, value_name = "N")]
+        downloads: usize,
+        #[command(flatten)]
+        opts: ScanArgs,
+    },
     /// Scan the staged changes of a repository: only the lines the next
     /// commit adds (what the pre-commit hook runs).
     Staged {
@@ -759,6 +789,7 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         | ScanSource::Image { opts, .. }
         | ScanSource::Staged { opts, .. }
         | ScanSource::Github { opts, .. }
+        | ScanSource::Bucket { opts, .. }
         | ScanSource::Stdin { opts } => opts,
     };
     let engine = Engine::new(ctx.templates.iter().map(|l| l.template.clone()).collect())?;
@@ -878,7 +909,7 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         }
         ScanSource::Repos { .. } => scan::Target::Text(String::new()),
         ScanSource::Staged { repo, .. } => scan::Target::Staged(repo.clone()),
-        ScanSource::Github { .. } => scan::Target::Text(String::new()),
+        ScanSource::Github { .. } | ScanSource::Bucket { .. } => scan::Target::Text(String::new()),
         ScanSource::Image {
             image,
             platform,
@@ -935,7 +966,55 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         }
     };
     let mut mass_results: Option<Vec<kubera::mass::RepoResult>> = None;
-    let (commits_scanned, tips, mut findings) = if let ScanSource::Github { .. } = &source {
+    let (commits_scanned, tips, mut findings) = if let ScanSource::Bucket {
+        url,
+        region,
+        endpoint_url,
+        anonymous,
+        token_env,
+        max_objects,
+        downloads,
+        ..
+    } = &source
+    {
+        use kubera::sources::bucket;
+        let b = bucket::parse(url)?;
+        let gcs_token = match token_env {
+            Some(var) => Some(std::env::var(var).with_context(|| {
+                format!("environment variable `{var}` (from --token-env) is not set")
+            })?),
+            None => None,
+        };
+        let aws = if *anonymous {
+            None
+        } else {
+            bucket::AwsCreds::from_env()
+        };
+        if b.store == bucket::Store::S3 && aws.is_none() && !anonymous {
+            bail!(
+                "no AWS credentials in the environment; set AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY, or pass --anonymous for a public bucket"
+            );
+        }
+        let o = bucket::Options {
+            aws,
+            gcs_token,
+            region: region.clone(),
+            endpoint: endpoint_url.clone(),
+            max_objects: *max_objects,
+            max_file_size: max_size,
+            concurrency: *downloads,
+            allow_http: g.allow_http,
+        };
+        let collector = scan::Collector::default();
+        let n = bucket::scan(&b, &o, &filter, &mut |c| {
+            collector.push(scan::scan_chunk(&engine, &filter, &c))
+        })
+        .await?;
+        if show_progress {
+            eprintln!("{} {n} object(s) scanned", ctx.style.dim("›"));
+        }
+        (0, Default::default(), collector.into_findings())
+    } else if let ScanSource::Github { .. } = &source {
         let findings = cmd_scan_github(
             g,
             &source,
@@ -1021,6 +1100,7 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
             .collect::<Vec<_>>()
             .join(", "),
         ScanSource::Image { image, .. } => image.clone(),
+        ScanSource::Bucket { url, .. } => url.clone(),
         ScanSource::Repos { .. } => format!(
             "{} repositories",
             mass_results.as_ref().map(|r| r.len()).unwrap_or(0)

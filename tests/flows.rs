@@ -759,3 +759,134 @@ async fn github_issues_comments_and_actions_logs() {
         .unwrap();
     assert!(blob.headers.get("authorization").is_none());
 }
+
+#[tokio::test]
+async fn buckets_s3_signed_and_gcs() {
+    use std::io::Write as _;
+    use wiremock::matchers::{header_exists, query_param};
+    let tok = format!("gh{}_{}", "p", "9nVq3kZ1Lr8XwT2pYb6Hd4Fs7Jc0Mg5Ae1Uo");
+    let mut z = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    z.start_file("app/.env", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    z.write_all(format!("T={tok}\n").as_bytes()).unwrap();
+    let zip = z.finish().unwrap().into_inner();
+
+    let s3 = MockServer::start().await;
+    let listing = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?><ListBucketResult>
+<Contents><Key>config/prod &amp; dev.env</Key><Size>60</Size></Contents>
+<Contents><Key>backups/site.zip</Key><Size>{}</Size></Contents>
+<Contents><Key>node_modules/x/index.js</Key><Size>60</Size></Contents>
+<Contents><Key>huge.log</Key><Size>999999999999</Size></Contents>
+<IsTruncated>false</IsTruncated></ListBucketResult>"#,
+        zip.len()
+    );
+    Mock::given(method("GET"))
+        .and(path("/acme-data"))
+        .and(query_param("list-type", "2"))
+        .and(header_exists("authorization"))
+        .and(header_exists("x-amz-content-sha256"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(listing))
+        .mount(&s3)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/acme-data/config/prod%20%26%20dev.env"))
+        .and(header_exists("authorization"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!("TOKEN={tok}\n")))
+        .mount(&s3)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/acme-data/backups/site.zip"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(zip))
+        .mount(&s3)
+        .await;
+    let run = |args: Vec<String>, env: Vec<(&'static str, &'static str)>| {
+        tokio::task::spawn_blocking(move || {
+            let out = std::process::Command::new(env!("CARGO_BIN_EXE_kubera"))
+                .arg("--allow-http")
+                .args(&args)
+                .env_remove("AWS_ACCESS_KEY_ID")
+                .envs(env)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+            let mut got: Vec<String> = v
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|f| {
+                    assert_eq!(f["location"]["source"], "bucket");
+                    format!(
+                        "{}{}",
+                        f["location"]["path"].as_str().unwrap(),
+                        f["location"]["entry"]
+                            .as_str()
+                            .map(|e| format!("!/{e}"))
+                            .unwrap_or_default()
+                    )
+                })
+                .collect();
+            got.sort();
+            got
+        })
+    };
+    let got = run(
+        vec![
+            "scan".into(),
+            "bucket".into(),
+            "s3://acme-data".into(),
+            "--endpoint-url".into(),
+            s3.uri(),
+            "-f".into(),
+            "json".into(),
+        ],
+        vec![
+            ("AWS_ACCESS_KEY_ID", "AKIAFAKEFAKEFAKE0000"),
+            ("AWS_SECRET_ACCESS_KEY", "fake/secret"),
+        ],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        got,
+        vec!["backups/site.zip!/app/.env", "config/prod & dev.env"]
+    );
+
+    let gcs = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/storage/v1/b/acme-gcs/o"))
+        .and(header("authorization", "Bearer gcs-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "items": [{"name": "dir/a.txt", "size": "60"}]
+        })))
+        .mount(&gcs)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/storage/v1/b/acme-gcs/o/dir%2Fa.txt"))
+        .and(query_param("alt", "media"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!("t={tok}\n")))
+        .mount(&gcs)
+        .await;
+    let got = run(
+        vec![
+            "scan".into(),
+            "bucket".into(),
+            "gs://acme-gcs".into(),
+            "--endpoint-url".into(),
+            gcs.uri(),
+            "--token-env".into(),
+            "GCS_TOKEN".into(),
+            "-f".into(),
+            "json".into(),
+        ],
+        vec![("GCS_TOKEN", "gcs-token")],
+    )
+    .await
+    .unwrap();
+    assert_eq!(got, vec!["dir/a.txt"]);
+}
