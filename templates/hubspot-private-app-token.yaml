@@ -1,0 +1,36 @@
+id: hubspot-private-app-token
+name: HubSpot Private App Token
+platform: HubSpot
+description: HubSpot private app access token (CRM contacts, deals and more, depending on its scopes).
+severity: high
+tags: [crm, marketing]
+references:
+  - https://developers.hubspot.com/docs/api/private-apps
+  - https://developers.hubspot.com/docs/api/settings/account-information-api
+detect:
+  keywords: [pat-]
+  patterns:
+    - name: token
+      regex: '\b(pat-[a-z]{2}[0-9]-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\b'
+verify:
+  request:
+    url: https://api.hubapi.com/account-info/v3/details
+    auth: { type: bearer, token: "{{ token }}" }
+  # 403 = authenticated but the app lacks the scope for this endpoint.
+  valid: { status: [200, 403] }
+  invalid: { status: [401] }
+  extract:
+    - { name: portal_id, label: Portal, json: portalId }
+    - { name: account_type, label: Account type, json: accountType }
+    - { name: ui_domain, label: Domain, json: uiDomain }
+    - { name: data_location, label: Data hosting, json: dataHostingLocation }
+rotate:
+  instructions: |
+    HubSpot -> Settings -> Integrations -> Private Apps -> the app -> Auth:
+    rotate the access token (the old one can be expired immediately). Deploy
+    the new token, then review the app's scopes.
+tests:
+  positive:
+    - "HUBSPOT_ACCESS_TOKEN=p{{'a'}}t-na1-453c8620-612f-4916-963b-bfe182a52f2f"
+  negative:
+    - "pat-na1-xxxx"

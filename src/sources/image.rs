@@ -577,7 +577,7 @@ pub fn walk_layer<R: Read>(
         .with_context(|| format!("reading layer {digest}"))?
     {
         let mut e = e?;
-        if !e.header().entry_type().is_file() || e.size() > max_file_size || e.size() == 0 {
+        if !e.header().entry_type().is_file() || e.size() == 0 {
             continue;
         }
         let p = e
@@ -589,6 +589,39 @@ pub fn walk_layer<R: Read>(
         if file.starts_with(".wh.") {
             continue;
         }
+        let location = Location {
+            source: SourceKind::Container,
+            path: Some(format!("/{p}")),
+            repository: Some(image.to_string()),
+            layer: Some(digest.to_string()),
+            ..Default::default()
+        };
+        // Archives (jars, wheels, tarballs) inside the layer.
+        let limits = super::archive::Limits::new(max_file_size);
+        if e.size() <= limits.max_nested && super::archive::archive_name(file) {
+            let mut data = Vec::with_capacity(e.size() as usize);
+            e.read_to_end(&mut data)?;
+            if let Some(kind) = super::archive::kind(&data) {
+                let res =
+                    super::archive::walk(kind, std::io::Cursor::new(data), limits, &mut |x| {
+                        sink(Chunk {
+                            text: x.text,
+                            location: Location {
+                                entry: Some(x.path),
+                                ..location.clone()
+                            },
+                            line_map: None,
+                        })
+                    });
+                if let Err(err) = res {
+                    eprintln!("warning: /{p} in layer {digest}: {err:#}");
+                }
+            }
+            continue;
+        }
+        if e.size() > max_file_size {
+            continue;
+        }
         let mut buf = Vec::with_capacity(e.size() as usize);
         e.read_to_end(&mut buf)?;
         if is_binary(&buf) {
@@ -596,13 +629,7 @@ pub fn walk_layer<R: Read>(
         }
         sink(Chunk {
             text: String::from_utf8_lossy(&buf).into_owned(),
-            location: Location {
-                source: SourceKind::Container,
-                path: Some(format!("/{p}")),
-                repository: Some(image.to_string()),
-                layer: Some(digest.to_string()),
-                ..Default::default()
-            },
+            location,
             line_map: None,
         });
     }

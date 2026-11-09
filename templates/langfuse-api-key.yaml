@@ -1,0 +1,42 @@
+id: langfuse-api-key
+name: Langfuse API Key Pair
+platform: Langfuse
+description: Langfuse public + secret key pair (read traces, prompts and scores of the project).
+severity: high
+tags: [ai, observability]
+references:
+  - https://langfuse.com/docs/api
+detect:
+  keywords: [sk-lf-]
+  max_distance: 1024
+  patterns:
+    - name: public_key
+      regex: '\b(pk-lf-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\b'
+      secret: false
+    - name: secret_key
+      regex: '\b(sk-lf-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\b'
+verify:
+  request:
+    url: https://cloud.langfuse.com/api/public/projects
+    auth: { type: basic, username: "{{ public_key }}", password: "{{ secret_key }}" }
+  valid: { status: [200] }
+  invalid: { status: [401] }
+  extract:
+    - { name: projects, label: Projects, json: "data.*.name" }
+  fallbacks:
+    - label: US region
+      request:
+        url: https://us.cloud.langfuse.com/api/public/projects
+        auth: { type: basic, username: "{{ public_key }}", password: "{{ secret_key }}" }
+rotate:
+  instructions: |
+    Langfuse -> Project settings -> API Keys: create a new key pair, deploy
+    it, then delete the leaked pair. Keys of self-hosted Langfuse instances
+    are reported invalid by the cloud endpoints; check them on your instance.
+tests:
+  positive:
+    - |
+      LANGFUSE_PUBLIC_KEY=p{{'k'}}-lf-5004b6e2-868d-42f4-bcee-58f19bbf7fb7
+      LANGFUSE_SECRET_KEY=s{{'k'}}-lf-18b972f1-3073-4c50-a9e8-b1f4ff03b7b0
+  negative:
+    - "LANGFUSE_SECRET_KEY=sk-lf-..."

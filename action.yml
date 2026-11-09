@@ -1,0 +1,120 @@
+name: Kubera secret scan
+description: Find, verify and report leaked secrets in code and git history (SARIF for code scanning).
+author: dmdhrumilmistry
+branding:
+  icon: key
+  color: yellow
+
+inputs:
+  path:
+    description: Repository or directory to scan.
+    default: "."
+  mode:
+    description: >-
+      `git` scans history (on pull requests only the PR's commits, on pushes
+      only the pushed commits); `fs` scans the files in the working tree.
+    default: git
+  args:
+    description: Extra kubera scan arguments, e.g. `--verify --exclude-path "**/testdata/**"`.
+    default: ""
+  version:
+    description: Kubera release to install (`latest` or a tag such as `v0.2.0`).
+    default: latest
+  fail:
+    description: Fail the job when secrets are found.
+    default: "true"
+  sarif:
+    description: >-
+      Upload results to GitHub code scanning (needs `security-events: write`).
+    default: "true"
+  sarif-file:
+    description: Where to write the SARIF report.
+    default: kubera.sarif
+
+outputs:
+  findings:
+    description: Number of findings reported.
+    value: ${{ steps.scan.outputs.findings }}
+  sarif-file:
+    description: Path of the SARIF report.
+    value: ${{ inputs.sarif-file }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install kubera
+      shell: bash
+      env:
+        KUBERA_VERSION: ${{ inputs.version }}
+        KUBERA_INSTALL_DIR: ${{ runner.temp }}/kubera-bin
+      run: |
+        set -euo pipefail
+        sh "$GITHUB_ACTION_PATH/install.sh"
+        echo "$KUBERA_INSTALL_DIR" >> "$GITHUB_PATH"
+
+    - name: Scan
+      id: scan
+      shell: bash
+      # Inputs and event data reach the script through the environment,
+      # never through expression interpolation (script injection).
+      env:
+        SCAN_PATH: ${{ inputs.path }}
+        SCAN_MODE: ${{ inputs.mode }}
+        SCAN_ARGS: ${{ inputs.args }}
+        SARIF_FILE: ${{ inputs.sarif-file }}
+        EVENT: ${{ github.event_name }}
+        PR_BASE: ${{ github.event.pull_request.base.sha }}
+        PUSH_BEFORE: ${{ github.event.before }}
+      run: |
+        set -uo pipefail
+        read -r -a extra <<< "$SCAN_ARGS"
+        range=()
+        if [ "$SCAN_MODE" = "git" ]; then
+          base=""
+          if [ "$EVENT" = "pull_request" ] || [ "$EVENT" = "pull_request_target" ]; then
+            base="$PR_BASE"
+          elif [ "$EVENT" = "push" ] && [ -n "$PUSH_BEFORE" ] && [ "$PUSH_BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            base="$PUSH_BEFORE"
+          fi
+          if [ -n "$base" ] && git -C "$SCAN_PATH" cat-file -e "$base^{commit}" 2>/dev/null; then
+            range=(--since-commit "$base")
+          elif [ -n "$base" ]; then
+            echo "::warning::commit $base is not in the checkout (use actions/checkout with fetch-depth: 0); scanning the full history"
+          fi
+          kubera scan git "$SCAN_PATH" "${range[@]}" "${extra[@]}" -f sarif > "$SARIF_FILE"
+        else
+          kubera scan fs "$SCAN_PATH" "${extra[@]}" -f sarif > "$SARIF_FILE"
+        fi
+        code=$?
+        if [ "$code" -ne 0 ] && [ "$code" -ne 183 ]; then
+          echo "::error::kubera failed (exit $code)"
+          exit "$code"
+        fi
+        n=$(jq '[.runs[].results[]] | length' "$SARIF_FILE")
+        echo "findings=$n" >> "$GITHUB_OUTPUT"
+        {
+          echo "### Kubera: $n finding(s)"
+          if [ "$n" -gt 0 ]; then
+            echo
+            echo "| Rule | Location | Message |"
+            echo "|---|---|---|"
+            jq -r '.runs[].results[] | "| \(.ruleId) | \(.locations[0].physicalLocation.artifactLocation.uri):\(.locations[0].physicalLocation.region.startLine // 0) | \(.message.text | gsub("[|\n]"; " ")) |"' "$SARIF_FILE" | head -100
+          fi
+        } >> "$GITHUB_STEP_SUMMARY"
+        jq -r '.runs[].results[] | "::error file=\(.locations[0].physicalLocation.artifactLocation.uri),line=\(.locations[0].physicalLocation.region.startLine // 1)::\(.message.text | gsub("[\n]"; " "))"' "$SARIF_FILE" | head -50
+
+    - name: Upload SARIF
+      if: ${{ always() && inputs.sarif == 'true' && steps.scan.outputs.findings != '' }}
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ inputs.sarif-file }}
+        category: kubera
+
+    - name: Fail on findings
+      if: ${{ inputs.fail == 'true' && steps.scan.outputs.findings != '0' }}
+      shell: bash
+      env:
+        N: ${{ steps.scan.outputs.findings }}
+      run: |
+        echo "::error::kubera found $N secret(s); see the job summary or code scanning alerts"
+        exit 1

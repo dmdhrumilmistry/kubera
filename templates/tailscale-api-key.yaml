@@ -1,0 +1,34 @@
+id: tailscale-api-key
+name: Tailscale API Access Token
+platform: Tailscale
+description: Tailscale API access token (manage the tailnet - devices, ACLs, auth keys).
+severity: critical
+tags: [network, vpn]
+references:
+  - https://tailscale.com/kb/1101/api
+  - https://tailscale.com/api#tag/devices/GET/tailnet/{tailnet}/devices
+detect:
+  keywords: [tskey-api-]
+  patterns:
+    - name: key
+      regex: '\b(tskey-api-[A-Za-z0-9]{6,24}-[A-Za-z0-9]{20,64})\b'
+      min_entropy: 3.5
+verify:
+  request:
+    url: https://api.tailscale.com/api/v2/tailnet/-/devices
+    auth: { type: bearer, token: "{{ key }}" }
+  # 403 = live token whose owner lost the rights to list devices.
+  valid: { status: [200, 403] }
+  invalid: { status: [401] }
+  extract:
+    - { name: devices, label: Devices, json: "devices.*.name" }
+rotate:
+  instructions: |
+    Tailscale admin console -> Settings -> Keys: revoke the leaked API access
+    token and generate a new one. Review the tailnet's ACL policy, auth keys
+    and device list for changes.
+tests:
+  positive:
+    - "TS_API_KEY=t{{'s'}}key-api-IPgcSM8ks-kevZe9RWcYvCaYyUQwl1D25aUXSMkgaqJ"
+  negative:
+    - "tskey-api-xxxx-yyyy"

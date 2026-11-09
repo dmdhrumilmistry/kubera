@@ -568,3 +568,442 @@ async fn fallbacks_invalid_only_when_every_endpoint_rejects() {
     let out = verify::verify(&http(), &fallback_template(&server), &parts_token("tok1")).await;
     assert_eq!(out.verification.status, Status::Unknown);
 }
+
+#[tokio::test]
+async fn alerts_are_redacted_and_signed() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/hook"))
+        .and(header("content-type", "application/json"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let tok = format!("gh{}_{}", "p", "9nVq3kZ1Lr8XwT2pYb6Hd4Fs7Jc0Mg5Ae1Uo");
+    std::fs::write(dir.path().join("a.env"), format!("T={tok}\n")).unwrap();
+    let url = format!("{}/hook", server.uri());
+    let out = tokio::task::spawn_blocking({
+        let d = dir.path().to_path_buf();
+        move || {
+            std::process::Command::new(env!("CARGO_BIN_EXE_kubera"))
+                .args(["--allow-http", "scan", "fs", ".", "-f", "json"])
+                .args(["--notify-env", "HOOK", "--notify-secret-env", "HOOK_KEY"])
+                .env("HOOK", url)
+                .env("HOOK_KEY", "s3cret")
+                .current_dir(d)
+                .output()
+                .unwrap()
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let reqs = server.received_requests().await.unwrap();
+    assert_eq!(reqs.len(), 1);
+    let r = &reqs[0];
+    let body = String::from_utf8_lossy(&r.body);
+    assert!(!body.contains(&tok), "alerts must be redacted");
+    let v: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+    assert_eq!(v["count"], 1);
+    let ts = r
+        .headers
+        .get("x-kubera-timestamp")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    let sig = r
+        .headers
+        .get("x-kubera-signature")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert_eq!(sig, kubera::notify::signature("s3cret", ts, &r.body));
+
+    // A failing endpoint makes an otherwise clean exit non-zero.
+    let bad = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&bad)
+        .await;
+    let url = format!("{}/hook", bad.uri());
+    let d = dir.path().to_path_buf();
+    let out = tokio::task::spawn_blocking(move || {
+        std::process::Command::new(env!("CARGO_BIN_EXE_kubera"))
+            .args([
+                "--allow-http",
+                "scan",
+                "fs",
+                ".",
+                "-f",
+                "json",
+                "--notify-env",
+                "HOOK",
+            ])
+            .env("HOOK", url)
+            .current_dir(d)
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+}
+
+#[tokio::test]
+async fn github_issues_comments_and_actions_logs() {
+    use std::io::Write as _;
+    let server = MockServer::start().await;
+    let tok = |body: &str| format!("gh{}_{}", "p", body);
+    let issue_tok = tok("9nVq3kZ1Lr8XwT2pYb6Hd4Fs7Jc0Mg5Ae1Uo");
+    let comment_tok = tok("Zz9nVq3kZ1Lr8XwT2pYb6Hd4Fs7Jc0Mg5Ae1");
+    let log_tok = tok("Yy9nVq3kZ1Lr8XwT2pYb6Hd4Fs7Jc0Mg5Ae1");
+    let j = |v: serde_json::Value| ResponseTemplate::new(200).set_body_json(v);
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/app/issues"))
+        .and(header("authorization", "Bearer api-token"))
+        .respond_with(j(serde_json::json!([
+            {"number": 7, "title": "Deploy broken", "body": format!("tried with\n{issue_tok}"),
+             "html_url": "https://github.com/acme/app/issues/7"}
+        ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/app/issues/comments"))
+        .respond_with(j(serde_json::json!([
+            {"id": 99, "body": format!("use {comment_tok}"),
+             "html_url": "https://github.com/acme/app/issues/7#issuecomment-99"}
+        ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/app/pulls/comments"))
+        .respond_with(j(serde_json::json!([])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/app/actions/runs"))
+        .respond_with(j(serde_json::json!({"total_count": 1, "workflow_runs": [
+            {"id": 5, "html_url": "https://github.com/acme/app/actions/runs/5"}
+        ]})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/app/actions/runs/5/logs"))
+        .respond_with(
+            ResponseTemplate::new(302)
+                .insert_header("location", format!("{}/blob/logs.zip?sig=x", server.uri())),
+        )
+        .mount(&server)
+        .await;
+    let mut z = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    z.start_file(
+        "build/3_Run tests.txt",
+        zip::write::SimpleFileOptions::default(),
+    )
+    .unwrap();
+    z.write_all(format!("2026-01-01T00:00:00Z echo {log_tok}\n").as_bytes())
+        .unwrap();
+    let logs = z.finish().unwrap().into_inner();
+    Mock::given(method("GET"))
+        .and(path("/blob/logs.zip"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(logs))
+        .mount(&server)
+        .await;
+
+    let api = server.uri();
+    let out = tokio::task::spawn_blocking(move || {
+        std::process::Command::new(env!("CARGO_BIN_EXE_kubera"))
+            .args(["--allow-http", "scan", "github", "acme/app", "-f", "json"])
+            .args(["--what", "issues,comments,actions", "--api-url", &api])
+            .args(["--token-env", "GH"])
+            .env("GH", "api-token")
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let mut paths: Vec<String> = v
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| {
+            assert_eq!(f["location"]["source"], "github");
+            f["location"]["path"].as_str().unwrap().to_string()
+        })
+        .collect();
+    paths.sort();
+    assert_eq!(
+        paths,
+        vec![
+            "actions/runs/5/build/3_Run tests.txt",
+            "comment/99",
+            "issues/7"
+        ]
+    );
+    // The pre-signed log URL never receives the token.
+    let reqs = server.received_requests().await.unwrap();
+    let blob = reqs
+        .iter()
+        .find(|r| r.url.path() == "/blob/logs.zip")
+        .unwrap();
+    assert!(blob.headers.get("authorization").is_none());
+}
+
+#[tokio::test]
+async fn buckets_s3_signed_and_gcs() {
+    use std::io::Write as _;
+    use wiremock::matchers::{header_exists, query_param};
+    let tok = format!("gh{}_{}", "p", "9nVq3kZ1Lr8XwT2pYb6Hd4Fs7Jc0Mg5Ae1Uo");
+    let mut z = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    z.start_file("app/.env", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    z.write_all(format!("T={tok}\n").as_bytes()).unwrap();
+    let zip = z.finish().unwrap().into_inner();
+
+    let s3 = MockServer::start().await;
+    let listing = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?><ListBucketResult>
+<Contents><Key>config/prod &amp; dev.env</Key><Size>60</Size></Contents>
+<Contents><Key>backups/site.zip</Key><Size>{}</Size></Contents>
+<Contents><Key>node_modules/x/index.js</Key><Size>60</Size></Contents>
+<Contents><Key>huge.log</Key><Size>999999999999</Size></Contents>
+<IsTruncated>false</IsTruncated></ListBucketResult>"#,
+        zip.len()
+    );
+    Mock::given(method("GET"))
+        .and(path("/acme-data"))
+        .and(query_param("list-type", "2"))
+        .and(header_exists("authorization"))
+        .and(header_exists("x-amz-content-sha256"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(listing))
+        .mount(&s3)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/acme-data/config/prod%20%26%20dev.env"))
+        .and(header_exists("authorization"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!("TOKEN={tok}\n")))
+        .mount(&s3)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/acme-data/backups/site.zip"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(zip))
+        .mount(&s3)
+        .await;
+    let run = |args: Vec<String>, env: Vec<(&'static str, &'static str)>| {
+        tokio::task::spawn_blocking(move || {
+            let out = std::process::Command::new(env!("CARGO_BIN_EXE_kubera"))
+                .arg("--allow-http")
+                .args(&args)
+                .env_remove("AWS_ACCESS_KEY_ID")
+                .envs(env)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+            let mut got: Vec<String> = v
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|f| {
+                    assert_eq!(f["location"]["source"], "bucket");
+                    format!(
+                        "{}{}",
+                        f["location"]["path"].as_str().unwrap(),
+                        f["location"]["entry"]
+                            .as_str()
+                            .map(|e| format!("!/{e}"))
+                            .unwrap_or_default()
+                    )
+                })
+                .collect();
+            got.sort();
+            got
+        })
+    };
+    let got = run(
+        vec![
+            "scan".into(),
+            "bucket".into(),
+            "s3://acme-data".into(),
+            "--endpoint-url".into(),
+            s3.uri(),
+            "-f".into(),
+            "json".into(),
+        ],
+        vec![
+            ("AWS_ACCESS_KEY_ID", "AKIAFAKEFAKEFAKE0000"),
+            ("AWS_SECRET_ACCESS_KEY", "fake/secret"),
+        ],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        got,
+        vec!["backups/site.zip!/app/.env", "config/prod & dev.env"]
+    );
+
+    let gcs = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/storage/v1/b/acme-gcs/o"))
+        .and(header("authorization", "Bearer gcs-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "items": [{"name": "dir/a.txt", "size": "60"}]
+        })))
+        .mount(&gcs)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/storage/v1/b/acme-gcs/o/dir%2Fa.txt"))
+        .and(query_param("alt", "media"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!("t={tok}\n")))
+        .mount(&gcs)
+        .await;
+    let got = run(
+        vec![
+            "scan".into(),
+            "bucket".into(),
+            "gs://acme-gcs".into(),
+            "--endpoint-url".into(),
+            gcs.uri(),
+            "--token-env".into(),
+            "GCS_TOKEN".into(),
+            "-f".into(),
+            "json".into(),
+        ],
+        vec![("GCS_TOKEN", "gcs-token")],
+    )
+    .await
+    .unwrap();
+    assert_eq!(got, vec!["dir/a.txt"]);
+}
+
+#[tokio::test]
+async fn kubernetes_secrets_configmaps_and_workloads() {
+    use base64::Engine as _;
+    let b64 = |s: &str| base64::engine::general_purpose::STANDARD.encode(s);
+    let t = |body: &str| format!("gh{}_{}", "p", body);
+    let (t1, t2, t3, t4) = (
+        t("9nVq3kZ1Lr8XwT2pYb6Hd4Fs7Jc0Mg5Ae1Uo"),
+        t("Zz9nVq3kZ1Lr8XwT2pYb6Hd4Fs7Jc0Mg5Ae1"),
+        t("Yy9nVq3kZ1Lr8XwT2pYb6Hd4Fs7Jc0Mg5Ae1"),
+        t("Xx9nVq3kZ1Lr8XwT2pYb6Hd4Fs7Jc0Mg5Ae1"),
+    );
+    let server = MockServer::start().await;
+    let list = |items: serde_json::Value| {
+        ResponseTemplate::new(200)
+            .set_body_json(serde_json::json!({"items": items, "metadata": {}}))
+    };
+    Mock::given(method("GET"))
+        .and(path("/api/v1/secrets"))
+        .and(header("authorization", "Bearer kube-token"))
+        .respond_with(list(serde_json::json!([
+            {"metadata": {"namespace": "prod", "name": "ci"}, "type": "Opaque",
+             "data": {"GITHUB_TOKEN": b64(&t1)}},
+            {"metadata": {"namespace": "prod", "name": "sa"},
+             "type": "kubernetes.io/service-account-token", "data": {"token": b64(&t4)}}
+        ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/configmaps"))
+        .respond_with(list(serde_json::json!([
+            {"metadata": {"namespace": "prod", "name": "app",
+              "annotations": {"kubectl.kubernetes.io/last-applied-configuration":
+                format!("{{\"data\":{{\"token\":\"{t2}\"}}}}")}},
+             "data": {"LOG_LEVEL": "info"}}
+        ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/apis/apps/v1/deployments"))
+        .respond_with(list(serde_json::json!([
+            {"metadata": {"namespace": "prod", "name": "api"},
+             "spec": {"template": {"spec": {"containers": [
+                {"env": [{"name": "GH", "value": t3}]}]}}}}
+        ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/pods"))
+        .respond_with(list(serde_json::json!([
+            {"metadata": {"namespace": "prod", "name": "api-1",
+              "ownerReferences": [{"kind": "ReplicaSet"}]},
+             "spec": {"containers": [{"env": [{"name": "GH", "value": t3}]}]}}
+        ])))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let kc = dir.path().join("config");
+    std::fs::write(
+        &kc,
+        format!(
+            "apiVersion: v1\nkind: Config\ncurrent-context: dev\ncontexts:\n- name: dev\n  context: {{cluster: k, user: u}}\nclusters:\n- name: k\n  cluster: {{server: '{}'}}\nusers:\n- name: u\n  user: {{token: kube-token}}\n",
+            server.uri()
+        ),
+    )
+    .unwrap();
+    let out = tokio::task::spawn_blocking(move || {
+        std::process::Command::new(env!("CARGO_BIN_EXE_kubera"))
+            .args(["--allow-http", "scan", "k8s", "-f", "json", "--kubeconfig"])
+            .arg(&kc)
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let mut paths: Vec<String> = v
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| {
+            assert_eq!(f["location"]["source"], "kubernetes");
+            assert_eq!(f["location"]["repository"], "k8s:dev");
+            f["location"]["path"].as_str().unwrap().to_string()
+        })
+        .collect();
+    paths.sort();
+    // The service account token and the controller-owned pod are skipped.
+    assert_eq!(
+        paths,
+        vec![
+            "configmap/prod/app",
+            "deployment/prod/api",
+            "secret/prod/ci"
+        ]
+    );
+
+    // Path excludes apply to cluster objects too.
+    let kc = dir.path().join("config");
+    let out = tokio::task::spawn_blocking(move || {
+        std::process::Command::new(env!("CARGO_BIN_EXE_kubera"))
+            .args(["--allow-http", "scan", "k8s", "-f", "json", "--kubeconfig"])
+            .arg(&kc)
+            .args(["--exclude-path", "secret/prod/**"])
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v.as_array().unwrap().len(), 2);
+}

@@ -20,8 +20,11 @@ exclude_detectors: [google-api-key]
 # (and against file paths in git history).
 exclude_paths:
   - "**/testdata/**"
-  - "**/*.min.js"
-  - "vendor/**"
+  - "docs/examples/**"
+
+# Skip dependency directories and lockfiles (node_modules, vendor,
+# package-lock.json, ...). Default true; false scans them too.
+default_excludes: true
 
 allowlist:
   # Fingerprints printed with each finding.
@@ -36,6 +39,12 @@ max_file_size: 5242880
 ```
 
 Unknown keys are rejected, so typos fail loudly instead of being silently ignored.
+
+The full list of default excludes is in [Scanning](scanning.md#default-excludes). `--no-default-excludes` turns them off for one run.
+
+## Baseline file
+
+Next to `.kubera.yaml`, scans load `.kubera-baseline.json` from the current directory when it exists (`--baseline FILE` for another path, `--no-baseline` to ignore it). It holds fingerprints of findings that should no longer be reported: an adoption baseline (`--update-baseline`) and triage decisions from the TUI. Kubera writes it; you commit it. Kubera never rewrites `.kubera.yaml`. See [Baselines and triage](triage.md).
 
 ## Fingerprints
 

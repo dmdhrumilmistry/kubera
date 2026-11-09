@@ -27,6 +27,8 @@ pub struct Services {
     pub http: Http,
     pub max_file_size: u64,
     pub runtime: Option<tokio::runtime::Handle>,
+    /// Where triage decisions are saved (`x` / `m`); `None` disables them.
+    pub baseline: Option<PathBuf>,
 }
 
 impl Services {
@@ -148,6 +150,8 @@ pub struct App {
     pub should_quit: bool,
     /// Screen to return to from Results (Home when launched from the menu).
     pub results_back: Option<Screen>,
+    /// Last triaged finding and its index, for undo.
+    last_triaged: Option<(usize, Finding)>,
     tx: Sender<Msg>,
     pub rx: Receiver<Msg>,
 }
@@ -183,6 +187,7 @@ impl App {
             tick: 0,
             should_quit: false,
             results_back: Some(Screen::Home),
+            last_triaged: None,
             tx,
             rx,
         }
@@ -191,7 +196,16 @@ impl App {
     // ----- results -------------------------------------------------------
 
     /// Show findings directly (e.g. `kubera scan ... -i`).
-    pub fn set_results(&mut self, findings: Vec<Finding>, label: String) {
+    pub fn set_results(&mut self, mut findings: Vec<Finding>, label: String) {
+        // Decisions made in this or an earlier session.
+        if let Some(b) = self
+            .svc
+            .baseline
+            .as_deref()
+            .and_then(|p| crate::baseline::Baseline::load(p).ok())
+        {
+            findings.retain(|f| b.get(&f.fingerprint).is_none());
+        }
         self.findings = findings;
         self.target_label = label;
         self.selected = 0;
@@ -442,6 +456,63 @@ impl App {
         }
     }
 
+    /// Record a triage decision for the selected finding in the baseline
+    /// file and hide it.
+    pub fn triage(&mut self, decision: crate::baseline::Decision) {
+        let Some(&idx) = self.visible.get(self.selected) else {
+            return;
+        };
+        let Some(path) = self.svc.baseline.clone() else {
+            self.status = "triage is not available here".into();
+            return;
+        };
+        let f = self.findings[idx].clone();
+        let res = crate::baseline::Baseline::load(&path).and_then(|mut b| {
+            b.add(&f, decision, None);
+            b.save()
+        });
+        match res {
+            Ok(()) => {
+                self.status = format!(
+                    "marked {} as {} in {} - u to undo",
+                    f.name,
+                    decision.label(),
+                    path.display()
+                );
+                self.findings.remove(idx);
+                self.last_triaged = Some((idx, f));
+                self.reveal = false;
+                self.recompute_visible();
+            }
+            Err(e) => self.status = format!("could not save triage: {e:#}"),
+        }
+    }
+
+    /// Undo the last triage decision.
+    pub fn undo_triage(&mut self) {
+        let (Some((idx, f)), Some(path)) = (self.last_triaged.take(), self.svc.baseline.clone())
+        else {
+            self.status = "nothing to undo".into();
+            return;
+        };
+        let res = crate::baseline::Baseline::load(&path).and_then(|mut b| {
+            b.remove(&f.fingerprint);
+            b.save()
+        });
+        match res {
+            Ok(()) => {
+                self.status = format!("restored {}", f.name);
+                let at = idx.min(self.findings.len());
+                self.findings.insert(at, f);
+                self.recompute_visible();
+                if let Some(pos) = self.visible.iter().position(|&i| i == at) {
+                    self.selected = pos;
+                }
+            }
+            Err(e) => self.status = format!("could not undo: {e:#}"),
+        }
+    }
+
     /// Write the findings (always redacted) to a new 0600 file.
     pub fn export(&mut self) {
         let name = format!("kubera-findings-{}.json", chrono::Utc::now().timestamp());
@@ -464,6 +535,13 @@ impl App {
                     self.progress.done = done;
                     self.progress.total = total;
                 }
+                Progress::Commits { done, total } => {
+                    self.progress.phase = "Scanning history (commits)".into();
+                    self.progress.done = done;
+                    self.progress.total = total;
+                }
+                // Commit counts are the better measure once known.
+                Progress::Diffs(_) if self.progress.total > 0 => {}
                 Progress::Diffs(n) => {
                     self.progress.phase = "Scanning history".into();
                     self.progress.done = n;
@@ -644,6 +722,9 @@ impl App {
             KeyCode::Char('a') => self.analyze_selected(),
             KeyCode::Char('p') => self.plan_selected(),
             KeyCode::Char('e') => self.export(),
+            KeyCode::Char('x') => self.triage(crate::baseline::Decision::FalsePositive),
+            KeyCode::Char('m') => self.triage(crate::baseline::Decision::Accepted),
+            KeyCode::Char('u') => self.undo_triage(),
             KeyCode::Char('?') => self.show_help = true,
             KeyCode::Esc | KeyCode::Char('q') => match self.results_back {
                 Some(s) => {

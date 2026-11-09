@@ -1,0 +1,35 @@
+id: easypost-api-key
+name: EasyPost API Key
+platform: EasyPost
+description: EasyPost production (EZAK) or test (EZTK) API key (buy postage, read shipments and addresses).
+severity: high
+tags: [ecommerce, shipping]
+references:
+  - https://docs.easypost.com/docs/authentication
+  - https://docs.easypost.com/docs/addresses#retrieve-a-list-of-addresses
+detect:
+  keywords: [EZAK, EZTK]
+  patterns:
+    - name: key
+      regex: '\b(EZ[AT]K[A-Za-z0-9]{54})\b'
+      min_entropy: 3.5
+verify:
+  request:
+    url: https://api.easypost.com/v2/addresses
+    query: { page_size: "1" }
+    auth: { type: basic, username: "{{ key }}", password: "" }
+  valid: { status: [200] }
+  invalid:
+    any:
+      - { status: [401] }
+      # Unknown and disabled keys both get APIKEY.INACTIVE.
+      - { status: [403], body_contains: [APIKEY.INACTIVE] }
+rotate:
+  instructions: |
+    EasyPost dashboard -> Account settings -> API Keys: create a new key,
+    deploy it, then disable the leaked one. Review recent label purchases.
+tests:
+  positive:
+    - "EASYPOST_API_KEY=E{{'Z'}}AKv4DR4HnUn2xNTabX2cPqITagJwAI5JhUcN6IsZviw38RKeIrUUOvYN"
+  negative:
+    - "EZAKxxxx"

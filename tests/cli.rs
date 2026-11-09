@@ -457,3 +457,341 @@ async fn mass_scan_github_org_rate_limited_incremental() {
     let err = String::from_utf8_lossy(&out.stderr).to_string();
     assert!(err.contains("1 new commit(s), clean"), "{err}");
 }
+
+/// A repository with `n` commits built with `git fast-import` (fast even for
+/// thousands of commits). Every 50th commit adds a token; one commit adds a
+/// token under `node_modules/` (skipped by default).
+fn big_history_repo(n: usize) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    git(d, &["init", "-q", "-b", "main"]);
+    let mut stream = String::new();
+    for i in 0..n {
+        let mut files = vec![(format!("src/f{i}.txt"), format!("line {i}\n"))];
+        if i % 50 == 0 {
+            let tok = format!("gh{}_{}{i:04}", "p", "9nVq3kZ1Lr8XwT2pYb6Hd4Fs7Jc0Mg5A");
+            files.push((format!("conf/c{i}.env"), format!("TOKEN={tok}\n")));
+        }
+        if i == 7 {
+            let tok = format!("gh{}_{}", "p", "Zz9nVq3kZ1Lr8XwT2pYb6Hd4Fs7Jc0Mg5Ae1");
+            files.push(("node_modules/pkg/index.js".into(), format!("t='{tok}'\n")));
+        }
+        stream.push_str(&format!(
+            "commit refs/heads/main\nmark :{}\ncommitter T <t@example.com> {} +0000\ndata 2\nc\n",
+            i + 1,
+            1_700_000_000 + i
+        ));
+        if i > 0 {
+            stream.push_str(&format!("from :{i}\n"));
+        }
+        for (path, body) in files {
+            stream.push_str(&format!(
+                "M 644 inline {path}\ndata {}\n{body}\n",
+                body.len()
+            ));
+        }
+    }
+    let mut child = Command::new("git")
+        .args(["fast-import", "--quiet"])
+        .current_dir(d)
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(stream.as_bytes())
+        .unwrap();
+    assert!(child.wait().unwrap().success());
+    dir
+}
+
+fn finding_keys(v: &serde_json::Value) -> Vec<(String, String, String)> {
+    let mut keys: Vec<_> = v
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| {
+            (
+                f["fingerprint"].as_str().unwrap().to_string(),
+                f["location"]["commit"].as_str().unwrap().to_string(),
+                f["location"]["path"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    keys.sort();
+    keys
+}
+
+#[test]
+fn parallel_history_scan_matches_serial_and_skips_dependencies() {
+    let dir = big_history_repo(300);
+    let d = dir.path();
+    let serial = json(&kubera(&["scan", "git", ".", "-f", "json", "-j", "1"], d));
+    let parallel = json(&kubera(&["scan", "git", ".", "-f", "json", "-j", "4"], d));
+    assert_eq!(finding_keys(&serial).len(), 6, "{serial:#}");
+    assert_eq!(finding_keys(&serial), finding_keys(&parallel));
+    // Output order is deterministic despite parallel workers.
+    assert_eq!(serial, parallel);
+
+    let all = json(&kubera(
+        &["scan", "git", ".", "-f", "json", "--no-default-excludes"],
+        d,
+    ));
+    let keys = finding_keys(&all);
+    assert_eq!(keys.len(), 7);
+    assert!(keys.iter().any(|k| k.2 == "node_modules/pkg/index.js"));
+
+    // A user exclude is pushed down to git and still honoured.
+    let some = json(&kubera(
+        &[
+            "scan",
+            "git",
+            ".",
+            "-f",
+            "json",
+            "--exclude-path",
+            "conf/c1*.env",
+        ],
+        d,
+    ));
+    assert_eq!(finding_keys(&some).len(), 4, "{some:#}");
+}
+
+#[test]
+fn checkpoint_is_removed_on_success_and_never_mixes_scans() {
+    let dir = big_history_repo(120);
+    let d = dir.path();
+    let cp = d.join("scan.checkpoint");
+    let cp_s = cp.to_str().unwrap();
+    let out = kubera(&["scan", "git", ".", "-f", "json", "--checkpoint", cp_s], d);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(finding_keys(&json(&out)).len(), 3);
+    assert!(
+        !cp.exists(),
+        "checkpoint must be deleted after a completed scan"
+    );
+
+    // A checkpoint written by a different scan is refused, not merged.
+    std::fs::write(
+        &cp,
+        r#"{"version":1,"scope":"other","done":[],"findings":[]}"#,
+    )
+    .unwrap();
+    let out = kubera(&["scan", "git", ".", "-f", "json", "--checkpoint", cp_s], d);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("different scan"));
+}
+
+fn scan_stdin_with(args: &[&str], input: &str) -> Vec<serde_json::Value> {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_kubera"))
+        .args(["scan", "stdin", "-f", "jsonl"])
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+#[test]
+fn encoded_secrets_are_decoded() {
+    use base64::Engine as _;
+    let b64 = |s: &str| base64::engine::general_purpose::STANDARD.encode(s);
+    // `kubectl get secret -o yaml`: values are base64.
+    let manifest = format!(
+        "apiVersion: v1\nkind: Secret\nmetadata:\n  name: ci\ndata:\n  GITHUB_TOKEN: {}\n",
+        b64(&fake_github_token())
+    );
+    let found = scan_stdin_with(&[], &manifest);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0]["location"]["line"], 6);
+    assert_eq!(found[0]["location"]["decoder"], "base64");
+    assert!(scan_stdin_with(&["--no-decode"], &manifest).is_empty());
+
+    // Percent-encoded inside a URL, and a JSON-escaped one.
+    let tok = fake_github_token();
+    let url = format!("x=https%3A%2F%2Fapi.example.com%3Ftoken%3D{tok}%26a%3D1\n");
+    // `%3Dghp_...` hides the token's word boundary from the raw scan.
+    let found = scan_stdin_with(&[], &url);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0]["location"]["decoder"], "url");
+    // Plain text that decodes to itself is reported once, undecoded.
+    let found = scan_stdin_with(&[], &format!("t={tok} %41\n"));
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0]["location"].get("decoder").is_none());
+    let esc = format!("{{\"t\": \"{}\"}}\n", tok.replace('_', "\\u005f"));
+    let found = scan_stdin_with(&[], &esc);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0]["location"]["decoder"], "escape");
+}
+
+#[test]
+fn archives_are_scanned_including_nested_ones() {
+    use std::io::Cursor;
+    let tok = fake_github_token();
+    let zip_of = |files: &[(&str, Vec<u8>)]| {
+        let mut z = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        for (n, d) in files {
+            z.start_file(*n, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            z.write_all(d).unwrap();
+        }
+        z.finish().unwrap().into_inner()
+    };
+    let jar = zip_of(&[(
+        "BOOT-INF/classes/application.properties",
+        format!("github.token={tok}\n").into_bytes(),
+    )]);
+    let war = zip_of(&[("WEB-INF/lib/inner.jar", jar)]);
+    let dir = tempfile::tempdir().unwrap();
+    // Name says nothing: archives are recognised by content.
+    std::fs::write(dir.path().join("release.bin"), &war).unwrap();
+    let out = kubera(&["scan", "fs", ".", "-f", "json"], dir.path());
+    let v = json(&out);
+    let arr = v.as_array().unwrap();
+    assert_eq!(arr.len(), 1, "{v:#}");
+    assert_eq!(
+        arr[0]["location"]["entry"],
+        "WEB-INF/lib/inner.jar!/BOOT-INF/classes/application.properties"
+    );
+    assert_eq!(arr[0]["location"]["line"], 1);
+    let sarif = kubera(&["scan", "fs", ".", "-f", "sarif"], dir.path());
+    assert!(
+        String::from_utf8_lossy(&sarif.stdout).contains("release.bin!/WEB-INF/lib/inner.jar!/")
+    );
+}
+
+#[test]
+fn pre_commit_hook_blocks_secrets_but_not_clean_commits() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    git(d, &["init", "-q", "-b", "main"]);
+    let out = kubera(&["hook", "install"], d);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // The hook finds `kubera` on PATH.
+    let bin = Path::new(env!("CARGO_BIN_EXE_kubera")).parent().unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let commit = |msg: &str| {
+        Command::new("git")
+            .args(["-c", "user.name=T", "-c", "user.email=t@example.com"])
+            .args(["commit", "-q", "-m", msg])
+            .current_dir(d)
+            .env("PATH", &path)
+            .env("NO_COLOR", "1")
+            .output()
+            .unwrap()
+    };
+
+    // An old secret already in history does not block later commits.
+    std::fs::write(d.join("app.py"), "print('hi')\n").unwrap();
+    git(d, &["add", "."]);
+    let out = commit("clean");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    std::fs::write(
+        d.join("app.py"),
+        format!("print('hi')\nTOKEN = '{}'\n", fake_github_token()),
+    )
+    .unwrap();
+    git(d, &["add", "."]);
+    let out = commit("leak");
+    assert!(
+        !out.status.success(),
+        "a commit adding a secret must be blocked"
+    );
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(all.contains("app.py:2"), "{all}");
+    assert!(all.contains("commit blocked"), "{all}");
+
+    // Staged scan as JSON reports only the staged line.
+    let v = json(&kubera(&["scan", "staged", "-f", "json"], d));
+    assert_eq!(v.as_array().unwrap().len(), 1);
+    assert!(v[0]["location"].get("commit").is_none());
+
+    let out = kubera(&["hook", "uninstall"], d);
+    assert!(out.status.success());
+    let out = commit("no hook now");
+    assert!(out.status.success());
+}
+
+#[test]
+fn baseline_suppresses_known_findings_and_reports_new_ones() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    std::fs::write(d.join("old.env"), format!("T={}\n", fake_github_token())).unwrap();
+    let out = kubera(&["scan", "fs", ".", "--update-baseline"], d);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = std::fs::read_to_string(d.join(".kubera-baseline.json")).unwrap();
+    assert!(text.contains("\"decision\": \"baseline\""), "{text}");
+    assert!(
+        !text.contains(&fake_github_token()),
+        "baseline must not hold secrets"
+    );
+
+    // Picked up automatically: nothing new to report.
+    let out = kubera(&["scan", "fs", ".", "-f", "json", "--fail"], d);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(json(&out).as_array().unwrap().len(), 0);
+    // ...unless disabled.
+    let out = kubera(&["scan", "fs", ".", "-f", "json", "--no-baseline"], d);
+    assert_eq!(json(&out).as_array().unwrap().len(), 1);
+
+    // A new secret is still reported.
+    let tok2 = format!("gh{}_{}", "p", "Zz9nVq3kZ1Lr8XwT2pYb6Hd4Fs7Jc0Mg5Ae1");
+    std::fs::write(d.join("new.env"), format!("T={tok2}\n")).unwrap();
+    let out = kubera(&["scan", "fs", ".", "-f", "json", "--fail"], d);
+    assert_eq!(out.status.code(), Some(183));
+    let v = json(&out);
+    assert_eq!(v.as_array().unwrap().len(), 1);
+    assert_eq!(v[0]["location"]["path"], "./new.env");
+}
+
+#[test]
+fn html_report_is_self_contained_and_redacted() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("a.env"),
+        format!("T={}\n", fake_github_token()),
+    )
+    .unwrap();
+    let out = kubera(&["scan", "fs", ".", "-f", "html"], dir.path());
+    let html = String::from_utf8_lossy(&out.stdout);
+    assert!(html.starts_with("<!doctype html>"));
+    assert!(html.contains("Content-Security-Policy"));
+    assert!(!html.contains(&fake_github_token()));
+    assert!(!html.contains("http://") && !html.contains("src=\"https://"));
+}

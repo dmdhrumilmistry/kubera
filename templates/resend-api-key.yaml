@@ -1,0 +1,41 @@
+id: resend-api-key
+name: Resend API Key
+platform: Resend
+description: Resend API key (send email from the account's verified domains; full-access keys also manage domains and keys).
+severity: high
+tags: [email]
+references:
+  - https://resend.com/docs/api-reference/introduction
+  - https://resend.com/docs/api-reference/domains/list-domains
+detect:
+  keywords: [re_]
+  patterns:
+    - name: key
+      regex: '\b(re_[A-Za-z0-9]{8}_[A-Za-z0-9]{24})\b'
+      min_entropy: 3.5
+verify:
+  request:
+    url: https://api.resend.com/domains
+    auth: { type: bearer, token: "{{ key }}" }
+  valid:
+    any:
+      - { status: [200] }
+      # Sending-only keys are live but may not list domains.
+      - { status: [401], body_contains: [restricted_api_key] }
+  invalid:
+    any:
+      - { status: [400], body_contains: [API key is invalid] }
+      - { status: [401], body_not_contains: [restricted_api_key] }
+  extract:
+    - { name: domains, label: Domains, json: "data.*.name" }
+rotate:
+  instructions: |
+    resend.com/api-keys: create a new key (prefer "Sending access" limited to
+    one domain), deploy it, then delete the leaked key. Check the Emails log
+    for messages you did not send.
+tests:
+  positive:
+    - "RESEND_API_KEY=r{{'e'}}_haTBpEKe_5pgxI0ipOAsMZRgw1MEXslag"
+  negative:
+    - "re_short_abc"
+    - "pre_haTBpEKe_5pgxI0ipOAsMZRgw1MEXslag"

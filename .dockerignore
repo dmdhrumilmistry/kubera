@@ -1,0 +1,5 @@
+target/
+docs/book/
+.git/
+.claude/
+*.sarif

@@ -1,0 +1,29 @@
+id: shippo-api-token
+name: Shippo API Token
+platform: Shippo
+description: Shippo live or test API token (buy shipping labels, read addresses and shipments).
+severity: high
+tags: [ecommerce, shipping]
+references:
+  - https://docs.goshippo.com/docs/guides_general/authentication/
+detect:
+  keywords: [shippo_live_, shippo_test_]
+  patterns:
+    - name: token
+      regex: '\b(shippo_(?:live|test)_[a-f0-9]{40})\b'
+verify:
+  request:
+    url: https://api.goshippo.com/addresses
+    query: { results: "1" }
+    headers: { Authorization: "ShippoToken {{ token }}" }
+  valid: { status: [200] }
+  invalid: { status: [401] }
+rotate:
+  instructions: |
+    Shippo -> Settings -> API: generate a new token, deploy it, then revoke
+    the leaked one. Check recent label purchases for unknown activity.
+tests:
+  positive:
+    - "SHIPPO_API_KEY=s{{'h'}}ippo_live_49ac0c8cd60309ddfef7b5b50c4ddd67167b8e3e"
+  negative:
+    - "shippo_live_xxxx"

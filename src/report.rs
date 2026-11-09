@@ -16,6 +16,8 @@ pub enum Format {
     Json,
     Jsonl,
     Sarif,
+    /// Self-contained interactive HTML page.
+    Html,
 }
 
 pub fn use_color() -> bool {
@@ -134,6 +136,7 @@ pub fn write_findings(
             serde_json::to_writer_pretty(&mut *out, &sarif(findings))?;
             writeln!(out)?;
         }
+        Format::Html => out.write_all(crate::report_html::render(findings).as_bytes())?,
         Format::Pretty => pretty(out, findings, style)?,
     }
     Ok(())
@@ -187,7 +190,18 @@ fn pretty(out: &mut dyn Write, findings: &[Finding], st: &Style) -> Result<()> {
         let bar = st.gold("│");
         let loc = &f.location;
         match &loc.path {
-            Some(p) => writeln!(out, "{bar} {}", st.cyan(&format!("{p}:{}", loc.line)))?,
+            Some(p) => {
+                let entry = loc
+                    .entry
+                    .as_deref()
+                    .map(|e| format!("!/{e}"))
+                    .unwrap_or_default();
+                writeln!(
+                    out,
+                    "{bar} {}",
+                    st.cyan(&format!("{p}{entry}:{}", loc.line))
+                )?
+            }
             None => writeln!(
                 out,
                 "{bar} {}",
@@ -217,6 +231,9 @@ fn pretty(out: &mut dyn Write, findings: &[Finding], st: &Style) -> Result<()> {
                 st.dim("layer"),
                 st.gold(&layer[..layer.len().min(19)])
             )?;
+        }
+        if let Some(d) = &loc.decoder {
+            writeln!(out, "{bar} {} {}", st.dim("decoded from"), st.gold(d))?;
         }
         if let Some(l) = &loc.link {
             writeln!(out, "{bar} {} {}", st.dim("↗"), st.cyan(l))?;
@@ -335,7 +352,11 @@ pub fn sarif(findings: &[Finding]) -> Value {
                 .unwrap_or_default();
             let mut loc = json!({
                 "physicalLocation": {
-                    "artifactLocation": { "uri": f.location.path.clone().unwrap_or_else(|| "stdin".into()) },
+                    "artifactLocation": { "uri": match (&f.location.path, &f.location.entry) {
+                        (Some(p), Some(e)) => format!("{p}!/{e}"),
+                        (Some(p), None) => p.clone(),
+                        _ => "stdin".into(),
+                    } },
                     "region": { "startLine": f.location.line.max(1) }
                 }
             });

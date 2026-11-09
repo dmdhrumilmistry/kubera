@@ -1,0 +1,30 @@
+id: cerebras-api-key
+name: Cerebras API Key
+platform: Cerebras
+description: Cerebras Inference API key.
+severity: medium
+tags: [ai]
+references:
+  - https://inference-docs.cerebras.ai/api-reference/models
+detect:
+  keywords: [csk-]
+  patterns:
+    - name: key
+      regex: '\b(csk-[a-z0-9]{48})\b'
+      min_entropy: 3.5
+verify:
+  request:
+    url: https://api.cerebras.ai/v1/models
+    auth: { type: bearer, token: "{{ key }}" }
+  valid: { status: [200] }
+  invalid: { status: [401] }
+  extract:
+    - { name: models, label: Models, json: "data.*.id" }
+rotate:
+  instructions: |
+    cloud.cerebras.ai -> API Keys: delete the leaked key and create a new one.
+tests:
+  positive:
+    - "CEREBRAS_API_KEY=c{{'s'}}k-mqffq7ri9udsg5w9qocrv0qt2kopshdesce2erlswiwynknp"
+  negative:
+    - "csk-short"

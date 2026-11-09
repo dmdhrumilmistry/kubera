@@ -2,7 +2,7 @@
 
 Measured with [`scripts/bench.py`](https://github.com/dmdhrumilmistry/kubera/blob/main/scripts/bench.py), which anyone can re-run. Every scan runs **without verification**, so there is no network involved, and times are the **median of 5 runs after a warm-up** (page cache warm).
 
-**Machine:** 4 vCPU Intel Xeon @ 2.10 GHz, 15 GiB RAM, Linux. **Kubera:** 0.1.0 release build (11 MB static binary), 64 detectors.
+**Machine:** 4 vCPU Intel Xeon @ 2.10 GHz, 15 GiB RAM, Linux. **Kubera:** 0.1.0 release build (11 MB static binary), 64 detectors. These results predate parallel history scanning; see [below](#parallel-history-scanning) for 0.2.0.
 
 ## Results
 
@@ -23,6 +23,20 @@ With `--state`, a re-scan only reads commits that were never scanned:
 | TruffleHog (3,000 commits) | 2.16 s | **0.046 s** | **47×** |
 
 This is the steady state of a CI job or a nightly org-wide scan: cost tracks what changed, not repository size. Combined with `--cache-dir` for mass scans, only new git objects are fetched as well (see [Incremental and mass scanning](incremental.md)).
+
+### Parallel history scanning
+
+Kubera 0.2.0 splits the commits to scan into partitions and runs one `git log` per CPU (see [Large repositories](incremental.md#parallel-history)).
+
+**Repository:** [rust-lang/cargo](https://github.com/rust-lang/cargo), 24,445 commits, full history, no verification. **Machine:** 4 vCPUs, Linux, release build.
+
+| Scan | Time | Findings |
+|---|---:|---|
+| One `git log` (before parallel scanning) | 10.6 s | baseline |
+| One `git log` per CPU (`-j 0`, the default) | **3.7 s** (2.9× faster) | identical |
+| Same, plus `--exclude-path` on a heavy directory | **2.5 s** | not compared (narrower scope) |
+
+The speedup comes from using every CPU for git's own diff work, which dominates history scans. Excluded paths are handed to git as pathspecs, so it never diffs them.
 
 ### Detection on a planted corpus
 
@@ -52,7 +66,7 @@ From each project's documentation at the time of writing. Corrections are welcom
 | | Kubera | TruffleHog | Gitleaks |
 |---|---|---|---|
 | License | MIT | AGPL-3.0 | MIT |
-| Live verification | ✅ (56 of 64 templates) | ✅ | ❌ |
+| Live verification | ✅ (81 of 89 templates) | ✅ | ❌ |
 | Credential analysis (scopes / resources) | ✅ | ✅ (`analyze`, subset of types) | ❌ |
 | Automated **rotation / revocation** | ✅ dry-run plans; API rotation for AWS, GitLab, SendGrid, Twilio, Cloudflare; API revocation for GitHub, Slack, Okta, Buildkite, Doppler, Discord | ❌ (links to manual guides) | ❌ |
 | Add a platform **with verification** without writing code | ✅ YAML templates (verify, analyze, rotate, tests) | Custom regex detectors with a webhook verifier | Regex rules (TOML), no verification |

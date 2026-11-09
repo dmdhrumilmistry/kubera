@@ -1,0 +1,23 @@
+# For the pre-commit framework (https://pre-commit.com). In your
+# .pre-commit-config.yaml:
+#
+#   repos:
+#     - repo: https://github.com/dmdhrumilmistry/kubera
+#       rev: v0.2.0
+#       hooks:
+#         - id: kubera          # builds kubera with cargo
+#         # - id: kubera-system # uses a kubera already on PATH
+- id: kubera
+  name: kubera (secret scan of staged changes)
+  description: Block commits that add secrets.
+  entry: kubera scan staged --fail
+  language: rust
+  pass_filenames: false
+  stages: [pre-commit]
+- id: kubera-system
+  name: kubera (secret scan of staged changes)
+  description: Block commits that add secrets, using kubera from PATH.
+  entry: kubera scan staged --fail
+  language: system
+  pass_filenames: false
+  stages: [pre-commit]

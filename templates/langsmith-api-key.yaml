@@ -1,0 +1,37 @@
+id: langsmith-api-key
+name: LangSmith API Key
+platform: LangSmith
+description: LangSmith personal access token (lsv2_pt_) or service key (lsv2_sk_). Reads traces, prompts and datasets.
+severity: high
+tags: [ai, observability]
+references:
+  - https://docs.smith.langchain.com/administration/how_to_guides/organization_management/create_account_api_key
+  - https://api.smith.langchain.com/redoc
+detect:
+  keywords: [lsv2_pt_, lsv2_sk_]
+  patterns:
+    - name: key
+      regex: '\b(lsv2_(?:pt|sk)_[a-f0-9]{32}_[a-f0-9]{10})\b'
+verify:
+  request:
+    url: https://api.smith.langchain.com/api/v1/workspaces
+    headers: { X-Api-Key: "{{ key }}" }
+  valid: { status: [200] }
+  # Unknown keys get 403 (missing key: 401).
+  invalid: { status: [401, 403] }
+  extract:
+    - { name: workspaces, label: Workspaces, json: "*.display_name" }
+  fallbacks:
+    - label: EU
+      request:
+        url: https://eu.api.smith.langchain.com/api/v1/workspaces
+        headers: { X-Api-Key: "{{ key }}" }
+rotate:
+  instructions: |
+    LangSmith -> Settings -> API Keys: delete the leaked key and create a new
+    one. Traces can contain prompts and user data, so review who had access.
+tests:
+  positive:
+    - "LANGSMITH_API_KEY=l{{'s'}}v2_pt_5645ed41c2744a088de090f500285401_c56650aaa3"
+  negative:
+    - "lsv2_pt_short_abc"

@@ -1,0 +1,31 @@
+id: duffel-api-token
+name: Duffel Access Token
+platform: Duffel
+description: Duffel live or test access token (search and book flights and stays, read orders).
+severity: high
+tags: [travel, payments]
+references:
+  - https://duffel.com/docs/api/overview/making-requests/authentication
+  - https://duffel.com/docs/api/v2/airlines/get-airlines
+detect:
+  keywords: [duffel_live_, duffel_test_]
+  patterns:
+    - name: token
+      regex: '\b(duffel_(?:live|test)_[A-Za-z0-9_=-]{43})(?:[^A-Za-z0-9_=-]|$)'
+verify:
+  request:
+    url: https://api.duffel.com/air/airlines
+    query: { limit: "1" }
+    headers: { Duffel-Version: v2, Accept: application/json }
+    auth: { type: bearer, token: "{{ token }}" }
+  valid: { status: [200] }
+  invalid: { status: [401] }
+rotate:
+  instructions: |
+    Duffel dashboard -> Developers -> Access tokens: create a new token,
+    deploy it, then revoke the leaked one. Review recent orders.
+tests:
+  positive:
+    - "DUFFEL_ACCESS_TOKEN=d{{'u'}}ffel_live_Kq5MQhHIZBDVg8e1ZiWiqxYUNCujmtxJbm2ckga1nrz"
+  negative:
+    - "duffel_test_short"

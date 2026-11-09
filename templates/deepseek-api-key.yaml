@@ -1,0 +1,33 @@
+id: deepseek-api-key
+name: DeepSeek API Key
+platform: DeepSeek
+description: DeepSeek API key next to a DeepSeek reference (sk- plus 32 hex characters).
+severity: medium
+tags: [ai]
+references:
+  - https://api-docs.deepseek.com/api/get-user-balance
+detect:
+  keywords: [deepseek]
+  patterns:
+    - name: key
+      # The bare format is generic, so require "deepseek" shortly before it.
+      regex: '(?i:deepseek)[^\n]{0,40}?\b(sk-[a-f0-9]{32})\b'
+      min_entropy: 3.2
+verify:
+  request:
+    url: https://api.deepseek.com/user/balance
+    auth: { type: bearer, token: "{{ key }}" }
+  valid: { status: [200] }
+  invalid: { status: [401] }
+  extract:
+    - { name: available, label: Available, json: is_available }
+    - { name: balance, label: Balance, json: "balance_infos.*.total_balance" }
+    - { name: currency, label: Currency, json: "balance_infos.*.currency" }
+rotate:
+  instructions: |
+    platform.deepseek.com/api_keys: delete the leaked key and create a new one.
+tests:
+  positive:
+    - "DEEPSEEK_API_KEY=s{{'k'}}-be841b94bcad1be7be62b380d10a03e7"
+  negative:
+    - "OTHER_API_KEY=sk-be841b94bcad1be7be62b380d10a03e7"

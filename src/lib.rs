@@ -21,16 +21,22 @@
 //! (`http`, `steps`) for a single credential.
 
 pub mod analyze;
+pub mod baseline;
 pub mod brand;
+pub mod checkpoint;
 pub mod config;
+pub mod decode;
 pub mod detect;
 pub mod finding;
 pub mod forge;
+pub mod hook;
 pub mod http;
 pub mod mass;
 pub mod mcp;
+pub mod notify;
 pub mod render;
 pub mod report;
+pub mod report_html;
 pub mod rotate;
 pub mod scan;
 pub mod sources;

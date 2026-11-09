@@ -1,0 +1,42 @@
+id: docker-hub-pat
+name: Docker Hub Personal Access Token
+platform: Docker
+description: Docker Hub personal access token, with the Docker ID it belongs to when one is nearby (push or overwrite images).
+severity: high
+tags: [supply-chain, registry]
+references:
+  - https://docs.docker.com/security/for-developers/access-tokens/
+  - https://docs.docker.com/reference/api/hub/latest/#tag/authentication-api/operation/AuthCreateAccessToken
+detect:
+  keywords: [dckr_pat_]
+  max_distance: 1024
+  patterns:
+    - name: token
+      regex: '\b(dckr_pat_[A-Za-z0-9_-]{27})(?:[^A-Za-z0-9_-]|$)'
+      min_entropy: 3.5
+    - name: username
+      # DOCKERHUB_USERNAME=alice / docker_user: alice / docker login -u alice
+      regex: '(?i:docker[_-]?(?:hub)?[_-]?(?:user(?:name)?|login|id))["'']?\s*[:=]\s*["'']?([a-z0-9][a-z0-9_-]{2,29})\b|docker login\b[^\n]*?(?:-u|--username)[ =]["'']?([a-z0-9][a-z0-9_-]{2,29})\b'
+      secret: false
+      optional: true
+verify:
+  # Exchanges the token for a short-lived JWT; nothing is changed.
+  request:
+    method: POST
+    url: https://hub.docker.com/v2/auth/token
+    json: { identifier: "{{ username }}", secret: "{{ token }}" }
+  valid: { status: [200] }
+  invalid: { status: [401] }
+rotate:
+  instructions: |
+    Docker Hub -> Account settings -> Personal access tokens: create a new
+    token with the narrowest access scope, deploy it, then delete the leaked
+    token. Check pushed tags of your repositories for unexpected images.
+tests:
+  positive:
+    - |
+      DOCKERHUB_USERNAME=acmebuild
+      DOCKERHUB_TOKEN=d{{'c'}}kr_pat_XwBQM8Et4p3NM9Eb86GIbxtHr2k
+    - "echo d{{'c'}}kr_pat_XwBQM8Et4p3NM9Eb86GIbxtHr2k | docker login -u acmebuild --password-stdin"
+  negative:
+    - "dckr_pat_xxxx"

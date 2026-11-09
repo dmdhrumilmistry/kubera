@@ -174,6 +174,30 @@ enum Command {
         #[command(subcommand)]
         cmd: TemplatesCmd,
     },
+    /// Git pre-commit hook that blocks commits adding secrets.
+    Hook {
+        #[command(subcommand)]
+        cmd: HookCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum HookCmd {
+    /// Install the pre-commit hook (runs `kubera scan staged --fail`).
+    Install {
+        /// Repository (default: the current one).
+        #[arg(default_value = ".")]
+        repo: PathBuf,
+        /// Replace an existing hook kubera did not write (kept as
+        /// pre-commit.bak).
+        #[arg(long)]
+        force: bool,
+    },
+    /// Remove the pre-commit hook installed by kubera.
+    Uninstall {
+        #[arg(default_value = ".")]
+        repo: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -217,6 +241,11 @@ enum ScanSource {
         /// When the state baseline may advance.
         #[arg(long, value_enum, default_value_t = kubera::state::Policy::Pass, requires = "state")]
         state_policy: kubera::state::Policy,
+        /// Make the scan resumable: progress and findings are saved to FILE
+        /// (mode 0600, holds raw secrets) and an interrupted scan run again
+        /// with the same FILE continues where it stopped. Deleted on success.
+        #[arg(long, value_name = "FILE")]
+        checkpoint: Option<PathBuf>,
         #[command(flatten)]
         opts: ScanArgs,
     },
@@ -316,6 +345,101 @@ enum ScanSource {
         #[command(flatten)]
         opts: ScanArgs,
     },
+    /// Scan GitHub beyond the code: issues, pull requests and their
+    /// comments, review comments, Actions logs, wikis and gists.
+    Github {
+        /// Repositories as owner/name.
+        repos: Vec<String>,
+        /// Every repository of this organization (repeatable).
+        #[arg(long, value_name = "ORG")]
+        org: Vec<String>,
+        /// Every repository and gist of this user (repeatable).
+        #[arg(long, value_name = "USER")]
+        user: Vec<String>,
+        /// What to scan (comma separated) [default: all].
+        #[arg(long, value_enum, value_delimiter = ',')]
+        what: Vec<kubera::sources::github::What>,
+        /// Environment variable with a GitHub token (needed for Actions logs
+        /// and private repositories; raises rate limits).
+        #[arg(long, value_name = "ENV_VAR")]
+        token_env: Option<String>,
+        /// GitHub Enterprise API base, e.g. https://ghe.example.com/api/v3.
+        #[arg(long, value_name = "URL", default_value = "https://api.github.com")]
+        api_url: String,
+        /// Issues / comments read per repository and kind (newest first).
+        #[arg(long, default_value_t = 2000, value_name = "N")]
+        max_items: usize,
+        /// Actions runs whose logs are read per repository (newest first).
+        #[arg(long, default_value_t = 20, value_name = "N")]
+        max_runs: usize,
+        /// Longest rate-limit wait (seconds) before giving up.
+        #[arg(long, default_value_t = 900, value_name = "SECS")]
+        max_rate_wait: u64,
+        #[command(flatten)]
+        opts: ScanArgs,
+    },
+    /// Scan a cloud storage bucket: s3://bucket[/prefix] (also MinIO, R2
+    /// and other S3-compatible stores with --endpoint-url) or
+    /// gs://bucket[/prefix]. Archives inside are opened too.
+    ///
+    /// S3 uses AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN
+    /// (public buckets: --anonymous). GCS uses --token-env (an OAuth access
+    /// token, e.g. from `gcloud auth print-access-token`).
+    Bucket {
+        url: String,
+        /// S3 region (default: detected from the bucket).
+        #[arg(long)]
+        region: Option<String>,
+        /// S3-compatible endpoint, e.g. https://<account>.r2.cloudflarestorage.com.
+        #[arg(long, value_name = "URL")]
+        endpoint_url: Option<String>,
+        /// Send unsigned requests (public buckets).
+        #[arg(long)]
+        anonymous: bool,
+        /// Environment variable with a GCS OAuth access token.
+        #[arg(long, value_name = "ENV_VAR")]
+        token_env: Option<String>,
+        /// List at most N objects.
+        #[arg(long, default_value_t = 100_000, value_name = "N")]
+        max_objects: usize,
+        /// Parallel downloads.
+        #[arg(long, default_value_t = 16, value_name = "N")]
+        downloads: usize,
+        #[command(flatten)]
+        opts: ScanArgs,
+    },
+    /// Scan a live Kubernetes cluster: Secrets (decoded), ConfigMaps, and
+    /// literal env values, args and annotations of workloads (read-only
+    /// list calls). Uses the kubeconfig like kubectl, or the pod's service
+    /// account with --in-cluster.
+    #[command(alias = "kubernetes")]
+    K8s {
+        /// Kubeconfig file [default: $KUBECONFIG or ~/.kube/config].
+        #[arg(long, value_name = "FILE")]
+        kubeconfig: Option<PathBuf>,
+        /// Context to use [default: current-context].
+        #[arg(long)]
+        context: Option<String>,
+        /// Use the service account of the pod kubera runs in.
+        #[arg(long, conflicts_with_all = ["kubeconfig", "context"])]
+        in_cluster: bool,
+        /// Only these namespaces (repeatable) [default: all].
+        #[arg(short = 'n', long = "namespace", value_name = "NS")]
+        namespaces: Vec<String>,
+        /// What to scan (comma separated) [default: all].
+        #[arg(long, value_enum, value_delimiter = ',')]
+        what: Vec<kubera::sources::kube::What>,
+        #[command(flatten)]
+        opts: ScanArgs,
+    },
+    /// Scan the staged changes of a repository: only the lines the next
+    /// commit adds (what the pre-commit hook runs).
+    Staged {
+        #[arg(default_value = ".")]
+        repo: PathBuf,
+        #[command(flatten)]
+        opts: ScanArgs,
+    },
 }
 
 #[derive(Args)]
@@ -341,15 +465,59 @@ struct ScanArgs {
     /// Glob of paths to skip, relative to the scan root (repeatable).
     #[arg(long = "exclude-path", value_name = "GLOB")]
     exclude_paths: Vec<String>,
-    /// Skip files larger than this many bytes.
+    /// Baseline / triage file: findings recorded there are not reported
+    /// [default: .kubera-baseline.json when present].
+    #[arg(long, value_name = "FILE")]
+    baseline: Option<PathBuf>,
+    /// Ignore the baseline file.
+    #[arg(long, conflicts_with = "baseline")]
+    no_baseline: bool,
+    /// Record every finding of this scan in the baseline file (adopting
+    /// kubera on a codebase with known findings: later scans only report
+    /// new ones). Exits 0.
+    #[arg(long, conflicts_with = "no_baseline")]
+    update_baseline: bool,
+    /// Send an alert when secrets are found, to the webhook URL held in this
+    /// environment variable (repeatable). Slack incoming webhooks get a
+    /// Slack message, other URLs a JSON payload. Secrets are redacted.
+    #[arg(long, value_name = "ENV_VAR")]
+    notify_env: Vec<String>,
+    /// Environment variable with a key to sign generic webhook payloads
+    /// (X-Kubera-Signature: HMAC-SHA256 over "<timestamp>.<body>").
+    #[arg(long, value_name = "ENV_VAR")]
+    notify_secret_env: Option<String>,
+    /// Which findings trigger an alert [default: live ones with --verify,
+    /// otherwise all].
+    #[arg(long, value_enum, value_name = "WHICH")]
+    notify_on: Option<NotifyOn>,
+    /// Do not decode base64 / URL-encoded / escaped text before scanning.
+    #[arg(long)]
+    no_decode: bool,
+    /// Also scan dependency directories and lockfiles (node_modules,
+    /// vendor, package-lock.json, ...), which are skipped by default.
+    #[arg(long)]
+    no_default_excludes: bool,
+    /// Skip files larger than this many bytes (git history: larger files
+    /// are not diffed at all).
     #[arg(long, value_name = "BYTES")]
     max_file_size: Option<u64>,
+    /// Parallel workers for git history (0: one per CPU).
+    #[arg(short = 'j', long, default_value_t = 0, value_name = "N")]
+    jobs: usize,
     /// Concurrent verification requests.
     #[arg(long, default_value_t = 8)]
     concurrency: usize,
     /// Browse the results in the interactive TUI instead of printing them.
     #[arg(short = 'i', long)]
     interactive: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum NotifyOn {
+    /// Only verified (live) secrets.
+    Live,
+    /// Every reported finding.
+    All,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -567,6 +735,32 @@ async fn run(cli: Cli) -> Result<u8> {
             .await
         }
         Command::Templates { cmd } => cmd_templates(&cli.global, cmd),
+        Command::Hook { cmd } => {
+            let st = Style {
+                color: report::use_color(),
+            };
+            match cmd {
+                HookCmd::Install { repo, force } => match kubera::hook::install(&repo, force)? {
+                    kubera::hook::Installed::New(p) => {
+                        println!("{} installed {}", st.green("✓"), p.display())
+                    }
+                    kubera::hook::Installed::Updated(p) => {
+                        println!("{} updated {}", st.green("✓"), p.display())
+                    }
+                    kubera::hook::Installed::Replaced { hook, backup } => println!(
+                        "{} installed {} (previous hook kept as {})",
+                        st.green("✓"),
+                        hook.display(),
+                        backup.display()
+                    ),
+                },
+                HookCmd::Uninstall { repo } => match kubera::hook::uninstall(&repo)? {
+                    Some(p) => println!("{} removed {}", st.green("✓"), p.display()),
+                    None => println!("no kubera pre-commit hook installed"),
+                },
+            }
+            Ok(0)
+        }
         Command::Mcp {
             allow_verify,
             root,
@@ -575,7 +769,8 @@ async fn run(cli: Cli) -> Result<u8> {
         } => {
             let ctx = context(&cli.global)?;
             let engine = Engine::new(ctx.templates.iter().map(|l| l.template.clone()).collect())?;
-            let filter = Filter::new(&ctx.cfg.exclude_paths, &ctx.cfg.allowlist)?;
+            let mut filter = Filter::new(&ctx.cfg.excludes(&[], false), &ctx.cfg.allowlist)?;
+            filter.suppress(kubera::baseline::Baseline::resolve(None)?.fingerprints());
             let token = match git_token_env {
                 Some(var) => Some(std::env::var(&var).with_context(|| {
                     format!("environment variable `{var}` (from --git-token-env) is not set")
@@ -616,16 +811,57 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         | ScanSource::Git { opts, .. }
         | ScanSource::Repos { opts, .. }
         | ScanSource::Image { opts, .. }
+        | ScanSource::Staged { opts, .. }
+        | ScanSource::Github { opts, .. }
+        | ScanSource::Bucket { opts, .. }
+        | ScanSource::K8s { opts, .. }
         | ScanSource::Stdin { opts } => opts,
     };
     let engine = Engine::new(ctx.templates.iter().map(|l| l.template.clone()).collect())?;
-    let mut excludes = ctx.cfg.exclude_paths.clone();
-    excludes.extend(opts.exclude_paths.iter().cloned());
-    let filter = Filter::new(&excludes, &ctx.cfg.allowlist)?;
+    let mut engine = engine;
+    engine.decode = !opts.no_decode;
+    let excludes = ctx
+        .cfg
+        .excludes(&opts.exclude_paths, opts.no_default_excludes);
+    let mut filter = Filter::new(&excludes, &ctx.cfg.allowlist)?;
+    let mut baseline = if opts.no_baseline {
+        None
+    } else {
+        Some(kubera::baseline::Baseline::resolve(
+            opts.baseline.as_deref(),
+        )?)
+    };
+    if let Some(b) = &baseline {
+        filter.suppress(b.fingerprints());
+    }
     let max_size = opts
         .max_file_size
         .or(ctx.cfg.max_file_size)
         .unwrap_or(sources::fs::DEFAULT_MAX_FILE_SIZE);
+    let notify_secret = match &opts.notify_secret_env {
+        Some(var) => Some(std::env::var(var).with_context(|| {
+            format!("environment variable `{var}` (from --notify-secret-env) is not set")
+        })?),
+        None => None,
+    };
+    let notify_targets = opts
+        .notify_env
+        .iter()
+        .map(|v| kubera::notify::Target::from_env(v, notify_secret.clone(), g.allow_http))
+        .collect::<Result<Vec<_>>>()?;
+    let notify_on = opts
+        .notify_on
+        .unwrap_or(if opts.verify || opts.only_verified {
+            NotifyOn::Live
+        } else {
+            NotifyOn::All
+        });
+    if notify_on == NotifyOn::Live
+        && !notify_targets.is_empty()
+        && !(opts.verify || opts.only_verified)
+    {
+        bail!("--notify-on live needs --verify (otherwise nothing is known to be live)");
+    }
     let target = match &source {
         ScanSource::Fs { paths, .. } => scan::Target::Paths(paths.clone()),
         ScanSource::Git {
@@ -636,6 +872,7 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
             token_env,
             token_user,
             state,
+            checkpoint,
             ..
         } => {
             let token = match token_env {
@@ -644,12 +881,32 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
                 })?),
                 None => None,
             };
+            if let Some(cp) = checkpoint {
+                let cp = cp.display().to_string();
+                // First Ctrl-C: stop after the current commit and save the
+                // checkpoint; a second one exits at once.
+                tokio::spawn(async move {
+                    let mut first = true;
+                    while tokio::signal::ctrl_c().await.is_ok() {
+                        if !first {
+                            std::process::exit(130);
+                        }
+                        first = false;
+                        eprintln!(
+                            "\ninterrupted: saving progress to {cp} (Ctrl-C again to quit now)"
+                        );
+                        kubera::checkpoint::request_stop();
+                    }
+                });
+            }
             scan::Target::Git {
                 repo: repo.clone(),
                 options: git::GitOptions {
                     branch: branch.clone(),
                     since_commit: since_commit.clone(),
                     max_depth: *max_depth,
+                    jobs: opts.jobs,
+                    checkpoint: checkpoint.clone(),
                     ..Default::default()
                 },
                 baseline: match state {
@@ -676,6 +933,10 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
             scan::Target::Text(text)
         }
         ScanSource::Repos { .. } => scan::Target::Text(String::new()),
+        ScanSource::Staged { repo, .. } => scan::Target::Staged(repo.clone()),
+        ScanSource::Github { .. } | ScanSource::Bucket { .. } | ScanSource::K8s { .. } => {
+            scan::Target::Text(String::new())
+        }
         ScanSource::Image {
             image,
             platform,
@@ -719,7 +980,8 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         }
     };
     let show_progress = std::io::stderr().is_terminal() && opts.format == Format::Pretty;
-    if show_progress && !opts.interactive {
+    let quiet = matches!(source, ScanSource::Staged { .. });
+    if show_progress && !opts.interactive && !quiet {
         kubera::brand::print_banner_stderr();
     }
     let progress = |p: scan::Progress| {
@@ -731,7 +993,108 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         }
     };
     let mut mass_results: Option<Vec<kubera::mass::RepoResult>> = None;
-    let (commits_scanned, tips, mut findings) = if let ScanSource::Repos { .. } = &source {
+    let (commits_scanned, tips, mut findings) = if let ScanSource::K8s {
+        kubeconfig,
+        context,
+        in_cluster,
+        namespaces,
+        what,
+        ..
+    } = &source
+    {
+        use kubera::sources::kube;
+        let cluster = if *in_cluster {
+            kube::Cluster::in_cluster()?
+        } else {
+            let path = kubeconfig
+                .clone()
+                .or_else(kube::default_kubeconfig)
+                .context("no kubeconfig found; pass --kubeconfig")?;
+            kube::Cluster::from_kubeconfig(&path, context.as_deref(), g.allow_http)?
+        };
+        if show_progress {
+            eprintln!(
+                "{} cluster {} ({})",
+                ctx.style.dim("›"),
+                cluster.name,
+                cluster.server
+            );
+        }
+        let what = if what.is_empty() {
+            kube::ALL.to_vec()
+        } else {
+            what.clone()
+        };
+        let (chunks, warnings) = kube::collect(&cluster, &what, namespaces).await?;
+        for w in warnings {
+            eprintln!("warning: {w}");
+        }
+        (
+            0,
+            Default::default(),
+            scan::scan_chunks(&engine, &filter, &chunks),
+        )
+    } else if let ScanSource::Bucket {
+        url,
+        region,
+        endpoint_url,
+        anonymous,
+        token_env,
+        max_objects,
+        downloads,
+        ..
+    } = &source
+    {
+        use kubera::sources::bucket;
+        let b = bucket::parse(url)?;
+        let gcs_token = match token_env {
+            Some(var) => Some(std::env::var(var).with_context(|| {
+                format!("environment variable `{var}` (from --token-env) is not set")
+            })?),
+            None => None,
+        };
+        let aws = if *anonymous {
+            None
+        } else {
+            bucket::AwsCreds::from_env()
+        };
+        if b.store == bucket::Store::S3 && aws.is_none() && !anonymous {
+            bail!(
+                "no AWS credentials in the environment; set AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY, or pass --anonymous for a public bucket"
+            );
+        }
+        let o = bucket::Options {
+            aws,
+            gcs_token,
+            region: region.clone(),
+            endpoint: endpoint_url.clone(),
+            max_objects: *max_objects,
+            max_file_size: max_size,
+            concurrency: *downloads,
+            allow_http: g.allow_http,
+        };
+        let collector = scan::Collector::default();
+        let n = bucket::scan(&b, &o, &filter, &mut |c| {
+            collector.push(scan::scan_chunk(&engine, &filter, &c))
+        })
+        .await?;
+        if show_progress {
+            eprintln!("{} {n} object(s) scanned", ctx.style.dim("›"));
+        }
+        (0, Default::default(), collector.into_findings())
+    } else if let ScanSource::Github { .. } = &source {
+        let findings = cmd_scan_github(
+            g,
+            &source,
+            &engine,
+            &filter,
+            max_size,
+            show_progress,
+            &ctx.style,
+        )
+        .await?;
+        (0, Default::default(), findings)
+    } else if let ScanSource::Repos { .. } = &source {
         let results = cmd_scan_repos(g, &source, &engine, &filter, max_size, &ctx.style).await?;
         let commits = results.iter().map(|r| r.commits_scanned).sum();
         let findings = results.iter().flat_map(|r| r.findings.clone()).collect();
@@ -767,28 +1130,84 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
             kinds.contains(&k)
         });
     }
+    if opts.update_baseline {
+        let b = baseline.as_mut().expect("baseline enabled");
+        let added = findings
+            .iter()
+            .filter(|f| b.add(f, kubera::baseline::Decision::Baseline, None))
+            .count();
+        b.save()?;
+        eprintln!(
+            "{} recorded {added} new finding(s) in {} ({} total); later scans report only new ones",
+            ctx.style.green("✓"),
+            b.path.display(),
+            b.entries.len()
+        );
+        return Ok(0);
+    }
+    let label = match &source {
+        ScanSource::Fs { paths, .. } => paths
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
+        ScanSource::Git { repo, .. } => kubera::sources::remote::parse(repo)
+            .ok()
+            .flatten()
+            .map(|r| r.display().to_string())
+            .unwrap_or_else(|| repo.clone()),
+        ScanSource::Stdin { .. } => "stdin".into(),
+        ScanSource::Staged { repo, .. } => format!("staged changes in {}", repo.display()),
+        ScanSource::Github {
+            repos, org, user, ..
+        } => repos
+            .iter()
+            .chain(org)
+            .chain(user)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", "),
+        ScanSource::Image { image, .. } => image.clone(),
+        ScanSource::Bucket { url, .. } => url.clone(),
+        ScanSource::K8s { context, .. } => {
+            format!(
+                "Kubernetes {}",
+                context.as_deref().unwrap_or("current context")
+            )
+        }
+        ScanSource::Repos { .. } => format!(
+            "{} repositories",
+            mass_results.as_ref().map(|r| r.len()).unwrap_or(0)
+        ),
+    };
+    let mut notify_failed = false;
+    if !notify_targets.is_empty() {
+        let alert: Vec<Finding> = findings
+            .iter()
+            .filter(|f| notify_on == NotifyOn::All || f.status() == Some(Status::Verified))
+            .cloned()
+            .collect();
+        if !alert.is_empty() {
+            for t in &notify_targets {
+                match kubera::notify::send(&ctx.http, t, &alert, &label).await {
+                    Ok(()) => eprintln!(
+                        "{} alert sent to {} ({} finding(s))",
+                        ctx.style.dim("›"),
+                        t.display(),
+                        alert.len()
+                    ),
+                    Err(e) => {
+                        notify_failed = true;
+                        eprintln!("warning: alert to {} failed: {e:#}", t.display());
+                    }
+                }
+            }
+        }
+    }
     if opts.interactive {
         if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
             bail!("--interactive needs a terminal");
         }
-        let label = match &source {
-            ScanSource::Fs { paths, .. } => paths
-                .iter()
-                .map(|p| p.display().to_string())
-                .collect::<Vec<_>>()
-                .join(", "),
-            ScanSource::Git { repo, .. } => kubera::sources::remote::parse(repo)
-                .ok()
-                .flatten()
-                .map(|r| r.display().to_string())
-                .unwrap_or_else(|| repo.clone()),
-            ScanSource::Stdin { .. } => "stdin".into(),
-            ScanSource::Image { image, .. } => image.clone(),
-            ScanSource::Repos { .. } => format!(
-                "{} repositories",
-                mass_results.as_ref().map(|r| r.len()).unwrap_or(0)
-            ),
-        };
         let svc = services(ctx, engine, filter, max_size);
         tokio::task::block_in_place(|| {
             kubera::tui::run(svc, kubera::tui::Start::Results(findings, label))
@@ -891,9 +1310,130 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
     }
     Ok(if opts.fail && !shown.is_empty() {
         EXIT_FINDINGS
+    } else if notify_failed {
+        // A scheduled scan whose alert was lost must not look clean.
+        1
     } else {
         0
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn cmd_scan_github(
+    g: &GlobalArgs,
+    source: &ScanSource,
+    engine: &Engine,
+    filter: &Filter,
+    max_size: u64,
+    show_progress: bool,
+    style: &Style,
+) -> Result<Vec<Finding>> {
+    use kubera::sources::github;
+    let ScanSource::Github {
+        repos,
+        org,
+        user,
+        what,
+        token_env,
+        api_url,
+        max_items,
+        max_runs,
+        max_rate_wait,
+        opts,
+    } = source
+    else {
+        unreachable!()
+    };
+    let token = match token_env {
+        Some(var) => Some(std::env::var(var).with_context(|| {
+            format!("environment variable `{var}` (from --token-env) is not set")
+        })?),
+        None => None,
+    };
+    let mut client = kubera::forge::Client::new(
+        token.clone(),
+        None,
+        std::time::Duration::from_secs(*max_rate_wait),
+    )?;
+    client.allow_http = g.allow_http;
+    let api = api_url.trim_end_matches('/');
+    let custom_api = (api != "https://api.github.com").then_some(api);
+    let mut all_repos = repos.clone();
+    for o in org {
+        let list = client
+            .list(&kubera::forge::Source::GitHubOrg(o.clone()), custom_api)
+            .await?;
+        all_repos.extend(list.into_iter().map(|r| r.full_name));
+    }
+    for u in user {
+        let list = client
+            .list(&kubera::forge::Source::GitHubUser(u.clone()), custom_api)
+            .await?;
+        all_repos.extend(list.into_iter().map(|r| r.full_name));
+    }
+    all_repos.sort();
+    all_repos.dedup();
+    if all_repos.is_empty() && user.is_empty() {
+        bail!("nothing to scan: pass owner/name repositories, --org or --user");
+    }
+    let what = if what.is_empty() {
+        github::ALL.to_vec()
+    } else {
+        what.clone()
+    };
+    let o = github::Options {
+        api: api.to_string(),
+        repos: all_repos,
+        gist_users: user.clone(),
+        what,
+        max_items: *max_items,
+        max_runs: *max_runs,
+        max_log_size: 256 * 1024 * 1024,
+        max_file_size: max_size,
+    };
+    let progress = |m: String| {
+        if show_progress {
+            eprintln!("{} {m}", style.dim("›"));
+        }
+    };
+    let collected = github::collect(&client, &o, &progress).await?;
+    for w in &collected.warnings {
+        eprintln!("warning: {w}");
+    }
+    let mut findings = scan::scan_chunks(engine, filter, &collected.chunks);
+    for (url, label) in &collected.git {
+        progress(format!("{label}: history"));
+        let target = scan::Target::Git {
+            repo: url.clone(),
+            options: git::GitOptions {
+                jobs: opts.jobs,
+                ..Default::default()
+            },
+            auth: kubera::sources::remote::Auth {
+                token: token.clone(),
+                user: None,
+                allow_http: g.allow_http,
+                interactive: false,
+            },
+            baseline: None,
+            mirror: None,
+        };
+        match scan::run_detailed(engine, filter, &target, max_size, &|_| {}) {
+            Ok(out) => findings.extend(out.findings),
+            // Repositories without a wiki have no wiki repository.
+            Err(e) if label.ends_with("(wiki)") => {
+                let _ = e;
+                if show_progress {
+                    eprintln!(
+                        "{} {label}: skipped (no wiki, or no access)",
+                        style.dim("›")
+                    );
+                }
+            }
+            Err(e) => eprintln!("warning: {label}: {e:#}"),
+        }
+    }
+    Ok(findings)
 }
 
 /// Collect the secret parts for `t` from flags, env and stdin.
@@ -1017,6 +1557,7 @@ async fn cmd_scan_repos(
         state,
         max_rate_wait,
         max_depth,
+        opts,
         ..
     } = source
     else {
@@ -1099,6 +1640,12 @@ async fn cmd_scan_repos(
         cache_dir: cache_dir.clone(),
         git: git::GitOptions {
             max_depth: *max_depth,
+            // Repositories already run in parallel: share the CPUs.
+            jobs: if opts.jobs > 0 {
+                opts.jobs
+            } else {
+                (git::effective_jobs(0) / (*repo_concurrency).max(1)).max(1)
+            },
             ..Default::default()
         },
         auth: kubera::sources::remote::Auth {
@@ -1229,6 +1776,7 @@ fn services(ctx: Ctx, engine: Engine, filter: Filter, max_file_size: u64) -> kub
         http: ctx.http,
         max_file_size,
         runtime: Some(tokio::runtime::Handle::current()),
+        baseline: Some(PathBuf::from(kubera::baseline::DEFAULT_FILE)),
     }
 }
 
@@ -1238,7 +1786,8 @@ fn cmd_tui(g: &GlobalArgs, target: Option<String>, git: bool, verify: bool) -> R
     }
     let ctx = context(g)?;
     let engine = Engine::new(ctx.templates.iter().map(|l| l.template.clone()).collect())?;
-    let filter = Filter::new(&ctx.cfg.exclude_paths, &ctx.cfg.allowlist)?;
+    let mut filter = Filter::new(&ctx.cfg.excludes(&[], false), &ctx.cfg.allowlist)?;
+    filter.suppress(kubera::baseline::Baseline::resolve(None)?.fingerprints());
     let max = ctx
         .cfg
         .max_file_size

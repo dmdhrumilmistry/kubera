@@ -37,3 +37,5 @@ Other clients (`claude_desktop_config.json`, `.cursor/mcp.json`, ...):
 - **The model can't supply credentials.** No tool accepts tokens or environment-variable names; otherwise a prompt-injected document could ask the server to send a credential to a host of its choosing. To scan private repositories, start the server with `--git-token-env VAR`.
 - **Rotation is plan-only.** Executing a rotation stays an explicit human step (`kubera rotate --execute`).
 - **`--root DIR`** confines file and local-repository scans to one directory tree.
+
+The server applies `.kubera.yaml` and the [baseline](triage.md) (`.kubera-baseline.json`) from its working directory, so findings you triaged are not shown to the assistant either.

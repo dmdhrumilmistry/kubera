@@ -39,6 +39,7 @@ fn services() -> Services {
         http: Http::new(HttpOptions::default()).unwrap(),
         max_file_size: 1 << 20,
         runtime: None,
+        baseline: None,
     }
 }
 
@@ -77,6 +78,7 @@ fn finding(
                 "https://github.com/acme/payments/blob/9f3c1e7/{path}#L{line}"
             )),
             layer: None,
+            ..Default::default()
         },
     );
     f.verification = status.map(|s| Verification {

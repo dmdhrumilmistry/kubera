@@ -1,0 +1,30 @@
+id: perplexity-api-key
+name: Perplexity API Key
+platform: Perplexity
+description: Perplexity API key (spends the account's API credits).
+severity: medium
+tags: [ai]
+references:
+  - https://docs.perplexity.ai/guides/getting-started
+  - https://docs.perplexity.ai/api-reference/async-chat-completions-get
+detect:
+  keywords: [pplx-]
+  patterns:
+    - name: key
+      regex: '\b(pplx-[A-Za-z0-9]{48})\b'
+verify:
+  # Lists async requests: read-only and free.
+  request:
+    url: https://api.perplexity.ai/async/chat/completions
+    auth: { type: bearer, token: "{{ key }}" }
+  valid: { status: [200] }
+  invalid: { status: [401] }
+rotate:
+  instructions: |
+    Perplexity -> Settings -> API: delete the leaked key and generate a new
+    one. Check the usage page for spend you do not recognize.
+tests:
+  positive:
+    - "PERPLEXITY_API_KEY=p{{'p'}}lx-7HxguEumpiwHojUNlBfoMAd6MtbtLpon5i47VsifSgXQu3fb"
+  negative:
+    - "pplx-short"

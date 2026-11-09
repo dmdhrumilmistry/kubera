@@ -2,13 +2,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::template::{Severity, Template};
 
-#[derive(Debug, Clone, Copy, Default, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "lowercase")]
 pub enum SourceKind {
     #[default]
@@ -16,9 +16,17 @@ pub enum SourceKind {
     Git,
     Stdin,
     Container,
+    /// GitHub issues, comments and Actions logs.
+    #[serde(rename = "github")]
+    GitHub,
+    /// Cloud object storage (S3, GCS).
+    Bucket,
+    /// A live Kubernetes cluster.
+    Kubernetes,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Location {
     pub source: SourceKind,
     /// Repository the finding came from (remote URL without credentials, or
@@ -42,6 +50,12 @@ pub struct Location {
     /// Container images: digest of the layer holding the file.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub layer: Option<String>,
+    /// The secret was found after decoding (`base64`, `url`, `escape`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decoder: Option<String>,
+    /// Archives: path of the entry inside `path` (`a.zip!/dir/b.env`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entry: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]

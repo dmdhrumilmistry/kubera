@@ -1,0 +1,33 @@
+id: grafana-cloud-token
+name: Grafana Cloud Access Policy Token
+platform: Grafana
+description: Grafana Cloud access policy token (glc_). Depending on its scopes it reads or writes metrics, logs and traces, or manages stacks.
+severity: high
+tags: [observability]
+references:
+  - https://grafana.com/docs/grafana-cloud/account-management/authentication-and-permissions/access-policies/
+  - https://grafana.com/docs/grafana-cloud/developer-resources/api-reference/cloud-api/
+detect:
+  keywords: [glc_]
+  patterns:
+    - name: token
+      # glc_ + base64 of a small JSON document ({"o":...,"n":...,"k":...}).
+      regex: '\b(glc_eyJ[A-Za-z0-9+/]{40,400}={0,2})'
+verify:
+  request:
+    url: https://grafana.com/api/v1/tokens
+    query: { region: us }
+    auth: { type: bearer, token: "{{ token }}" }
+  # 403 = valid token without the accesspolicies:read scope.
+  valid: { status: [200, 403] }
+  invalid: { status: [401] }
+rotate:
+  instructions: |
+    Grafana Cloud portal -> Administration -> Access policies: delete the
+    leaked token (or the whole policy), create a new token and deploy it
+    (agents, Alloy, CI). Review what the policy's scopes allowed.
+tests:
+  positive:
+    - "GRAFANA_CLOUD_TOKEN=g{{'l'}}c_eyJvIjoiNjA1MzIiLCJuIjoic3RhY2stNjE2NTQtaG0tcmVhZC1jaSIsImsiOiJsME1qNXVWcHVlOFFjUGhCMEJjVEtDOVQiLCJtIjp7InIiOiJwcm9kLXVzLWVhc3QtMCJ9fQ=="
+  negative:
+    - "glc_xxxx"

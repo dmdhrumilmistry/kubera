@@ -241,6 +241,104 @@ impl Client {
     }
 }
 
+impl Client {
+    /// Every item of a paginated GitHub list endpoint (JSON array), up to
+    /// `max` items, following `Link: rel="next"` on the same origin only.
+    pub async fn github_list(&self, url: &str, max: usize) -> Result<Vec<Value>> {
+        let base = reqwest::Url::parse(url).context("invalid API url")?;
+        let mut next = Some(base.clone());
+        let mut out = Vec::new();
+        while let Some(u) = next.take() {
+            let (json, headers) = self.get(Kind::GitHub, &u).await?;
+            // Some endpoints wrap the array (`{"workflow_runs": [...]}`).
+            let items = match &json {
+                Value::Array(a) => a.clone(),
+                Value::Object(o) => o
+                    .values()
+                    .find_map(|v| v.as_array().cloned())
+                    .unwrap_or_default(),
+                _ => Vec::new(),
+            };
+            out.extend(items);
+            if out.len() >= max {
+                out.truncate(max);
+                break;
+            }
+            next = match link_next(&headers) {
+                Some(n) => {
+                    let n = reqwest::Url::parse(&n).context("invalid pagination url")?;
+                    if n.origin() != base.origin() {
+                        bail!(
+                            "refusing to follow pagination to another host: {}",
+                            host(&n)
+                        );
+                    }
+                    Some(n)
+                }
+                None => None,
+            };
+        }
+        Ok(out)
+    }
+
+    /// Download a GitHub resource that redirects to pre-signed storage
+    /// (Actions logs): the token goes to the API only, never to the
+    /// redirect target, which must be https. At most `max` bytes.
+    pub async fn github_download(&self, url: &str, max: u64) -> Result<Option<Vec<u8>>> {
+        let u = reqwest::Url::parse(url).context("invalid API url")?;
+        if u.scheme() != "https" && !(self.allow_http && u.scheme() == "http") {
+            bail!("refusing non-https API url {}", host(&u));
+        }
+        let rb = self
+            .http
+            .get(u.clone())
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28");
+        let resp = self
+            .authorize(Kind::GitHub, rb)
+            .send()
+            .await
+            .map_err(reqwest::Error::without_url)
+            .with_context(|| format!("GET {}", host(&u)))?;
+        let status = resp.status().as_u16();
+        let resp = if (300..400).contains(&status) {
+            let loc = resp
+                .headers()
+                .get("location")
+                .and_then(|v| v.to_str().ok())
+                .context("redirect without a location")?;
+            let to = u.join(loc).context("invalid redirect")?;
+            if to.scheme() != "https" && !(self.allow_http && to.scheme() == "http") {
+                bail!("refusing non-https download from {}", host(&to));
+            }
+            // Pre-signed URL: no Authorization header.
+            self.http
+                .get(to.clone())
+                .send()
+                .await
+                .map_err(reqwest::Error::without_url)
+                .with_context(|| format!("GET {}", host(&to)))?
+        } else {
+            resp
+        };
+        match resp.status().as_u16() {
+            200..=299 => {}
+            // Expired or deleted logs, no access: nothing to scan.
+            404 | 410 => return Ok(None),
+            s => bail!("{} answered HTTP {s}", host(&u)),
+        }
+        let mut resp = resp;
+        let mut buf = Vec::new();
+        while let Some(chunk) = resp.chunk().await? {
+            buf.extend_from_slice(&chunk);
+            if buf.len() as u64 > max {
+                return Ok(None);
+            }
+        }
+        Ok(Some(buf))
+    }
+}
+
 fn enc(s: &str) -> String {
     percent_encoding::utf8_percent_encode(s, percent_encoding::NON_ALPHANUMERIC).to_string()
 }
