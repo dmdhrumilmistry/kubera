@@ -144,3 +144,7 @@ Templates are code: only load templates you trust, because a template decides wh
 ## Documentation
 
 Full docs: https://dmdhrumilmistry.github.io/kubera/ (sources in [`docs/`](docs/)).
+
+## License
+
+[MIT](LICENSE)
