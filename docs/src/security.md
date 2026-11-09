@@ -38,6 +38,18 @@ Kubera handles live credentials, so it is conservative by default.
 - Hidden prompts (`kubera verify` with no secret) keep secrets out of shell history and the screen.
 - The TUI masks secrets until you press `r`, hides them again when the selection moves, exports only redacted JSON (new file, mode `0600`), and can't execute rotations: applying one stays an explicit CLI step with its own confirmation.
 
+## Container images
+
+Registry blobs are sha256-verified before they are parsed and capped by `--max-layer-size`. Image archives are streamed and never unpacked to disk, so hostile paths or symlinks inside an image cannot write anywhere. Registries must use HTTPS unless you pass `--plain-http`.
+
+## MCP server
+
+`kubera mcp` never returns raw secrets to the AI model: findings are redacted, and follow-up tools take fingerprints. Tools that contact vendors need `--allow-verify`, tools accept no credentials or environment-variable names (prompt-injection exfiltration), rotation is plan-only, and `--root` confines file access. See [MCP server](mcp.md).
+
+## Incremental state
+
+State files contain only ref names and commit ids, are written atomically with mode `0600`, and advance only after a passing scan, so a leak cannot drop out of view after one failed run.
+
 ## Untrusted repositories
 
 `scan git` may point at hostile repositories, and some git features can execute commands configured by the repository. Kubera runs git with:

@@ -7,10 +7,14 @@
 - [Installation](installation.md)
 - [Scanning](scanning.md)
 - [Remote repositories](remote.md)
+- [Incremental and mass scanning](incremental.md)
+- [Container images](containers.md)
 - [Interactive TUI](tui.md)
+- [MCP server](mcp.md)
 - [Verify, analyze and rotate](lifecycle.md)
 - [Configuration](configuration.md)
 - [CI integration](ci.md)
+- [Benchmarks](benchmarks.md)
 
 # Templates
 

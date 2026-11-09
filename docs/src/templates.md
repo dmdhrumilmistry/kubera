@@ -32,9 +32,12 @@ detect:
       exclude: ['regex']      # drop matches matching any of these
       captures: [key_id]      # extra named groups exposed as variables
       secret: true            # false = never masked (e.g. AWS key id)
+      optional: false         # true = report even if this part is missing
 ```
 
-**Group selection:** `group` if set, otherwise the named group matching the pattern's `name`, otherwise group 1 if the regex has groups, otherwise the whole match.
+**Group selection:** `group` if set, otherwise the named group matching the pattern's `name`, otherwise the **first capture group that matched** (so `(new_format)|(legacy_format)` alternatives work), otherwise the whole match.
+
+**Optional parts** (`optional: true`) attach their nearest match within `max_distance` when one exists and never block a finding, e.g. the tenant host a token belongs to. Verification that needs a missing part reports `unknown`. At least one part must be required.
 
 **Multi-part secrets:** with several patterns, every combination of matches whose start offsets lie within `max_distance` bytes of each other becomes one candidate. For example:
 
@@ -80,7 +83,7 @@ Using an undefined variable is a **validation error**, reported with the list of
 
 ```yaml
 request:
-  method: GET                  # default GET
+  method: GET                  # GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS, ...
   url: https://...             # required; must be https
   headers: { Name: value }
   query: { key: value }        # appended to the URL, encoded
@@ -92,7 +95,16 @@ request:
   timeout: 15                  # seconds
 ```
 
-`form` and `json` set `Content-Type` unless you set it yourself.
+`form` and `json` set `Content-Type` unless you set it yourself. Every method can carry any body kind; examples from the builtin templates:
+
+| Need | Template | Request |
+|---|---|---|
+| GraphQL query | `linear-api-key`, `new-relic-user-key` | `method: POST` + `json: { query: "{ viewer { id } }" }` |
+| OAuth client-credentials | `paypal-oauth-credentials` | `method: POST` + `form: { grant_type: client_credentials }` + basic auth |
+| RPC call without a body | `dropbox-access-token` | `method: POST`, no body |
+| Roll a token in place | `cloudflare-api-token` (rotate) | `method: PUT` + `json: {}` |
+| Revoke | `okta-api-token`, `buildkite-token`, `discord-webhook` (rotate) | `method: DELETE` |
+| Token in the URL path / query | `telegram-bot-token`, `mapbox-secret-token` | `url: ".../bot{{ token }}/getMe"`, `query: { access_token: ... }` |
 
 ### auth
 
@@ -157,6 +169,16 @@ extract:
 - Non-string JSON values (arrays, numbers) become variables as compact JSON text, so `{{ scopes }}` can be embedded in a raw `body`.
 - `secret: true` masks the value in reports. In `rotate`, every secret extract is preserved in the outputs.
 
+Add `any:` to require **at least one** of several matchers (OR), on top of the conditions above (AND):
+
+```yaml
+invalid:
+  any:
+    - { status: [401] }
+    - { status: [400], body_contains: [AUTHENTICATION] }
+    - { status: [200], json: [{ path: code, equals: TokenRevoked }] }
+```
+
 ## verify
 
 ```yaml
@@ -165,7 +187,14 @@ verify:
   valid: Matcher            # required
   invalid: Matcher          # optional; otherwise non-valid = unknown
   extract: [Extract]        # run only when valid
+  fallbacks:                # optional alternate endpoints, tried in order
+    - label: EU region      # shown as the `Endpoint` detail when it verifies
+      request: Request
+      valid: Matcher        # default: the parent's
+      invalid: Matcher      # default: the parent's
 ```
+
+With fallbacks, a secret is `verified` as soon as **one** endpoint accepts it, `invalid` only when **every** endpoint rejects it, and `unknown` otherwise. Use them for regional APIs (Datadog sites, Mailgun/New Relic EU), sandbox vs production (Square, PayPal) or alternative token kinds (Postmark server vs account tokens).
 
 ## analyze
 
