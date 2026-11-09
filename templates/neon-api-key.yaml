@@ -1,0 +1,44 @@
+id: neon-api-key
+name: Neon API Key
+platform: Neon
+description: Neon API key (manage serverless Postgres projects, branches, roles and their passwords).
+severity: critical
+tags: [database, cloud]
+references:
+  - https://neon.com/docs/manage/api-keys
+  - https://api-docs.neon.tech/reference/getcurrentuserinfo
+detect:
+  keywords: [napi_]
+  patterns:
+    - name: key
+      regex: '\b(napi_[a-z0-9]{64})\b'
+verify:
+  request:
+    url: https://console.neon.tech/api/v2/users/me
+    auth: { type: bearer, token: "{{ key }}" }
+  # Organization keys are not tied to a user and come back unknown here.
+  valid: { status: [200] }
+  invalid: { status: [401] }
+  extract:
+    - { name: email, label: Email, json: email }
+    - { name: login, label: Login, json: login }
+    - { name: plan, label: Plan, json: plan }
+analyze:
+  steps:
+    - name: projects
+      description: Projects visible to the key
+      request:
+        url: https://console.neon.tech/api/v2/projects
+        auth: { type: bearer, token: "{{ key }}" }
+      extract:
+        - { name: projects, label: Projects, json: "projects.*.name" }
+rotate:
+  instructions: |
+    Neon console -> Account settings (or Organization settings) -> API keys:
+    revoke the leaked key and create a new one. Reset role passwords if the
+    key could have read them.
+tests:
+  positive:
+    - "NEON_API_KEY=n{{'a'}}pi_rgip6x1i9fijdxhoegwxiewurambtganynhsvhafndgtnz8drjgjb7gbnie15nd6"
+  negative:
+    - "napi_short"

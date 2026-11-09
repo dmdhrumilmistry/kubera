@@ -1,0 +1,32 @@
+id: infracost-api-key
+name: Infracost API Key
+platform: Infracost
+description: Infracost API key (Cloud Pricing API and Infracost Cloud organization).
+severity: low
+tags: [developer-tools, ci]
+references:
+  - https://www.infracost.io/docs/supported_resources/cloud_pricing_api/
+detect:
+  keywords: [ico-]
+  patterns:
+    - name: key
+      regex: '\b(ico-[A-Za-z0-9]{32})\b'
+      min_entropy: 3.5
+verify:
+  # Minimal GraphQL query against the read-only pricing API.
+  request:
+    method: POST
+    url: https://pricing.api.infracost.io/graphql
+    headers: { X-Api-Key: "{{ key }}" }
+    json: { query: "{ __typename }" }
+  valid: { status: [200] }
+  invalid: { status: [401, 403] }
+rotate:
+  instructions: |
+    Infracost Cloud -> Org settings -> API keys: rotate the key and update
+    the INFRACOST_API_KEY secret in CI.
+tests:
+  positive:
+    - "INFRACOST_API_KEY=i{{'c'}}o-TN4FyvZ58agjWvIYInDjuKBryaetBsAn"
+  negative:
+    - "ico-short"

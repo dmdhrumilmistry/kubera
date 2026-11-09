@@ -1,0 +1,42 @@
+id: clickup-pat
+name: ClickUp Personal API Token
+platform: ClickUp
+description: ClickUp personal API token (acts as the user in every workspace they belong to).
+severity: high
+tags: [project-management]
+references:
+  - https://developer.clickup.com/docs/authentication
+  - https://developer.clickup.com/reference/getauthorizeduser
+detect:
+  keywords: [pk_]
+  patterns:
+    - name: token
+      regex: '\b(pk_[0-9]{4,12}_[A-Z0-9]{32})\b'
+      min_entropy: 3.5
+verify:
+  request:
+    url: https://api.clickup.com/api/v2/user
+    headers: { Authorization: "{{ token }}" }
+  valid: { status: [200] }
+  invalid: { status: [401] }
+  extract:
+    - { name: username, label: User, json: user.username }
+    - { name: email, label: Email, json: user.email }
+analyze:
+  steps:
+    - name: workspaces
+      description: Workspaces (teams) the user belongs to
+      request:
+        url: https://api.clickup.com/api/v2/team
+        headers: { Authorization: "{{ token }}" }
+      extract:
+        - { name: workspaces, label: Workspaces, json: "teams.*.name" }
+rotate:
+  instructions: |
+    ClickUp -> Settings -> Apps: regenerate the API token (this revokes the
+    leaked one) and deploy the new token.
+tests:
+  positive:
+    - "CLICKUP_API_TOKEN=p{{'k'}}_81234567_8E41HOCKHJJKTKBRMOVKLUDNU08BGK9A"
+  negative:
+    - "pk_123_ABC"

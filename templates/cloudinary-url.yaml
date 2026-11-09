@@ -1,0 +1,35 @@
+id: cloudinary-url
+name: Cloudinary API Environment URL
+platform: Cloudinary
+description: CLOUDINARY_URL with API key, API secret and cloud name (upload, delete and transform every asset of the cloud).
+severity: high
+tags: [media, cloud]
+references:
+  - https://cloudinary.com/documentation/how_to_integrate_cloudinary#configure_your_sdk
+  - https://cloudinary.com/documentation/admin_api#usage
+detect:
+  keywords: [cloudinary://]
+  patterns:
+    - name: url
+      regex: '(?P<url>cloudinary://(?P<api_key>[0-9]{12,18}):(?P<api_secret>[A-Za-z0-9_-]{20,40})@(?P<cloud_name>[A-Za-z0-9_-]{1,64}))'
+      captures: [api_key, api_secret, cloud_name]
+      min_entropy: 3.5
+verify:
+  request:
+    url: "https://api.cloudinary.com/v1_1/{{ cloud_name }}/usage"
+    auth: { type: basic, username: "{{ api_key }}", password: "{{ api_secret }}" }
+  valid: { status: [200] }
+  invalid: { status: [401] }
+  extract:
+    - { name: plan, label: Plan, json: plan }
+    - { name: credits_used, label: Credits used, json: credits.usage }
+    - { name: resources, label: Resources, json: resources }
+rotate:
+  instructions: |
+    Cloudinary console -> Settings -> API Keys: generate a new key pair,
+    deploy the new CLOUDINARY_URL, then deactivate and delete the leaked key.
+tests:
+  positive:
+    - "CLOUDINARY_URL=c{{'l'}}oudinary://823456789012345:jeqiFUtWYkWgHbNHgXmzUrzQjHO@acme-media"
+  negative:
+    - "CLOUDINARY_URL=cloudinary://<api_key>:<api_secret>@<cloud_name>"

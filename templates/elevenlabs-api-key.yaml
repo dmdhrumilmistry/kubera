@@ -1,0 +1,39 @@
+id: elevenlabs-api-key
+name: ElevenLabs API Key
+platform: ElevenLabs
+description: ElevenLabs API key (text-to-speech credits, cloned voices).
+severity: medium
+tags: [ai]
+references:
+  - https://elevenlabs.io/docs/api-reference/authentication
+  - https://elevenlabs.io/docs/api-reference/user/get
+detect:
+  keywords: [sk_]
+  patterns:
+    - name: key
+      regex: '\b(sk_[a-f0-9]{48})\b'
+      min_entropy: 3.2
+verify:
+  request:
+    url: https://api.elevenlabs.io/v1/user
+    headers: { xi-api-key: "{{ key }}" }
+  valid: { status: [200] }
+  # Keys restricted from reading the user answer with another error code
+  # and stay unknown.
+  invalid:
+    status: [400, 401]
+    body_contains: [invalid_api_key]
+  extract:
+    - { name: user_id, label: User, json: user_id }
+    - { name: tier, label: Tier, json: subscription.tier }
+    - { name: characters_used, label: Characters used, json: subscription.character_count }
+rotate:
+  instructions: |
+    ElevenLabs -> Developers -> API Keys: delete the leaked key and create a
+    new one, ideally restricted to the endpoints and credit limit you need.
+tests:
+  positive:
+    - "ELEVENLABS_API_KEY=s{{'k'}}_9e4c996d872dcd141d11b5ea1b07812dd5d24688ced96e30"
+  negative:
+    - "sk_9e4c996d872dcd141d11b5ea1b0781"
+    - "sk_000000000000000000000000000000000000000000000000"

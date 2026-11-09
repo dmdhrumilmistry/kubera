@@ -1,0 +1,46 @@
+id: launchdarkly-access-token
+name: LaunchDarkly Access Token
+platform: LaunchDarkly
+description: LaunchDarkly API access token (personal or service). Can toggle feature flags in production depending on its role.
+severity: high
+tags: [developer-tools, feature-flags]
+references:
+  - https://docs.launchdarkly.com/home/account/api
+  - https://apidocs.launchdarkly.com/tag/Other#operation/getCallerIdentity
+detect:
+  keywords: [api-]
+  patterns:
+    - name: token
+      regex: '\b(api-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\b'
+verify:
+  request:
+    url: https://app.launchdarkly.com/api/v2/caller-identity
+    headers: { Authorization: "{{ token }}" }
+  valid: { status: [200] }
+  invalid: { status: [401] }
+  extract:
+    - { name: token_name, label: Token, json: tokenName }
+    - { name: token_kind, label: Kind, json: tokenKind }
+    - { name: service_token, label: Service token, json: serviceToken }
+    - { name: account_id, label: Account, json: accountId }
+analyze:
+  steps:
+    - name: projects
+      description: Projects visible to the token
+      request:
+        url: https://app.launchdarkly.com/api/v2/projects
+        query: { limit: "50" }
+        headers: { Authorization: "{{ token }}" }
+      extract:
+        - { name: projects, label: Projects, json: "items.*.key" }
+rotate:
+  instructions: |
+    LaunchDarkly -> Organization settings -> Authorization: reset the leaked
+    token (optionally with an expiry for the old value), deploy the new one.
+    Review the audit log for flag changes made with it.
+tests:
+  positive:
+    - "LD_API_KEY=a{{'p'}}i-054831ae-217d-4d11-a3ae-517e73240837"
+  negative:
+    - "api-key-1234"
+    - "sdk-054831ae-217d-4d11-a3ae-517e73240837"

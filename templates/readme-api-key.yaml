@@ -1,0 +1,33 @@
+id: readme-api-key
+name: ReadMe API Key
+platform: ReadMe
+description: ReadMe project API key (edit API docs, guides and changelogs of the project).
+severity: medium
+tags: [developer-tools, docs]
+references:
+  - https://docs.readme.com/main/reference/intro/authentication
+  - https://docs.readme.com/main/reference/getproject
+detect:
+  keywords: [rdme_]
+  patterns:
+    - name: key
+      regex: '\b(rdme_[a-z0-9]{70})\b'
+verify:
+  request:
+    url: https://dash.readme.com/api/v1
+    auth: { type: basic, username: "{{ key }}", password: "" }
+  valid: { status: [200] }
+  invalid: { status: [401] }
+  extract:
+    - { name: project, label: Project, json: name }
+    - { name: subdomain, label: Subdomain, json: subdomain }
+    - { name: plan, label: Plan, json: plan }
+rotate:
+  instructions: |
+    ReadMe dashboard -> the project -> API Keys: create a new key, deploy it
+    (CI docs sync, rdme CLI), then delete the leaked key.
+tests:
+  positive:
+    - "README_API_KEY=r{{'d'}}me_6p5hltnhriyrzgujfm7tz5klp8in7rj9uhht7bkjztkneqvge8cy8hfnr7elnaeuyhmejy"
+  negative:
+    - "rdme_short"

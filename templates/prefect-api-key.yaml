@@ -1,0 +1,41 @@
+id: prefect-api-key
+name: Prefect Cloud API Key
+platform: Prefect
+description: Prefect Cloud user API key (run and edit flows, read blocks that may hold credentials).
+severity: high
+tags: [data, ci]
+references:
+  - https://docs.prefect.io/v3/manage/cloud/manage-users/api-keys
+detect:
+  keywords: [pnu_]
+  patterns:
+    - name: key
+      regex: '\b(pnu_[A-Za-z0-9]{36})\b'
+verify:
+  request:
+    url: https://api.prefect.cloud/api/me/
+    auth: { type: bearer, token: "{{ key }}" }
+  valid: { status: [200] }
+  invalid: { status: [401] }
+  extract:
+    - { name: handle, label: User, json: handle }
+    - { name: email, label: Email, json: email }
+analyze:
+  steps:
+    - name: workspaces
+      description: Workspaces the key can access
+      request:
+        url: https://api.prefect.cloud/api/me/workspaces
+        auth: { type: bearer, token: "{{ key }}" }
+      extract:
+        - { name: workspaces, label: Workspaces, json: "*.workspace_handle" }
+        - { name: accounts, label: Accounts, json: "*.account_handle" }
+rotate:
+  instructions: |
+    Prefect Cloud -> profile -> API keys: delete the leaked key and create a
+    new one. Rotate credentials stored in blocks the key could read.
+tests:
+  positive:
+    - "PREFECT_API_KEY=p{{'n'}}u_ZM7wDnESVGnn5Tr0zQ6hjKvoyWyNRfLopo6G"
+  negative:
+    - "pnu_short"

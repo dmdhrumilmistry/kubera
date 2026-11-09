@@ -1,0 +1,33 @@
+id: openrouter-api-key
+name: OpenRouter API Key
+platform: OpenRouter
+description: OpenRouter API key (spends the account's credits on any routed model).
+severity: high
+tags: [ai]
+references:
+  - https://openrouter.ai/docs/api-reference/api-keys/get-current-key
+detect:
+  keywords: [sk-or-v1-]
+  patterns:
+    - name: key
+      regex: '\b(sk-or-v1-[a-f0-9]{64})\b'
+verify:
+  request:
+    url: https://openrouter.ai/api/v1/key
+    auth: { type: bearer, token: "{{ key }}" }
+  valid: { status: [200] }
+  invalid: { status: [401] }
+  extract:
+    - { name: label, label: Key label, json: data.label }
+    - { name: usage, label: Usage (credits), json: data.usage }
+    - { name: limit, label: Limit, json: data.limit }
+    - { name: free_tier, label: Free tier, json: data.is_free_tier }
+rotate:
+  instructions: |
+    openrouter.ai/settings/keys: delete the leaked key and create a new one.
+    Check the activity page for usage you do not recognize.
+tests:
+  positive:
+    - "OPENROUTER_API_KEY=s{{'k'}}-or-v1-40eb50d307895d000142b5627690357cb0866a0e54356b5cbda92d45da71d691"
+  negative:
+    - "sk-or-v1-xxxxxxxx"

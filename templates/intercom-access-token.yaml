@@ -1,0 +1,37 @@
+id: intercom-access-token
+name: Intercom Access Token
+platform: Intercom
+description: Intercom app access token (customer contacts, conversations and admin data of the workspace).
+severity: high
+tags: [support, crm]
+references:
+  - https://developers.intercom.com/docs/build-an-integration/learn-more/authentication
+  - https://developers.intercom.com/docs/references/rest-api/api.intercom.io/admins/identifyadmin
+detect:
+  keywords: [dG9rO]
+  patterns:
+    - name: token
+      # base64 of "tok:<id>:1:0"
+      regex: '\b(dG9rO[A-Za-z0-9+/]{50,70}={0,2})'
+verify:
+  request:
+    url: https://api.intercom.io/me
+    headers: { Accept: application/json }
+    auth: { type: bearer, token: "{{ token }}" }
+  valid: { status: [200] }
+  invalid: { status: [401] }
+  extract:
+    - { name: admin, label: Admin, json: name }
+    - { name: email, label: Email, json: email }
+    - { name: workspace, label: Workspace, json: app.name }
+    - { name: workspace_id, label: Workspace id, json: app.id_code }
+rotate:
+  instructions: |
+    Intercom Developer Hub -> the app -> Authentication: regenerate the
+    access token, deploy it everywhere the app is used. Review the
+    workspace's recent API activity.
+tests:
+  positive:
+    - "INTERCOM_ACCESS_TOKEN=d{{'G'}}9rOjI4NDZjMzlhXzY0M2ZfNGUxYl84YjU5XzZiMzI2MjI5MDc2NToxOjA="
+  negative:
+    - "dG9rOg=="

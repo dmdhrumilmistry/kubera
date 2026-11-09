@@ -1,0 +1,46 @@
+id: render-api-key
+name: Render API Key
+platform: Render
+description: Render API key (manage services, deploys and environment variables of every workspace the user belongs to).
+severity: critical
+tags: [cloud, hosting]
+references:
+  - https://render.com/docs/api
+  - https://api-docs.render.com/reference/list-owners
+detect:
+  keywords: [rnd_]
+  patterns:
+    - name: key
+      regex: '\b(rnd_[A-Za-z0-9]{24,48})\b'
+      min_entropy: 3.5
+verify:
+  request:
+    url: https://api.render.com/v1/owners
+    query: { limit: "20" }
+    auth: { type: bearer, token: "{{ key }}" }
+  valid: { status: [200] }
+  invalid: { status: [401] }
+  extract:
+    - { name: workspaces, label: Workspaces, json: "*.owner.name" }
+    - { name: emails, label: Emails, json: "*.owner.email" }
+analyze:
+  steps:
+    - name: services
+      description: Services the key can manage (first 20)
+      request:
+        url: https://api.render.com/v1/services
+        query: { limit: "20" }
+        auth: { type: bearer, token: "{{ key }}" }
+      extract:
+        - { name: services, label: Services, json: "*.service.name" }
+rotate:
+  instructions: |
+    Render dashboard -> Account settings -> API Keys: create a new key,
+    deploy it, then revoke the leaked key. Review environment variables and
+    deploy history of the services it could reach.
+tests:
+  positive:
+    - "RENDER_API_KEY=r{{'n'}}d_0Qu0VV5UKoYk124Yae5lsGBx7P4gunwp"
+  negative:
+    - "rnd_short"
+    - "rnd_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
