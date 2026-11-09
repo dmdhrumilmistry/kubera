@@ -1,0 +1,69 @@
+id: openai-api-key
+name: OpenAI API Key
+platform: OpenAI
+description: OpenAI user, project, service-account or admin API key.
+severity: high
+tags: [ai]
+references:
+  - https://platform.openai.com/docs/api-reference/authentication
+  - https://platform.openai.com/docs/api-reference/project-api-keys
+
+detect:
+  keywords: [T3BlbkFJ]
+  patterns:
+    - name: key
+      regex: '\b(sk-(?:(?:proj|svcacct|admin)-)?[A-Za-z0-9_-]{20,200}T3BlbkFJ[A-Za-z0-9_-]{20,200})\b'
+
+verify:
+  request:
+    url: https://api.openai.com/v1/models
+    auth: { type: bearer, token: "{{ key }}" }
+  valid: { status: [200] }
+  invalid: { status: [401] }
+
+analyze:
+  steps:
+    - name: identity
+      description: Owner of the key (user keys only)
+      request:
+        url: https://api.openai.com/v1/me
+        auth: { type: bearer, token: "{{ key }}" }
+      extract:
+        - { name: email, label: Email, json: email }
+        - { name: name, label: Name, json: name }
+        - { name: orgs, label: Organizations, json: "orgs.data.*.title" }
+    - name: models
+      description: Models the key can use
+      request:
+        url: https://api.openai.com/v1/models
+        auth: { type: bearer, token: "{{ key }}" }
+      extract:
+        - { name: models, label: Models, json: "data.*.id" }
+    - name: files
+      description: Can read uploaded files
+      request:
+        url: https://api.openai.com/v1/files
+        auth: { type: bearer, token: "{{ key }}" }
+      extract:
+        - { name: files, label: Files, json: "data.*.filename" }
+    - name: fine_tuning
+      description: Can read fine-tuning jobs
+      request:
+        url: https://api.openai.com/v1/fine_tuning/jobs
+        query: { limit: "5" }
+        auth: { type: bearer, token: "{{ key }}" }
+
+rotate:
+  instructions: |
+    1. Create a replacement key: https://platform.openai.com/api-keys
+       (prefer project keys with restricted permissions).
+    2. Deploy it, then delete the leaked key on the same page. Organization
+       owners can also delete project keys with the Admin API:
+       DELETE /v1/organization/projects/{project_id}/api_keys/{key_id}
+    3. Check usage (https://platform.openai.com/usage) for unexpected spend.
+
+tests:
+  positive:
+    - "OPENAI_API_KEY=sk-proj-Ab3dEf6hIj9kLm2nOp5qRs8tUv{{'T3BlbkFJ'}}Wx1yZa4bCd7eFg0hIj3kLm6n"
+  negative:
+    - "sk-proj-xxxxxxxx"

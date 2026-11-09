@@ -1,0 +1,50 @@
+id: telegram-bot-token
+name: Telegram Bot Token
+platform: Telegram
+description: Telegram Bot API token.
+severity: medium
+tags: [chat]
+references:
+  - https://core.telegram.org/bots/api#authorizing-your-bot
+
+detect:
+  keywords: [":AA"]
+  patterns:
+    - name: token
+      regex: '\b([0-9]{8,10}:AA[0-9A-Za-z_-]{33})(?:[^0-9A-Za-z_-]|$)'
+      min_entropy: 3.5
+
+verify:
+  request:
+    url: "https://api.telegram.org/bot{{ token }}/getMe"
+  valid:
+    status: [200]
+    json: [{ path: ok, equals: true }]
+  invalid:
+    status: [401, 404]
+  extract:
+    - { name: username, label: Bot, json: result.username }
+    - { name: name, label: Name, json: result.first_name }
+    - { name: read_all, label: Reads all group messages, json: result.can_read_all_group_messages }
+
+analyze:
+  steps:
+    - name: webhook
+      description: Where the bot's updates are delivered
+      request:
+        url: "https://api.telegram.org/bot{{ token }}/getWebhookInfo"
+      extract:
+        - { name: webhook_url, label: Webhook, json: result.url }
+        - { name: pending, label: Pending updates, json: result.pending_update_count }
+
+rotate:
+  instructions: |
+    1. In Telegram, message @BotFather: /revoke -> pick the bot. This issues a
+       new token and invalidates the leaked one immediately.
+    2. Deploy the new token.
+
+tests:
+  positive:
+    - "BOT_TOKEN=7064159832:A{{'A'}}Fq3zLx9Vt4Rk8Nw3Hs6Jd1Fb5Gc0Yu2Ei"
+  negative:
+    - "12345:AAxxxx"

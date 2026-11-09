@@ -1,0 +1,137 @@
+//! Live verification of candidate secrets against the issuing platform.
+
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
+
+use futures::StreamExt;
+use tokio::sync::Mutex;
+
+use crate::finding::{Finding, Status, Verification};
+use crate::http::{self, Http};
+use crate::render::{self, Vars};
+use crate::template::Template;
+
+/// Variables available to requests for a given secret.
+pub fn secret_vars(parts: &BTreeMap<String, String>) -> Vars {
+    let mut v = render::builtin_vars();
+    v.extend(parts.iter().map(|(k, v)| (k.clone(), v.clone())));
+    v
+}
+
+/// Outcome of a verification plus the variables it extracted.
+pub struct Outcome {
+    pub verification: Verification,
+    pub vars: Vars,
+}
+
+/// Verify one secret. Never returns an error: failures map to `Unknown`.
+pub async fn verify(http: &Http, t: &Template, parts: &BTreeMap<String, String>) -> Outcome {
+    let mut vars = secret_vars(parts);
+    let Some(v) = &t.verify else {
+        return Outcome {
+            verification: Verification {
+                status: Status::Unsupported,
+                message: Some("template has no verifier".into()),
+                details: BTreeMap::new(),
+            },
+            vars,
+        };
+    };
+    let resp = match http.execute(&v.request, &vars).await {
+        Ok(r) => r,
+        Err(e) => {
+            return Outcome {
+                verification: Verification {
+                    status: Status::Unknown,
+                    message: Some(mask_secrets(&format!("{e:#}"), parts)),
+                    details: BTreeMap::new(),
+                },
+                vars,
+            };
+        }
+    };
+    let (status, message) = match http::check(&v.valid, &resp) {
+        Ok(()) => (Status::Verified, None),
+        Err(why_not_valid) => match &v.invalid {
+            Some(inv) if http::check(inv, &resp).is_ok() => (
+                Status::Invalid,
+                Some(format!(
+                    "HTTP {}: {}",
+                    resp.status,
+                    http::snippet(&resp.body)
+                )),
+            ),
+            _ => (
+                Status::Unknown,
+                Some(format!(
+                    "unexpected response ({why_not_valid}): {}",
+                    http::snippet(&resp.body)
+                )),
+            ),
+        },
+    };
+    let mut details = BTreeMap::new();
+    if status == Status::Verified {
+        for e in &v.extract {
+            if let Some(val) = http::extract(e, &resp) {
+                vars.insert(e.name.clone(), http::value_to_var(&val));
+                let shown = if e.secret {
+                    serde_json::Value::String(crate::finding::redact(&http::value_to_var(&val)))
+                } else {
+                    val
+                };
+                details.insert(e.label.clone().unwrap_or_else(|| e.name.clone()), shown);
+            }
+        }
+    }
+    Outcome {
+        verification: Verification {
+            status,
+            message: message.map(|m| mask_secrets(&m, parts)),
+            details,
+        },
+        vars,
+    }
+}
+
+/// Defence in depth: never echo a secret back inside a diagnostic message.
+pub fn mask_secrets(msg: &str, parts: &BTreeMap<String, String>) -> String {
+    let mut out = msg.to_string();
+    for v in parts.values().filter(|v| v.len() >= 6) {
+        out = out.replace(v.as_str(), &crate::finding::redact(v));
+    }
+    out
+}
+
+/// Verify a batch of findings concurrently. Identical secrets are verified
+/// once (keyed by fingerprint) to avoid hammering vendor APIs.
+pub async fn verify_findings(
+    http: &Http,
+    templates: &HashMap<String, Arc<Template>>,
+    findings: &mut [Finding],
+    concurrency: usize,
+) {
+    let cache: Mutex<HashMap<String, Verification>> = Mutex::new(HashMap::new());
+    let mut unique: BTreeMap<String, (String, BTreeMap<String, String>)> = BTreeMap::new();
+    for f in findings.iter() {
+        unique
+            .entry(f.fingerprint.clone())
+            .or_insert_with(|| (f.detector.clone(), f.secret.clone()));
+    }
+    futures::stream::iter(unique)
+        .map(|(fp, (det, parts))| {
+            let cache = &cache;
+            async move {
+                let Some(t) = templates.get(&det) else { return };
+                let out = verify(http, t, &parts).await;
+                cache.lock().await.insert(fp, out.verification);
+            }
+        })
+        .buffer_unordered(concurrency.max(1))
+        .collect::<Vec<()>>()
+        .await;
+    let cache = cache.into_inner();
+    for f in findings.iter_mut() {
+        f.verification = cache.get(&f.fingerprint).cloned();
+    }
+}

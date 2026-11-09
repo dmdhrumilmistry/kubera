@@ -1,0 +1,34 @@
+id: private-key
+name: Private Key
+platform: Generic
+description: PEM / OpenSSH / PGP private key block.
+severity: high
+tags: [crypto]
+
+detect:
+  keywords: ["PRIVATE KEY"]
+  patterns:
+    - name: key
+      regex: '(-----BEGIN (?:[A-Z]+ )*PRIVATE KEY(?: BLOCK)?-----[A-Za-z0-9+/=\s:,\-\\]{64,}?-----END (?:[A-Z]+ )*PRIVATE KEY(?: BLOCK)?-----)'
+      exclude: ['\.\.\.', '(?i)x{16}', '<[a-z ]+>']
+
+rotate:
+  instructions: |
+    Private keys cannot be revoked remotely; replace them everywhere they are trusted.
+    1. Generate a new key pair (e.g. `ssh-keygen -t ed25519`, or a new CSR/cert).
+    2. Install the new public key / certificate (authorized_keys, deploy keys,
+       CA, load balancers, JWT verifiers, ...).
+    3. Remove the old public key and revoke any certificate issued for it.
+
+tests:
+  positive:
+    - |
+      -----BEGIN {{'OPENSSH'}} PRIVATE KEY-----
+      b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+      QyNTUxOQAAACBu9Vq0Y0fQ1r2Zk3Lm8Qp2Rx7Tv1Wy4Ab6CDq9Ef2Gh5JAAAAJgkqjQNJKo0
+      -----END OPENSSH PRIVATE KEY-----
+  negative:
+    - |
+      -----BEGIN PRIVATE KEY-----
+      ...
+      -----END PRIVATE KEY-----
