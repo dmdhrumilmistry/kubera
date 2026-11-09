@@ -10,7 +10,8 @@ git-repository-url = "https://github.com/dmdhrumilmistry/kubera"
 edit-url-template = "https://github.com/dmdhrumilmistry/kubera/edit/main/docs/{path}"
 site-url = "/kubera/"
 default-theme = "light"
-preferred-dark-theme = "ayu"
+preferred-dark-theme = "navy"
+additional-css = ["theme/kubera.css"]
 
 [output.html.search]
 enable = true

@@ -27,6 +27,17 @@ Kubera handles live credentials, so it is conservative by default.
 5. **Private output.** `--output-file` creates a *new* file with mode `0600` and refuses to overwrite an existing one.
 6. **Reversible where possible.** Builtin templates create the replacement before revoking, and deactivate instead of deleting when the platform allows it.
 
+## Repository credentials
+
+- Tokens for private repositories (`--token-env`) reach git as an `Authorization` header in `GIT_CONFIG_*` **environment variables**, never on the command line. The header is scoped to the repository's origin, so it can't follow a redirect to another host, and it is never sent over plain `http://`.
+- Credentials pasted inside a URL are stripped from it before git runs, and error messages only show the clean URL.
+- Without a terminal, SSH runs with `BatchMode=yes`: it fails fast instead of waiting on a prompt nobody can answer.
+
+## Interactive use
+
+- Hidden prompts (`kubera verify` with no secret) keep secrets out of shell history and the screen.
+- The TUI masks secrets until you press `r`, hides them again when the selection moves, exports only redacted JSON (new file, mode `0600`), and can't execute rotations: applying one stays an explicit CLI step with its own confirmation.
+
 ## Untrusted repositories
 
 `scan git` may point at hostile repositories, and some git features can execute commands configured by the repository. Kubera runs git with:

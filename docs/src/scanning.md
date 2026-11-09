@@ -6,6 +6,8 @@ kubera scan git <REPO>         # full history of a local path or remote URL
 kubera scan stdin              # anything piped in
 ```
 
+Add `-i` to any scan to browse the results in the [interactive TUI](tui.md) instead of printing them.
+
 ## Filesystem
 
 ```bash
@@ -28,13 +30,15 @@ kubera scan git . --branch main --since-commit 4b825dc --max-depth 500
 
 Kubera runs `git log -p` and scans only the **added** lines of each commit. It finds secrets that were committed and later deleted, and reports the commit, author, date, file and original line number.
 
-Remote URLs (`https://`, `ssh://`, `git://`, `git@`) are cloned bare into a temporary directory that is removed afterwards.
+Remote repositories (HTTPS, SSH, `git@host:org/repo`, `github.com/org/repo`, ...) are cloned bare into a temporary directory that is removed afterwards. Private repositories, SSH and web links to findings are covered in [Remote repositories](remote.md).
 
 | Flag | Meaning |
 |---|---|
 | `--branch <ref>` | Scan only this ref (default: all refs). |
 | `--since-commit <rev>` | Scan only commits after `<rev>` (`<rev>..HEAD` or `<rev>..<branch>`). |
-| `--max-depth <n>` | Scan at most `n` commits. |
+| `--max-depth <n>` | Scan at most `n` commits (remote clones are shallow). |
+| `--token-env <VAR>` | Token for private HTTPS repositories, see [Remote repositories](remote.md). |
+| `--token-user <USER>` | Username sent with the token (default `x-access-token`). |
 
 ## Stdin
 
@@ -56,6 +60,7 @@ kubectl get secrets -A -o yaml | kubera scan stdin --verify
 | `--exclude-path <glob>` | Skip paths matching the glob, relative to the scan root (repeatable). |
 | `--max-file-size <bytes>` | Skip larger files. |
 | `--concurrency <n>` | Parallel verification requests (default 8). |
+| `-i, --interactive` | Browse results in the TUI. |
 
 These global flags work with every command:
 

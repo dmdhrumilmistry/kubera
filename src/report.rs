@@ -70,6 +70,30 @@ impl Style {
         }
     }
 
+    pub fn gold(&self, s: &str) -> String {
+        if self.color {
+            format!("\x1b[38;5;214m{s}\x1b[0m")
+        } else {
+            s.to_string()
+        }
+    }
+
+    /// Inverse-video severity label, e.g. ` CRITICAL `.
+    pub fn severity_badge(&self, s: Severity) -> String {
+        let t = format!(" {} ", s.to_string().to_uppercase());
+        if !self.color {
+            return t.trim().to_string();
+        }
+        let code = match s {
+            Severity::Critical => "1;97;45",
+            Severity::High => "1;97;41",
+            Severity::Medium => "1;30;43",
+            Severity::Low => "1;97;44",
+            Severity::Info => "1;97;100",
+        };
+        format!("\x1b[{code}m{t}\x1b[0m")
+    }
+
     pub fn status(&self, s: Status) -> String {
         match s {
             Status::Verified => self.red("VERIFIED (live)"),
@@ -115,67 +139,97 @@ pub fn write_findings(
     Ok(())
 }
 
+/// Pad a label *before* styling it (escape codes would break `{:<n}`).
+fn pad(k: &str) -> String {
+    format!("{k:<12}")
+}
+
+/// Width of the card rules: the terminal width, capped for readability.
+fn card_width() -> usize {
+    ratatui::crossterm::terminal::size()
+        .map(|(w, _)| w as usize)
+        .unwrap_or(80)
+        .clamp(40, 88)
+}
+
 fn pretty(out: &mut dyn Write, findings: &[Finding], st: &Style) -> Result<()> {
+    let width = card_width();
     for f in findings {
-        let status = f
-            .verification
-            .as_ref()
-            .map(|v| format!("  {}", st.status(v.status)))
-            .unwrap_or_default();
+        let sev_plain = f.severity.to_string().to_uppercase();
+        let status_plain = match f.status() {
+            Some(Status::Verified) => "● LIVE",
+            Some(Status::Invalid) => "✓ invalid",
+            Some(Status::Unknown) => "? unknown",
+            Some(Status::Unsupported) => "- not verifiable",
+            None => "",
+        };
+        // Header: ╭─ CRITICAL  GitHub Token ─────────── ● LIVE
+        let head_plain = format!("╭─ {sev_plain}  {} ", f.name);
+        let used = head_plain.chars().count() + status_plain.chars().count() + 2;
+        let rule = "─".repeat(width.saturating_sub(used).max(3));
+        let status = match f.status() {
+            Some(s) => st.status(s),
+            None => String::new(),
+        };
         writeln!(
             out,
-            "{} {} [{}]{}",
-            st.bold("●"),
+            "{} {}  {} {}{}",
+            st.gold("╭─"),
+            st.severity_badge(f.severity),
             st.bold(&f.name),
-            st.severity(f.severity),
-            status
+            st.gold(&rule),
+            if status.is_empty() {
+                String::new()
+            } else {
+                format!(" {status}")
+            }
         )?;
-        writeln!(out, "  {:<12} {}", st.dim("detector"), f.detector)?;
+        let bar = st.gold("│");
         let loc = &f.location;
-        if let Some(p) = &loc.path {
-            writeln!(
+        match &loc.path {
+            Some(p) => writeln!(out, "{bar} {}", st.cyan(&format!("{p}:{}", loc.line)))?,
+            None => writeln!(
                 out,
-                "  {:<12} {}:{}",
-                st.dim("location"),
-                st.cyan(p),
-                loc.line
-            )?;
-        } else {
-            writeln!(
-                out,
-                "  {:<12} {:?} line {}",
-                st.dim("location"),
-                loc.source,
-                loc.line
-            )?;
+                "{bar} {}",
+                st.cyan(&format!("{:?} line {}", loc.source, loc.line).to_lowercase())
+            )?,
+        }
+        if let Some(r) = &loc.repository {
+            writeln!(out, "{bar} {}", st.dim(r))?;
         }
         if let Some(c) = &loc.commit {
             writeln!(
                 out,
-                "  {:<12} {} {} <{}> {}",
-                st.dim("commit"),
-                &c[..c.len().min(12)],
-                loc.author.as_deref().unwrap_or(""),
-                loc.email.as_deref().unwrap_or(""),
+                "{bar} {} {} {}",
+                st.gold(&c[..c.len().min(12)]),
+                st.dim(&format!(
+                    "{} <{}>",
+                    loc.author.as_deref().unwrap_or(""),
+                    loc.email.as_deref().unwrap_or("")
+                )),
                 st.dim(loc.date.as_deref().unwrap_or(""))
             )?;
         }
+        if let Some(l) = &loc.link {
+            writeln!(out, "{bar} {} {}", st.dim("↗"), st.cyan(l))?;
+        }
+        writeln!(out, "{bar}")?;
         for (k, v) in &f.secret {
-            writeln!(out, "  {:<12} {}", st.dim(k), v)?;
+            writeln!(out, "{bar} {} {}", st.dim(&pad(k)), st.bold(v))?;
         }
         if let Some(v) = &f.verification {
             if let Some(m) = &v.message {
-                writeln!(out, "  {:<12} {}", st.dim("message"), m)?;
+                writeln!(out, "{bar} {} {}", st.dim(&pad("message")), m)?;
             }
             for (k, val) in &v.details {
-                writeln!(out, "  {:<12} {}", st.dim(k), display_value(val))?;
+                writeln!(out, "{bar} {} {}", st.dim(&pad(k)), display_value(val))?;
             }
         }
         writeln!(
             out,
-            "  {:<12} {}",
-            st.dim("fingerprint"),
-            st.dim(&f.fingerprint)
+            "{} {}",
+            st.gold("╰─"),
+            st.dim(&format!("{} · {}", f.detector, f.fingerprint))
         )?;
         writeln!(out)?;
     }
@@ -194,26 +248,38 @@ pub fn display_value(v: &Value) -> String {
 
 /// Summary line for stderr.
 pub fn summary(findings: &[Finding], st: &Style) -> String {
-    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut counts: BTreeMap<u8, (usize, &str)> = BTreeMap::new();
     for f in findings {
-        let k = match f.status() {
-            Some(Status::Verified) => "verified",
-            Some(Status::Invalid) => "invalid",
-            Some(Status::Unknown) => "unknown",
-            Some(Status::Unsupported) => "unverifiable",
-            None => "unverified",
+        let (order, label) = match f.status() {
+            Some(Status::Verified) => (0, "live"),
+            Some(Status::Unknown) => (1, "unknown"),
+            Some(Status::Invalid) => (2, "invalid"),
+            Some(Status::Unsupported) => (3, "unverifiable"),
+            None => (4, "unverified"),
         };
-        *counts.entry(k).or_default() += 1;
+        counts.entry(order).or_insert((0, label)).0 += 1;
     }
-    let parts: Vec<String> = counts.iter().map(|(k, v)| format!("{v} {k}")).collect();
+    let parts: Vec<String> = counts
+        .values()
+        .map(|(n, label)| match *label {
+            "live" => st.red(&format!("● {n} live")),
+            "invalid" => st.green(&format!("✓ {n} invalid")),
+            "unknown" => st.yellow(&format!("? {n} unknown")),
+            other => st.dim(&format!("{n} {other}")),
+        })
+        .collect();
+    let total = if findings.is_empty() {
+        st.green("no secrets found")
+    } else {
+        st.bold(&format!("{} finding(s)", findings.len()))
+    };
     format!(
-        "{} {} finding(s){}",
-        st.bold("kubera:"),
-        findings.len(),
+        "{} {total}{}",
+        st.gold("◆ kubera"),
         if parts.is_empty() {
             String::new()
         } else {
-            format!(" ({})", parts.join(", "))
+            format!("  {}", parts.join(&st.dim(" · ")))
         }
     )
 }

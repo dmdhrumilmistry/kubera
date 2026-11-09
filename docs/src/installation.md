@@ -56,6 +56,8 @@ The repository ships a `Makefile` for common tasks. Run `make help` for the list
 | `make scan` | Scan the repository's files and history with Kubera itself |
 | `make check` | `lint` + `test` + `templates-test` + `scan` |
 | `make docs` / `make docs-serve` | Build or live-serve this documentation (needs `mdbook`) |
+| `make tui` | Build and launch the interactive TUI |
+| `make screenshots` | Regenerate the documentation images from the real TUI/CLI code |
 | `make test-termux` | Build and test inside a Termux container (needs Docker) |
 | `make audit` | `cargo audit` (needs `cargo-audit`) |
 

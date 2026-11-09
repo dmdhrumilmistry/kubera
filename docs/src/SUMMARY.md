@@ -6,6 +6,8 @@
 
 - [Installation](installation.md)
 - [Scanning](scanning.md)
+- [Remote repositories](remote.md)
+- [Interactive TUI](tui.md)
 - [Verify, analyze and rotate](lifecycle.md)
 - [Configuration](configuration.md)
 - [CI integration](ci.md)
