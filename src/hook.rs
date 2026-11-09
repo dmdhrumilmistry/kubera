@@ -15,9 +15,24 @@ use anyhow::{Context, Result, bail};
 /// Marks hooks written by kubera.
 const MARKER: &str = "# kubera-hook";
 
+/// The interpreter line: `/bin/sh`, except where it does not exist
+/// (Android / Termux keeps its shell under `$PREFIX/bin`).
+fn shebang() -> String {
+    if cfg!(unix)
+        && !Path::new("/bin/sh").exists()
+        && let Some(prefix) = std::env::var_os("PREFIX")
+    {
+        let sh = Path::new(&prefix).join("bin/sh");
+        if sh.exists() {
+            return format!("#!{}", sh.display());
+        }
+    }
+    "#!/bin/sh".into()
+}
+
 pub fn script() -> String {
     format!(
-        r#"#!/bin/sh
+        r#"{shebang}
 {MARKER} (installed by `kubera hook install`; remove with `kubera hook uninstall`)
 # Blocks commits that add secrets. To commit anyway (e.g. a false positive
 # you are about to allowlist in .kubera.yaml): git commit --no-verify
@@ -33,7 +48,8 @@ if [ "$status" -eq 183 ]; then
     echo "        with a 'kubera:ignore' comment or an allowlist entry in .kubera.yaml." >&2
 fi
 exit $status
-"#
+"#,
+        shebang = shebang()
     )
 }
 
@@ -131,7 +147,12 @@ mod tests {
     #[test]
     fn install_update_uninstall_and_foreign_hooks() {
         let d = repo();
-        let hook = d.path().join(".git/hooks/pre-commit");
+        // git reports resolved paths (macOS: /var -> /private/var).
+        let hook = d
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join(".git/hooks/pre-commit");
         assert!(matches!(
             install(d.path(), false).unwrap(),
             Installed::New(_)

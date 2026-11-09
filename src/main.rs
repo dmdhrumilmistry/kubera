@@ -1270,7 +1270,10 @@ async fn cmd_scan_github(
             Err(e) if label.ends_with("(wiki)") => {
                 let _ = e;
                 if show_progress {
-                    eprintln!("{} {label}: skipped (no wiki, or no access)", style.dim("›"));
+                    eprintln!(
+                        "{} {label}: skipped (no wiki, or no access)",
+                        style.dim("›")
+                    );
                 }
             }
             Err(e) => eprintln!("warning: {label}: {e:#}"),
