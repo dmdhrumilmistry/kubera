@@ -365,3 +365,27 @@ verify:
     let err = format!("{:#}", template::parse(yaml, "t").unwrap_err());
     assert!(err.contains("undefined variable `tokn`"), "{err}");
 }
+
+#[tokio::test]
+async fn transport_errors_never_include_the_url_path() {
+    // Credential in the path, as with Telegram bot tokens; nothing listens
+    // on port 9 so the request fails at connect time.
+    let yaml = r#"
+id: path-token
+name: Path Token
+detect:
+  keywords: [pt_]
+  patterns: [{ name: token, regex: '(pt_[a-z]+)' }]
+verify:
+  request: { url: "http://127.0.0.1:9/bot{{ token }}/private-path" }
+  valid: { status: [200] }
+"#;
+    let t = template::parse(yaml, "t").unwrap();
+    let mut p = BTreeMap::new();
+    p.insert("token".to_string(), "pt_x".to_string());
+    let out = verify::verify(&http(), &t, &p).await;
+    assert_eq!(out.verification.status, Status::Unknown);
+    let msg = out.verification.message.unwrap();
+    assert!(!msg.contains("private-path"), "url path leaked: {msg}");
+    assert!(!msg.contains("pt_x"), "token leaked: {msg}");
+}
