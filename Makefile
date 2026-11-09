@@ -87,6 +87,10 @@ tui: build ## Launch the interactive TUI (debug build)
 screenshots: ## Regenerate the docs images from the real TUI/CLI code
 	$(CARGO) run --locked -q --example screenshots -- docs/src/images
 
+.PHONY: bench
+bench: release ## Benchmark (adds trufflehog/gitleaks columns when installed)
+	python3 scripts/bench.py --fs . --git .
+
 .PHONY: test-termux
 test-termux: ## Build + test inside a Termux (Android) container (needs Docker)
 	$(DOCKER) run --rm $(TERMUX_DOCKER_ARGS) -v "$(CURDIR):/src:ro" $(TERMUX_IMAGE) bash -c '\
