@@ -15,8 +15,25 @@ for tool in cargo git make; do
 done
 if [ "${#missing[@]}" -gt 0 ]; then
     echo "== installing toolchain (rust git make clang)"
-    pkg update -y
-    pkg install -y rust git make clang
+    # `pkg` picks a random community mirror on every run, and an overloaded
+    # one (429, stale index) fails the whole job. Pin the official CDN and
+    # call apt-get directly, retrying transient network errors.
+    mirror="${KUBERA_TERMUX_MIRROR:-https://packages-cf.termux.dev/apt/termux-main}"
+    echo "deb ${mirror}/ stable main" > "${PREFIX}/etc/apt/sources.list"
+    ok=0
+    for attempt in 1 2 3 4; do
+        if apt-get update -y && \
+            apt-get install -y -o Dpkg::Options::=--force-confnew rust git make clang; then
+            ok=1
+            break
+        fi
+        echo "== apt attempt ${attempt} failed, retrying" >&2
+        sleep $((attempt * 15))
+    done
+    if [ "$ok" -ne 1 ]; then
+        echo "error: could not install the toolchain from ${PREFIX}/etc/apt/sources.list" >&2
+        exit 1
+    fi
 fi
 
 echo "== toolchain"
