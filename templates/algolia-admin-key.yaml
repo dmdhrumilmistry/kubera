@@ -1,0 +1,40 @@
+id: algolia-admin-key
+name: Algolia API Key
+platform: Algolia
+description: Algolia application id + admin/write API key (modify or delete indices).
+severity: high
+tags: [search]
+references:
+  - https://www.algolia.com/doc/rest-api/search/#get-api-key-permissions
+detect:
+  keywords: [algolia]
+  max_distance: 512
+  patterns:
+    - name: app_id
+      regex: '(?i:algolia)[^\n]{0,40}?\b([A-Z0-9]{10})\b'
+      secret: false
+    - name: key
+      regex: '(?i:algolia)[^\n]{0,40}?\b([a-f0-9]{32})\b'
+      min_entropy: 3.2
+verify:
+  request:
+    url: "https://{{ app_id }}-dsn.algolia.net/1/keys/{{ key }}"
+    headers:
+      X-Algolia-Application-Id: "{{ app_id }}"
+      X-Algolia-API-Key: "{{ key }}"
+  valid: { status: [200] }
+  invalid: { status: [403, 404] }
+  extract:
+    - { name: acl, label: Permissions, json: acl }
+    - { name: description, label: Description, json: description }
+rotate:
+  instructions: |
+    Dashboard -> Settings -> API Keys: regenerate the admin key (or delete a
+    leaked secured key) and redeploy.
+tests:
+  positive:
+    - |
+      A{{'L'}}GOLIA_APP_ID=E8EQIYG0NE
+      A{{'L'}}GOLIA_ADMIN_KEY=07d2c60f531932ae5f1dc9fd23522dbe
+  negative:
+    - "ALGOLIA_APP_ID=x"

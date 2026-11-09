@@ -1,0 +1,35 @@
+id: dropbox-access-token
+name: Dropbox Access Token
+platform: Dropbox
+description: Dropbox short-lived (sl.) access token.
+severity: high
+tags: [storage]
+references:
+  - https://www.dropbox.com/developers/documentation/http/documentation#users-get_current_account
+detect:
+  keywords: [sl.]
+  patterns:
+    - name: token
+      regex: '\b(sl\.(?:u\.)?[A-Za-z0-9_-]{130,})'
+      min_entropy: 4.0
+verify:
+  # RPC endpoint: POST without a body.
+  request:
+    method: POST
+    url: https://api.dropboxapi.com/2/users/get_current_account
+    auth: { type: bearer, token: "{{ token }}" }
+  valid: { status: [200] }
+  invalid: { status: [400, 401] }
+  extract:
+    - { name: email, label: Email, json: email }
+    - { name: name, label: Name, json: name.display_name }
+rotate:
+  instructions: |
+    Short-lived tokens expire within hours. Revoke the app's access
+    (dropbox.com/account/connected_apps) and rotate the app's refresh token
+    or app secret if those leaked too.
+tests:
+  positive:
+    - "DROPBOX_TOKEN=s{{'l'}}.YTTG4D_YSFLuXuwqPUHyCQpjtDF9tR0IdhZKqnZ6ggrqXzlS6m52oftF3-BfEk9GCazK9NBG2EA-5iB76BGmwIOdj5FJr_rkgsAHmrmXzFsWC7vNAfg9Ta-XT9KK7iQv89Bpsz0SZc-k"
+  negative:
+    - "sl.short"

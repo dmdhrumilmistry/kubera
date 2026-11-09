@@ -1,0 +1,32 @@
+id: pinecone-api-key
+name: Pinecone API Key
+platform: Pinecone
+description: Pinecone API key (vector indexes and their data).
+severity: high
+tags: [ai, database]
+references:
+  - https://docs.pinecone.io/reference/api/2024-10/control-plane/list_indexes
+detect:
+  keywords: [pcsk_]
+  patterns:
+    - name: key
+      regex: '\b(pcsk_[A-Za-z0-9_]{60,90})\b'
+      min_entropy: 3.5
+verify:
+  request:
+    url: https://api.pinecone.io/indexes
+    headers:
+      Api-Key: "{{ key }}"
+      X-Pinecone-API-Version: "2024-10"
+  valid: { status: [200] }
+  invalid: { status: [401] }
+  extract:
+    - { name: indexes, label: Indexes, json: "indexes.*.name" }
+rotate:
+  instructions: |
+    app.pinecone.io -> API keys: delete the leaked key and create a new one.
+tests:
+  positive:
+    - "PINECONE_API_KEY=p{{'c'}}sk_Vtf0rM_V6GsWs9fJycBkdWDSjE5fDI3qmHs9QRrXCEClydD6QHLssHCk4YSTiBHX3WrDcZS"
+  negative:
+    - "pcsk_short"

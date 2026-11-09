@@ -1,0 +1,33 @@
+id: asana-pat
+name: Asana Personal Access Token
+platform: Asana
+description: Asana personal access token.
+severity: high
+tags: [project-management]
+references:
+  - https://developers.asana.com/reference/getuser
+detect:
+  keywords: [asana]
+  patterns:
+    - name: token
+      regex: '\b([0-9]/[0-9]{16}(?:/[0-9]{16})?:[A-Za-z0-9]{32})\b'
+      min_entropy: 3.5
+verify:
+  request:
+    url: https://app.asana.com/api/1.0/users/me
+    auth: { type: bearer, token: "{{ token }}" }
+  valid: { status: [200] }
+  invalid: { status: [401] }
+  extract:
+    - { name: name, label: User, json: data.name }
+    - { name: email, label: Email, json: data.email }
+    - { name: workspaces, label: Workspaces, json: "data.workspaces.*.name" }
+rotate:
+  instructions: |
+    Asana -> My settings -> Apps -> Developer apps: revoke the leaked token
+    and create a new one.
+tests:
+  positive:
+    - "A{{'S'}}ANA_TOKEN=2/2890475563035356/6190559528360667{{':'}}7TPXVVQLTKpTlpiceZBm2aCvsHWagzio"
+  negative:
+    - "ASANA_TOKEN=1/2:3"

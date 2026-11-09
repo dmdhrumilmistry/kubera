@@ -1,0 +1,55 @@
+id: cloudflare-api-token
+name: Cloudflare API Token
+platform: Cloudflare
+description: Cloudflare user API token (DNS, zones, Workers... depending on its permissions).
+severity: critical
+tags: [cloud, dns]
+references:
+  - https://developers.cloudflare.com/api/resources/user/subresources/tokens/methods/verify/
+  - https://developers.cloudflare.com/api/resources/user/subresources/tokens/subresources/value/methods/update/
+detect:
+  keywords: [cloudflare, cf_api_token]
+  patterns:
+    - name: token
+      regex: '(?i:cloudflare|cf)[_-]?(?:api)?[_-]?(?:token|key)?[^\n]{0,24}?\b([A-Za-z0-9_-]{40})\b'
+      min_entropy: 4.0
+verify:
+  request:
+    url: https://api.cloudflare.com/client/v4/user/tokens/verify
+    auth: { type: bearer, token: "{{ token }}" }
+  valid:
+    status: [200]
+    json: [{ path: result.status, equals: active }]
+  invalid:
+    any:
+      - { status: [400, 401] }
+      - { status: [200], json: [{ path: result.status, equals: disabled }] }
+      - { status: [200], json: [{ path: result.status, equals: expired }] }
+  extract:
+    - { name: token_id, label: Token id, json: result.id }
+    - { name: expires_on, label: Expires, json: result.expires_on }
+rotate:
+  instructions: |
+    Kubera rolls the token in place with PUT /user/tokens/{id}/value: a new
+    secret is issued for the same token (same permissions) and the leaked
+    value stops working. This needs the "API Tokens: Edit" permission on the
+    token itself; otherwise roll it in the dashboard (My Profile -> API Tokens).
+  steps:
+    - name: roll
+      description: Roll the token value (PUT)
+      request:
+        method: PUT
+        url: "https://api.cloudflare.com/client/v4/user/tokens/{{ token_id }}/value"
+        auth: { type: bearer, token: "{{ token }}" }
+        json: {}
+      expect:
+        status: [200]
+        json: [{ path: success, equals: true }]
+      extract:
+        - { name: new_token, json: result, secret: true }
+  outputs: [new_token]
+tests:
+  positive:
+    - "C{{'L'}}OUDFLARE_API_TOKEN=hgfif0sDOhicSmHQh5juPYAzI0w9rtsXk6OIPeUI"
+  negative:
+    - "CLOUDFLARE_API_TOKEN=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"

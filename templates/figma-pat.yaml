@@ -1,0 +1,32 @@
+id: figma-pat
+name: Figma Personal Access Token
+platform: Figma
+description: Figma personal access token.
+severity: medium
+tags: [design]
+references:
+  - https://www.figma.com/developers/api#users-endpoints
+detect:
+  keywords: [figd_]
+  patterns:
+    - name: token
+      regex: '\b(figd_[A-Za-z0-9_-]{38,48})\b'
+      min_entropy: 3.5
+verify:
+  request:
+    url: https://api.figma.com/v1/me
+    headers: { X-Figma-Token: "{{ token }}" }
+  valid: { status: [200] }
+  invalid: { status: [403, 401] }
+  extract:
+    - { name: handle, label: User, json: handle }
+    - { name: email, label: Email, json: email }
+rotate:
+  instructions: |
+    Figma -> Settings -> Security -> Personal access tokens: revoke the leaked
+    token and create a new one with an expiry.
+tests:
+  positive:
+    - "FIGMA_TOKEN=f{{'i'}}gd_6bbedNsVKAEpj2lBXfHAZubaIq4jbtNCCAZW9pYw4ce"
+  negative:
+    - "figd_short"

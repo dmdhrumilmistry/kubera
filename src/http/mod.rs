@@ -307,6 +307,25 @@ pub fn check(m: &Matcher, r: &Response) -> Result<(), String> {
             return Err(format!("json `{}` != {want}", c.path));
         }
     }
+    if !m.any.is_empty() {
+        let mut reasons = Vec::new();
+        let mut ok = false;
+        for alt in &m.any {
+            match check(alt, r) {
+                Ok(()) => {
+                    ok = true;
+                    break;
+                }
+                Err(e) => reasons.push(e),
+            }
+        }
+        if !ok {
+            return Err(format!(
+                "no `any` alternative matched ({})",
+                reasons.join("; ")
+            ));
+        }
+    }
     for h in &m.headers {
         match r.headers.get(&h.name.to_lowercase()) {
             None => return Err(format!("header `{}` missing", h.name)),

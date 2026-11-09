@@ -1,0 +1,30 @@
+id: brevo-api-key
+name: Brevo (Sendinblue) API Key
+platform: Brevo
+description: Brevo / Sendinblue API v3 key.
+severity: high
+tags: [email]
+references:
+  - https://developers.brevo.com/reference/getaccount
+detect:
+  keywords: [xkeysib-]
+  patterns:
+    - name: key
+      regex: '\b(xkeysib-[a-f0-9]{64}-[A-Za-z0-9]{16})\b'
+verify:
+  request:
+    url: https://api.brevo.com/v3/account
+    headers: { api-key: "{{ key }}" }
+  valid: { status: [200] }
+  invalid: { status: [401] }
+  extract:
+    - { name: email, label: Email, json: email }
+    - { name: company, label: Company, json: companyName }
+rotate:
+  instructions: |
+    Brevo -> SMTP & API -> API keys: delete the leaked key and generate a new one.
+tests:
+  positive:
+    - "BREVO_API_KEY=x{{'k'}}eysib-f002b02a7758cbceac6b33043e419de1536513aab89c424b9e31923834d23648-307t8K3D4HMNagnA"
+  negative:
+    - "xkeysib-short"

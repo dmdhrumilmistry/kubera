@@ -17,6 +17,7 @@ const MAX_COMBINATIONS: usize = 256;
 
 struct CompiledPattern {
     name: String,
+    optional: bool,
     regex: Regex,
     group: GroupSel,
     min_entropy: Option<f64>,
@@ -27,6 +28,9 @@ struct CompiledPattern {
 enum GroupSel {
     Index(usize),
     Named(String),
+    /// First capture group that participated in the match (lets one pattern
+    /// cover several token formats via alternation).
+    FirstMatched,
 }
 
 pub struct CompiledDetector {
@@ -60,11 +64,12 @@ impl CompiledPattern {
             None if regex.capture_names().flatten().any(|n| n == p.name) => {
                 GroupSel::Named(p.name.clone())
             }
-            None if regex.captures_len() > 1 => GroupSel::Index(1),
+            None if regex.captures_len() > 1 => GroupSel::FirstMatched,
             None => GroupSel::Index(0),
         };
         Ok(Self {
             name: p.name.clone(),
+            optional: p.optional,
             regex,
             group,
             min_entropy: p.min_entropy,
@@ -106,6 +111,7 @@ impl CompiledDetector {
             let m = match &p.group {
                 GroupSel::Index(i) => caps.get(*i),
                 GroupSel::Named(n) => caps.name(n),
+                GroupSel::FirstMatched => caps.iter().skip(1).flatten().next(),
             };
             let Some(m) = m else { continue };
             let value = m.as_str();
@@ -141,14 +147,17 @@ impl CompiledDetector {
     }
 
     fn scan(&self, idx: usize, text: &str, out: &mut Vec<Candidate>) {
-        let per_part: Vec<Vec<PartMatch>> = self
-            .patterns
-            .iter()
-            .map(|p| self.matches(p, text))
-            .collect();
+        let (required, optional): (Vec<&CompiledPattern>, Vec<&CompiledPattern>) =
+            self.patterns.iter().partition(|p| !p.optional);
+        let per_part: Vec<Vec<PartMatch>> =
+            required.iter().map(|p| self.matches(p, text)).collect();
         if per_part.iter().any(|v| v.is_empty()) {
             return;
         }
+        let optional_matches: Vec<(&CompiledPattern, Vec<PartMatch>)> = optional
+            .into_iter()
+            .map(|p| (p, self.matches(p, text)))
+            .collect();
         let max_distance = self.template.detect.max_distance;
         let mut seen: BTreeSet<Vec<String>> = BTreeSet::new();
         let mut combos = 0usize;
@@ -165,10 +174,25 @@ impl CompiledDetector {
                     continue;
                 }
                 let mut parts = BTreeMap::new();
-                for (p, m) in self.patterns.iter().zip(&chosen) {
+                for (p, m) in required.iter().zip(&chosen) {
                     parts.insert(p.name.clone(), m.value.clone());
                     for (k, v) in &m.extra {
                         parts.insert(k.clone(), v.clone());
+                    }
+                }
+                // Optional parts: attach the nearest match within range.
+                let lo = chosen.iter().map(|m| m.start).min().unwrap_or(0);
+                let hi = chosen.iter().map(|m| m.start).max().unwrap_or(0);
+                for (p, ms) in &optional_matches {
+                    let best = ms
+                        .iter()
+                        .filter(|m| m.start.max(hi) - m.start.min(lo) <= max_distance)
+                        .min_by_key(|m| m.start.abs_diff(lo));
+                    if let Some(m) = best {
+                        parts.insert(p.name.clone(), m.value.clone());
+                        for (k, v) in &m.extra {
+                            parts.insert(k.clone(), v.clone());
+                        }
                     }
                 }
                 out.push(Candidate {
@@ -336,6 +360,48 @@ detect:
             e.scan("kid_abc123 secret=Zq8Lw2Pm9Xa1 # kubera:ignore")
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn optional_parts_attach_when_near_and_never_block() {
+        let e = engine(
+            r#"
+id: opt
+name: Opt
+detect:
+  keywords: [tk_]
+  max_distance: 40
+  patterns:
+    - { name: token, regex: '\b(tk_[a-z0-9]{8})\b' }
+    - { name: host, regex: '\b([a-z]+\.example\.net)\b', secret: false, optional: true }
+"#,
+        );
+        let c = e.scan("host=a.example.net tk_ab12cd34");
+        assert_eq!(c[0].parts["host"], "a.example.net");
+        let c = e.scan("tk_ab12cd34 alone");
+        assert_eq!(c.len(), 1);
+        assert!(!c[0].parts.contains_key("host"));
+        let far = format!("b.example.net {} tk_ab12cd34", "x".repeat(80));
+        let c = e.scan(&far);
+        assert_eq!(c.len(), 1);
+        assert!(!c[0].parts.contains_key("host"));
+    }
+
+    #[test]
+    fn alternation_uses_first_matched_group() {
+        let e = engine(
+            r#"
+id: alt
+name: Alt
+detect:
+  keywords: [new_, old-]
+  patterns:
+    - name: token
+      regex: '\b(?:(new_[a-z0-9]{8})|(old-[a-z0-9]{6}))\b'
+"#,
+        );
+        assert_eq!(e.scan("x new_ab12cd34 y")[0].parts["token"], "new_ab12cd34");
+        assert_eq!(e.scan("x old-ab12cd y")[0].parts["token"], "old-ab12cd");
     }
 
     #[test]

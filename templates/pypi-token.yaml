@@ -1,0 +1,23 @@
+id: pypi-token
+name: PyPI API Token
+platform: PyPI
+description: PyPI upload token. Can publish package versions (supply-chain risk).
+severity: critical
+tags: [registry, supply-chain]
+references:
+  - https://pypi.org/help/#apitoken
+detect:
+  keywords: [pypi-AgEIcHlwaS5vcmc]
+  patterns:
+    - name: token
+      regex: '\b(pypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]{50,})'
+rotate:
+  instructions: |
+    pypi.org -> Account settings -> API tokens: remove the leaked token and
+    create a project-scoped replacement (or switch to trusted publishing).
+    Check the release history of your projects.
+tests:
+  positive:
+    - "password = pypi-{{'A'}}gEIcHlwaS5vcmc8KlK4pWA03xpvpVElN8q4YMJ2a1jtvlvCmNGYrfeiaeeuFPNa4xcJNBuIkJ0uJSd4ieARK0E92jsTq0qWOBE4y9J4bgDjpm6bGlpSkzymsYo0TU9sHkaxmIf"
+  negative:
+    - "pypi-short"

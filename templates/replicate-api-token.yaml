@@ -1,0 +1,30 @@
+id: replicate-api-token
+name: Replicate API Token
+platform: Replicate
+description: Replicate API token (run models billed to the account).
+severity: medium
+tags: [ai]
+references:
+  - https://replicate.com/docs/reference/http#account.get
+detect:
+  keywords: [r8_]
+  patterns:
+    - name: token
+      regex: '\b(r8_[A-Za-z0-9]{37})\b'
+verify:
+  request:
+    url: https://api.replicate.com/v1/account
+    auth: { type: bearer, token: "{{ token }}" }
+  valid: { status: [200] }
+  invalid: { status: [401] }
+  extract:
+    - { name: username, label: Account, json: username }
+    - { name: account_type, label: Type, json: type }
+rotate:
+  instructions: |
+    replicate.com/account/api-tokens: delete the leaked token and create a new one.
+tests:
+  positive:
+    - "REPLICATE_API_TOKEN=r{{'8'}}_xwb3px1eyyDBpLyUYI2MY85RXuCe9N9Lvfuau"
+  negative:
+    - "r8_short"

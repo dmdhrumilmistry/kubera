@@ -1,0 +1,31 @@
+id: snyk-api-token
+name: Snyk API Token
+platform: Snyk
+description: Snyk API token (projects, vulnerability data, integrations).
+severity: high
+tags: [security]
+references:
+  - https://docs.snyk.io/snyk-api/authentication-for-api
+detect:
+  keywords: [snyk]
+  patterns:
+    - name: token
+      regex: '(?i:snyk)[^\n]{0,40}?\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b'
+verify:
+  request:
+    url: https://api.snyk.io/rest/self
+    query: { version: "2024-10-15" }
+    headers: { Authorization: "token {{ token }}" }
+  valid: { status: [200] }
+  invalid: { status: [401] }
+  extract:
+    - { name: name, label: User, json: data.attributes.name }
+    - { name: email, label: Email, json: data.attributes.email }
+rotate:
+  instructions: |
+    app.snyk.io -> Account settings -> Auth token: revoke & regenerate.
+tests:
+  positive:
+    - "S{{'N'}}YK_TOKEN=407446ca-19cf-eaf6-aeb7-c4e6e615cb96"
+  negative:
+    - "token=54fe693e-1ff0-8c6d-7fde-f27e0e25779d"

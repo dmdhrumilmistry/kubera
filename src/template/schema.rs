@@ -95,7 +95,7 @@ pub struct Pattern {
     pub name: String,
     pub regex: String,
     /// Capture group holding the secret. Defaults to the group named after the
-    /// part, else group 1, else the whole match.
+    /// part, else the first capture group that matched, else the whole match.
     #[serde(default)]
     pub group: Option<usize>,
     /// Minimum Shannon entropy (bits per char) for a match to be kept.
@@ -112,6 +112,11 @@ pub struct Pattern {
     /// Whether this part is sensitive and must be redacted in output.
     #[serde(default = "default_true")]
     pub secret: bool,
+    /// Report findings even when this part is not found nearby (e.g. the
+    /// host a token belongs to). Verification needing it then reports
+    /// `unknown`.
+    #[serde(default)]
+    pub optional: bool,
 }
 
 pub fn default_true() -> bool {
@@ -132,6 +137,28 @@ pub struct Verify {
     /// finding (e.g. the account name).
     #[serde(default)]
     pub extract: Vec<Extract>,
+    /// Further endpoints tried when the primary one does not verify the
+    /// secret (regional APIs, alternate hosts, older API versions). The
+    /// secret is `verified` as soon as one endpoint accepts it, and
+    /// `invalid` only when every endpoint rejects it.
+    #[serde(default)]
+    pub fallbacks: Vec<Fallback>,
+}
+
+/// An alternative verification endpoint. `valid` / `invalid` default to the
+/// parent's matchers; `extract` is always the parent's.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Fallback {
+    /// Shown as the `Endpoint` detail when this fallback verifies the
+    /// secret (e.g. `EU`).
+    #[serde(default)]
+    pub label: Option<String>,
+    pub request: Request,
+    #[serde(default)]
+    pub valid: Option<Matcher>,
+    #[serde(default)]
+    pub invalid: Option<Matcher>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -257,6 +284,10 @@ pub struct Matcher {
     pub json: Vec<JsonCondition>,
     #[serde(default)]
     pub headers: Vec<HeaderCondition>,
+    /// Alternatives: when non-empty, at least one of these matchers must
+    /// also hold (OR), in addition to every condition above (AND).
+    #[serde(default)]
+    pub any: Vec<Matcher>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

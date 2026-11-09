@@ -1,0 +1,37 @@
+id: databricks-token
+name: Databricks Personal Access Token
+platform: Databricks
+description: Databricks personal access token with its workspace host.
+severity: critical
+tags: [data]
+references:
+  - https://docs.databricks.com/api/workspace/currentuser/me
+detect:
+  keywords: [dapi]
+  max_distance: 2048
+  patterns:
+    - name: token
+      regex: '\b(dapi[a-f0-9]{32}(?:-[0-9])?)\b'
+    - name: host
+      regex: '\b([a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:cloud\.databricks\.com|azuredatabricks\.net|gcp\.databricks\.com))\b'
+      secret: false
+      optional: true
+verify:
+  request:
+    url: "https://{{ host }}/api/2.0/preview/scim/v2/Me"
+    auth: { type: bearer, token: "{{ token }}" }
+  valid: { status: [200] }
+  invalid: { status: [401, 403] }
+  extract:
+    - { name: user, label: User, json: userName }
+rotate:
+  instructions: |
+    Workspace -> User settings -> Developer -> Access tokens: revoke the
+    leaked token and create a new one with a lifetime.
+tests:
+  positive:
+    - |
+      DATABRICKS_HOST=https://adb-1234567890123456.7.azuredatabricks.net
+      DATABRICKS_TOKEN=d{{'a'}}pi15d880a8ba2e843ea932678360010fd9
+  negative:
+    - "dapi0000"

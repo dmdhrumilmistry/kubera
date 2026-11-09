@@ -1,0 +1,36 @@
+id: square-access-token
+name: Square Access Token
+platform: Square
+description: Square production (EAAA / sq0atp-) or sandbox access token.
+severity: critical
+tags: [payments]
+references:
+  - https://developer.squareup.com/reference/square/merchants-api/list-merchants
+detect:
+  keywords: [EAAA, sq0atp-]
+  patterns:
+    - name: token
+      regex: '\b((?:EAAA[A-Za-z0-9_-]{60})|(?:sq0atp-[A-Za-z0-9_-]{22}))\b'
+      min_entropy: 3.5
+verify:
+  request:
+    url: https://connect.squareup.com/v2/merchants
+    auth: { type: bearer, token: "{{ token }}" }
+  valid: { status: [200] }
+  invalid: { status: [401] }
+  extract:
+    - { name: business, label: Business, json: "merchant.*.business_name" }
+  fallbacks:
+    - label: Sandbox
+      request:
+        url: https://connect.squareupsandbox.com/v2/merchants
+        auth: { type: bearer, token: "{{ token }}" }
+rotate:
+  instructions: |
+    Developer Console -> your application -> Credentials: replace the access
+    token (or revoke the OAuth authorization) and deploy the new one.
+tests:
+  positive:
+    - "SQUARE_ACCESS_TOKEN=E{{'A'}}AAj0axEAeY7g0bjiMAA5Po7s8fLk9V4LpQVcF6ZR5huW3g5Lzs5LqjbDRPLTLK"
+  negative:
+    - "EAAAxxxx"
