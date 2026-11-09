@@ -196,7 +196,7 @@ pub fn run_detailed(
             let done = AtomicUsize::new(0);
             progress(Progress::Files { done: 0, total });
             files.par_iter().for_each(|p| {
-                if let Some(chunk) = sources::fs::read_chunk(p) {
+                for chunk in sources::fs::read_chunks(p, max_file_size, filter) {
                     collector.push(scan_chunk(engine, filter, &chunk));
                 }
                 let n = done.fetch_add(1, Ordering::Relaxed) + 1;
@@ -407,9 +407,13 @@ pub fn run_detailed(
                 batch.clear();
             };
             crate::sources::image::walk(img, max_file_size, &mut |chunk| {
-                let excluded = chunk.location.path.as_deref().is_some_and(|p| {
+                let loc = &chunk.location;
+                let excluded = loc.path.as_deref().is_some_and(|p| {
                     filter.path_excluded(std::path::Path::new(p.trim_start_matches('/')))
-                });
+                }) || loc
+                    .entry
+                    .as_deref()
+                    .is_some_and(|e| filter.path_excluded(std::path::Path::new(e)));
                 if !excluded {
                     batch.push(chunk);
                 }

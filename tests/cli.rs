@@ -641,3 +641,39 @@ fn encoded_secrets_are_decoded() {
     assert_eq!(found.len(), 1, "{found:?}");
     assert_eq!(found[0]["location"]["decoder"], "escape");
 }
+
+#[test]
+fn archives_are_scanned_including_nested_ones() {
+    use std::io::Cursor;
+    let tok = fake_github_token();
+    let zip_of = |files: &[(&str, Vec<u8>)]| {
+        let mut z = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        for (n, d) in files {
+            z.start_file(*n, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            z.write_all(d).unwrap();
+        }
+        z.finish().unwrap().into_inner()
+    };
+    let jar = zip_of(&[(
+        "BOOT-INF/classes/application.properties",
+        format!("github.token={tok}\n").into_bytes(),
+    )]);
+    let war = zip_of(&[("WEB-INF/lib/inner.jar", jar)]);
+    let dir = tempfile::tempdir().unwrap();
+    // Name says nothing: archives are recognised by content.
+    std::fs::write(dir.path().join("release.bin"), &war).unwrap();
+    let out = kubera(&["scan", "fs", ".", "-f", "json"], dir.path());
+    let v = json(&out);
+    let arr = v.as_array().unwrap();
+    assert_eq!(arr.len(), 1, "{v:#}");
+    assert_eq!(
+        arr[0]["location"]["entry"],
+        "WEB-INF/lib/inner.jar!/BOOT-INF/classes/application.properties"
+    );
+    assert_eq!(arr[0]["location"]["line"], 1);
+    let sarif = kubera(&["scan", "fs", ".", "-f", "sarif"], dir.path());
+    assert!(
+        String::from_utf8_lossy(&sarif.stdout).contains("release.bin!/WEB-INF/lib/inner.jar!/")
+    );
+}

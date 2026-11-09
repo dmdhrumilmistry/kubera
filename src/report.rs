@@ -349,7 +349,11 @@ pub fn sarif(findings: &[Finding]) -> Value {
                 .unwrap_or_default();
             let mut loc = json!({
                 "physicalLocation": {
-                    "artifactLocation": { "uri": f.location.path.clone().unwrap_or_else(|| "stdin".into()) },
+                    "artifactLocation": { "uri": match (&f.location.path, &f.location.entry) {
+                        (Some(p), Some(e)) => format!("{p}!/{e}"),
+                        (Some(p), None) => p.clone(),
+                        _ => "stdin".into(),
+                    } },
                     "region": { "startLine": f.location.line.max(1) }
                 }
             });

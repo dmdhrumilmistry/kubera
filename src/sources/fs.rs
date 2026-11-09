@@ -39,8 +39,12 @@ pub fn list_files(root: &Path, filter: &Filter, max_size: u64) -> Result<Vec<Pat
         if filter.path_excluded(rel) {
             continue;
         }
+        let archive_ok = |len: u64| {
+            len <= super::archive::DEFAULT_MAX_ARCHIVE_SIZE
+                && super::archive::archive_name(&entry.file_name().to_string_lossy())
+        };
         match entry.metadata() {
-            Ok(m) if m.len() <= max_size => out.push(entry.into_path()),
+            Ok(m) if m.len() <= max_size || archive_ok(m.len()) => out.push(entry.into_path()),
             Ok(_) => {}
             Err(e) => eprintln!("warning: {e}"),
         }
@@ -48,25 +52,58 @@ pub fn list_files(root: &Path, filter: &Filter, max_size: u64) -> Result<Vec<Pat
     Ok(out)
 }
 
-/// Read a file into a chunk; `None` for binary or unreadable files.
-pub fn read_chunk(path: &Path) -> Option<Chunk> {
-    let data = match std::fs::read(path) {
-        Ok(d) => d,
+/// Read a file into chunks: its text, or the text entries of an archive
+/// (see [`super::archive`]). Binary and unreadable files give nothing.
+pub fn read_chunks(path: &Path, max_size: u64, filter: &Filter) -> Vec<Chunk> {
+    match read_inner(path, max_size, filter) {
+        Ok(v) => v,
         Err(e) => {
-            eprintln!("warning: {}: {e}", path.display());
-            return None;
+            eprintln!("warning: {}: {e:#}", path.display());
+            Vec::new()
         }
-    };
-    if is_binary(&data) {
-        return None;
     }
-    Some(Chunk {
+}
+
+fn read_inner(path: &Path, max_size: u64, filter: &Filter) -> Result<Vec<Chunk>> {
+    use super::archive;
+    use std::io::Read;
+
+    let location = Location {
+        source: SourceKind::Filesystem,
+        path: Some(path.display().to_string()),
+        ..Default::default()
+    };
+    let mut file = std::fs::File::open(path)?;
+    let mut head = Vec::with_capacity(512);
+    (&mut file).take(512).read_to_end(&mut head)?;
+    if let Some(kind) = archive::kind(&head) {
+        let mut out = Vec::new();
+        archive::walk(kind, file, archive::Limits::new(max_size), &mut |e| {
+            if filter.path_excluded(Path::new(&e.path)) {
+                return;
+            }
+            out.push(Chunk {
+                text: e.text,
+                location: Location {
+                    entry: Some(e.path),
+                    ..location.clone()
+                },
+                line_map: None,
+            });
+        })?;
+        return Ok(out);
+    }
+    if file.metadata()?.len() > max_size {
+        return Ok(Vec::new());
+    }
+    let mut data = head;
+    file.read_to_end(&mut data)?;
+    if is_binary(&data) {
+        return Ok(Vec::new());
+    }
+    Ok(vec![Chunk {
         text: String::from_utf8_lossy(&data).into_owned(),
-        location: Location {
-            source: SourceKind::Filesystem,
-            path: Some(path.display().to_string()),
-            ..Default::default()
-        },
+        location,
         line_map: None,
-    })
+    }])
 }

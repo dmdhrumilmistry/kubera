@@ -51,6 +51,7 @@ tar = "0.4.46"
 tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "signal"] }
 walkdir = "2.5.0"
+zip = { version = "9.5.0", default-features = false, features = ["deflate-flate2"] }
 
 # Android (e.g. Termux): fallback trust roots, see src/http/tls.rs.
 [target.'cfg(target_os = "android")'.dependencies]
