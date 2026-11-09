@@ -6,7 +6,7 @@ Kubera handles live credentials, so it is conservative by default.
 
 - **Redaction everywhere.** Findings, analysis reports and rotation reports mask sensitive values (`ghp_********Uo`). Revealing them requires `--show-secrets`. Template parts marked `secret: false` (identifiers such as AWS key ids) are shown as-is.
 - **No secrets in argv.** `verify`, `analyze` and `rotate` take credentials from environment variables (`--secret-env`) or stdin (`--secret-stdin`). `--secret` works but warns that values leak into shell history and process listings.
-- **No secrets in diagnostics.** HTTP errors include only `scheme://host/…`, never paths or query strings (some APIs put tokens in the path). Verification and step messages pass through a masking filter that replaces every known secret value.
+- **No secrets in diagnostics.** HTTP errors include only `scheme://host/…`, never paths or query strings (some APIs put tokens in the path). The HTTP library's own error text has its URL removed for the same reason. Verification and step messages pass through a masking filter that replaces every known secret value.
 - **Dry-run plans** print requests with auth-like headers (`authorization`, `*token*`, `*key*`, `*secret*`, `cookie`, `signature`) replaced by `<redacted>`, and secret values (raw and URL-encoded) masked in URLs and bodies.
 
 ## Network
@@ -14,6 +14,7 @@ Kubera handles live credentials, so it is conservative by default.
 - **Verification is opt-in.** A plain `scan` makes no network calls.
 - **HTTPS only.** Requests to any other scheme are refused before anything is sent. (A hidden `--allow-http` flag exists for local mock servers in tests.)
 - **No redirects.** A redirect is treated as an unexpected response, so a credential can never be bounced to another host.
+- **Certificate verification is always on.** On Linux, macOS and Windows, Kubera uses the operating system's trust store. On Android (Termux), where that verifier only works from Java, it uses `SSL_CERT_FILE`, then Termux's bundle, then Android's system store, then Mozilla's embedded roots. See [Installation](installation.md#termux-android). There is no option to disable verification.
 - **Bounded.** 10 s connect timeout, 15 s default request timeout, response bodies capped at 1 MiB.
 - Each secret is sent only to the endpoints declared by **its own** template.
 

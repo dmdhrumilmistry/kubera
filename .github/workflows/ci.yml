@@ -63,6 +63,18 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --locked --all-targets
 
+  termux:
+    name: Termux (Android x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # Builds with Termux's own Rust package and runs the full test suite,
+      # template samples and a live HTTPS verification inside a real Termux
+      # userland (Android bionic libc), via termux/termux-docker.
+      - run: make test-termux
+
   self-scan:
     name: Scan this repository for secrets
     runs-on: ubuntu-latest
