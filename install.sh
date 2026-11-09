@@ -6,7 +6,7 @@
 # GitHub release, verifies its SHA-256 checksum and installs it.
 #
 # Environment:
-#   KUBERA_VERSION      release tag to install (default: latest), e.g. v0.1.0
+#   KUBERA_VERSION      release tag to install (default: latest), e.g. v0.2.0
 #   KUBERA_INSTALL_DIR  install directory (default: $PREFIX/bin on Termux,
 #                       otherwise ~/.local/bin)
 #   KUBERA_DOWNLOAD_BASE  override the release download URL (mirrors, tests)
