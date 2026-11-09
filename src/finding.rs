@@ -16,6 +16,13 @@ pub enum SourceKind {
     Git,
     Stdin,
     Container,
+    /// GitHub issues, comments and Actions logs.
+    #[serde(rename = "github")]
+    GitHub,
+    /// Cloud object storage (S3, GCS).
+    Bucket,
+    /// A live Kubernetes cluster.
+    Kubernetes,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

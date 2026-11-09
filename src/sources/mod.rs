@@ -3,6 +3,7 @@
 pub mod archive;
 pub mod fs;
 pub mod git;
+pub mod github;
 pub mod image;
 pub mod remote;
 

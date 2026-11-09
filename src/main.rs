@@ -345,6 +345,39 @@ enum ScanSource {
         #[command(flatten)]
         opts: ScanArgs,
     },
+    /// Scan GitHub beyond the code: issues, pull requests and their
+    /// comments, review comments, Actions logs, wikis and gists.
+    Github {
+        /// Repositories as owner/name.
+        repos: Vec<String>,
+        /// Every repository of this organization (repeatable).
+        #[arg(long, value_name = "ORG")]
+        org: Vec<String>,
+        /// Every repository and gist of this user (repeatable).
+        #[arg(long, value_name = "USER")]
+        user: Vec<String>,
+        /// What to scan (comma separated) [default: all].
+        #[arg(long, value_enum, value_delimiter = ',')]
+        what: Vec<kubera::sources::github::What>,
+        /// Environment variable with a GitHub token (needed for Actions logs
+        /// and private repositories; raises rate limits).
+        #[arg(long, value_name = "ENV_VAR")]
+        token_env: Option<String>,
+        /// GitHub Enterprise API base, e.g. https://ghe.example.com/api/v3.
+        #[arg(long, value_name = "URL", default_value = "https://api.github.com")]
+        api_url: String,
+        /// Issues / comments read per repository and kind (newest first).
+        #[arg(long, default_value_t = 2000, value_name = "N")]
+        max_items: usize,
+        /// Actions runs whose logs are read per repository (newest first).
+        #[arg(long, default_value_t = 20, value_name = "N")]
+        max_runs: usize,
+        /// Longest rate-limit wait (seconds) before giving up.
+        #[arg(long, default_value_t = 900, value_name = "SECS")]
+        max_rate_wait: u64,
+        #[command(flatten)]
+        opts: ScanArgs,
+    },
     /// Scan the staged changes of a repository: only the lines the next
     /// commit adds (what the pre-commit hook runs).
     Staged {
@@ -725,6 +758,7 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         | ScanSource::Repos { opts, .. }
         | ScanSource::Image { opts, .. }
         | ScanSource::Staged { opts, .. }
+        | ScanSource::Github { opts, .. }
         | ScanSource::Stdin { opts } => opts,
     };
     let engine = Engine::new(ctx.templates.iter().map(|l| l.template.clone()).collect())?;
@@ -844,6 +878,7 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         }
         ScanSource::Repos { .. } => scan::Target::Text(String::new()),
         ScanSource::Staged { repo, .. } => scan::Target::Staged(repo.clone()),
+        ScanSource::Github { .. } => scan::Target::Text(String::new()),
         ScanSource::Image {
             image,
             platform,
@@ -900,7 +935,19 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         }
     };
     let mut mass_results: Option<Vec<kubera::mass::RepoResult>> = None;
-    let (commits_scanned, tips, mut findings) = if let ScanSource::Repos { .. } = &source {
+    let (commits_scanned, tips, mut findings) = if let ScanSource::Github { .. } = &source {
+        let findings = cmd_scan_github(
+            g,
+            &source,
+            &engine,
+            &filter,
+            max_size,
+            show_progress,
+            &ctx.style,
+        )
+        .await?;
+        (0, Default::default(), findings)
+    } else if let ScanSource::Repos { .. } = &source {
         let results = cmd_scan_repos(g, &source, &engine, &filter, max_size, &ctx.style).await?;
         let commits = results.iter().map(|r| r.commits_scanned).sum();
         let findings = results.iter().flat_map(|r| r.findings.clone()).collect();
@@ -964,6 +1011,15 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
             .unwrap_or_else(|| repo.clone()),
         ScanSource::Stdin { .. } => "stdin".into(),
         ScanSource::Staged { repo, .. } => format!("staged changes in {}", repo.display()),
+        ScanSource::Github {
+            repos, org, user, ..
+        } => repos
+            .iter()
+            .chain(org)
+            .chain(user)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", "),
         ScanSource::Image { image, .. } => image.clone(),
         ScanSource::Repos { .. } => format!(
             "{} repositories",
@@ -1106,6 +1162,121 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
     } else {
         0
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn cmd_scan_github(
+    g: &GlobalArgs,
+    source: &ScanSource,
+    engine: &Engine,
+    filter: &Filter,
+    max_size: u64,
+    show_progress: bool,
+    style: &Style,
+) -> Result<Vec<Finding>> {
+    use kubera::sources::github;
+    let ScanSource::Github {
+        repos,
+        org,
+        user,
+        what,
+        token_env,
+        api_url,
+        max_items,
+        max_runs,
+        max_rate_wait,
+        opts,
+    } = source
+    else {
+        unreachable!()
+    };
+    let token = match token_env {
+        Some(var) => Some(std::env::var(var).with_context(|| {
+            format!("environment variable `{var}` (from --token-env) is not set")
+        })?),
+        None => None,
+    };
+    let mut client = kubera::forge::Client::new(
+        token.clone(),
+        None,
+        std::time::Duration::from_secs(*max_rate_wait),
+    )?;
+    client.allow_http = g.allow_http;
+    let api = api_url.trim_end_matches('/');
+    let custom_api = (api != "https://api.github.com").then_some(api);
+    let mut all_repos = repos.clone();
+    for o in org {
+        let list = client
+            .list(&kubera::forge::Source::GitHubOrg(o.clone()), custom_api)
+            .await?;
+        all_repos.extend(list.into_iter().map(|r| r.full_name));
+    }
+    for u in user {
+        let list = client
+            .list(&kubera::forge::Source::GitHubUser(u.clone()), custom_api)
+            .await?;
+        all_repos.extend(list.into_iter().map(|r| r.full_name));
+    }
+    all_repos.sort();
+    all_repos.dedup();
+    if all_repos.is_empty() && user.is_empty() {
+        bail!("nothing to scan: pass owner/name repositories, --org or --user");
+    }
+    let what = if what.is_empty() {
+        github::ALL.to_vec()
+    } else {
+        what.clone()
+    };
+    let o = github::Options {
+        api: api.to_string(),
+        repos: all_repos,
+        gist_users: user.clone(),
+        what,
+        max_items: *max_items,
+        max_runs: *max_runs,
+        max_log_size: 256 * 1024 * 1024,
+        max_file_size: max_size,
+    };
+    let progress = |m: String| {
+        if show_progress {
+            eprintln!("{} {m}", style.dim("›"));
+        }
+    };
+    let collected = github::collect(&client, &o, &progress).await?;
+    for w in &collected.warnings {
+        eprintln!("warning: {w}");
+    }
+    let mut findings = scan::scan_chunks(engine, filter, &collected.chunks);
+    for (url, label) in &collected.git {
+        progress(format!("{label}: history"));
+        let target = scan::Target::Git {
+            repo: url.clone(),
+            options: git::GitOptions {
+                jobs: opts.jobs,
+                ..Default::default()
+            },
+            auth: kubera::sources::remote::Auth {
+                token: token.clone(),
+                user: None,
+                allow_http: g.allow_http,
+                interactive: false,
+            },
+            baseline: None,
+            mirror: None,
+        };
+        match scan::run_detailed(engine, filter, &target, max_size, &|_| {}) {
+            Ok(out) => findings.extend(out.findings),
+            // Repositories without a wiki have no wiki repository.
+            Err(e) if label.ends_with("(wiki)") => {
+                let _ = e;
+                if show_progress {
+                    eprintln!("{} {label}: skipped (no wiki, or no access)", style.dim("›"));
+                }
+            }
+            Err(e) => eprintln!("warning: {label}: {e:#}"),
+        }
+    }
+    Ok(findings)
 }
 
 /// Collect the secret parts for `t` from flags, env and stdin.

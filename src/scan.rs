@@ -53,6 +53,15 @@ pub fn scan_chunk(engine: &Engine, filter: &Filter, chunk: &Chunk) -> Vec<Findin
     out
 }
 
+/// Scan already collected chunks in parallel (API sources).
+pub fn scan_chunks(engine: &Engine, filter: &Filter, chunks: &[Chunk]) -> Vec<Finding> {
+    let collector = Collector::default();
+    chunks
+        .par_iter()
+        .for_each(|c| collector.push(scan_chunk(engine, filter, c)));
+    collector.into_findings()
+}
+
 /// (fingerprint, path, line, commit)
 type DedupKey = (String, Option<String>, usize, Option<String>);
 

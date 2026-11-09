@@ -653,3 +653,109 @@ async fn alerts_are_redacted_and_signed() {
     .unwrap();
     assert_eq!(out.status.code(), Some(1));
 }
+
+#[tokio::test]
+async fn github_issues_comments_and_actions_logs() {
+    use std::io::Write as _;
+    let server = MockServer::start().await;
+    let tok = |body: &str| format!("gh{}_{}", "p", body);
+    let issue_tok = tok("9nVq3kZ1Lr8XwT2pYb6Hd4Fs7Jc0Mg5Ae1Uo");
+    let comment_tok = tok("Zz9nVq3kZ1Lr8XwT2pYb6Hd4Fs7Jc0Mg5Ae1");
+    let log_tok = tok("Yy9nVq3kZ1Lr8XwT2pYb6Hd4Fs7Jc0Mg5Ae1");
+    let j = |v: serde_json::Value| ResponseTemplate::new(200).set_body_json(v);
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/app/issues"))
+        .and(header("authorization", "Bearer api-token"))
+        .respond_with(j(serde_json::json!([
+            {"number": 7, "title": "Deploy broken", "body": format!("tried with\n{issue_tok}"),
+             "html_url": "https://github.com/acme/app/issues/7"}
+        ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/app/issues/comments"))
+        .respond_with(j(serde_json::json!([
+            {"id": 99, "body": format!("use {comment_tok}"),
+             "html_url": "https://github.com/acme/app/issues/7#issuecomment-99"}
+        ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/app/pulls/comments"))
+        .respond_with(j(serde_json::json!([])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/app/actions/runs"))
+        .respond_with(j(serde_json::json!({"total_count": 1, "workflow_runs": [
+            {"id": 5, "html_url": "https://github.com/acme/app/actions/runs/5"}
+        ]})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/app/actions/runs/5/logs"))
+        .respond_with(
+            ResponseTemplate::new(302)
+                .insert_header("location", format!("{}/blob/logs.zip?sig=x", server.uri())),
+        )
+        .mount(&server)
+        .await;
+    let mut z = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    z.start_file(
+        "build/3_Run tests.txt",
+        zip::write::SimpleFileOptions::default(),
+    )
+    .unwrap();
+    z.write_all(format!("2026-01-01T00:00:00Z echo {log_tok}\n").as_bytes())
+        .unwrap();
+    let logs = z.finish().unwrap().into_inner();
+    Mock::given(method("GET"))
+        .and(path("/blob/logs.zip"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(logs))
+        .mount(&server)
+        .await;
+
+    let api = server.uri();
+    let out = tokio::task::spawn_blocking(move || {
+        std::process::Command::new(env!("CARGO_BIN_EXE_kubera"))
+            .args(["--allow-http", "scan", "github", "acme/app", "-f", "json"])
+            .args(["--what", "issues,comments,actions", "--api-url", &api])
+            .args(["--token-env", "GH"])
+            .env("GH", "api-token")
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let mut paths: Vec<String> = v
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| {
+            assert_eq!(f["location"]["source"], "github");
+            f["location"]["path"].as_str().unwrap().to_string()
+        })
+        .collect();
+    paths.sort();
+    assert_eq!(
+        paths,
+        vec![
+            "actions/runs/5/build/3_Run tests.txt",
+            "comment/99",
+            "issues/7"
+        ]
+    );
+    // The pre-signed log URL never receives the token.
+    let reqs = server.received_requests().await.unwrap();
+    let blob = reqs
+        .iter()
+        .find(|r| r.url.path() == "/blob/logs.zip")
+        .unwrap();
+    assert!(blob.headers.get("authorization").is_none());
+}
