@@ -34,6 +34,10 @@ on:
         description: "Expected version without the v (optional; must match Cargo.toml)"
         type: string
         required: false
+      complete:
+        description: "Finish a release whose tag already exists (publishes only what is missing)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -52,6 +56,7 @@ jobs:
     outputs:
       release: ${{ steps.plan.outputs.release }}
       tag: ${{ steps.plan.outputs.tag }}
+      mode: ${{ steps.plan.outputs.mode }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -63,6 +68,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           PUBLISH_INPUT: ${{ inputs.publish }}
           VERSION_INPUT: ${{ inputs.version }}
+          COMPLETE_INPUT: ${{ inputs.complete }}
           REPO_URL: ${{ github.server_url }}/${{ github.repository }}
         run: |
           set -euo pipefail
@@ -85,12 +91,20 @@ jobs:
               exit 1
             fi
             if git ls-remote --exit-code --tags "$REPO_URL" "refs/tags/$tag" >/dev/null; then
-              echo "tag ${tag} already exists; bump the version in Cargo.toml first" >&2
+              if [ "$COMPLETE_INPUT" != "true" ]; then
+                echo "tag ${tag} already exists; bump the version in Cargo.toml, or check" >&2
+                echo "'complete' to finish a release that stopped part way" >&2
+                exit 1
+              fi
+              mode=complete
+            elif [ "$COMPLETE_INPUT" = "true" ]; then
+              echo "'complete' finishes an existing release, but tag ${tag} does not exist" >&2
               exit 1
             fi
             release=true
           fi
           echo "release=$release" >> "$GITHUB_OUTPUT"
+          echo "mode=${mode:-new}" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "release: $release, tag: $tag" >> "$GITHUB_STEP_SUMMARY"
       - run: cargo publish --dry-run --locked
@@ -160,20 +174,29 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Completing an existing release publishes the crate from the tagged
+      # source, so crates.io and the GitHub release always match.
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          ref: ${{ needs.check.outputs.mode == 'complete' && needs.check.outputs.tag || github.sha }}
       - uses: dtolnay/rust-toolchain@stable
+      # Outside the checkout: cargo publish refuses a dirty working tree.
       - uses: actions/download-artifact@v4
         with:
-          path: dist
+          path: ${{ runner.temp }}/dist
           merge-multiple: true
       - name: GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.check.outputs.tag }}
+          DIST: ${{ runner.temp }}/dist
         run: |
           set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $TAG already exists; keeping it"
+            exit 0
+          fi
           if [ "$GITHUB_EVENT_NAME" = "push" ]; then
             # The pushed tag must exist and is used as is.
             target=(--verify-tag)
@@ -182,7 +205,7 @@ jobs:
             # that was just built and tested.
             target=(--target "$GITHUB_SHA")
           fi
-          gh release create "$TAG" dist/* \
+          gh release create "$TAG" "$DIST"/* \
             --repo "$GITHUB_REPOSITORY" \
             --title "kubera $TAG" \
             --generate-notes \
@@ -190,7 +213,18 @@ jobs:
       - name: Publish to crates.io
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish --locked
+          TAG: ${{ needs.check.outputs.tag }}
+        run: |
+          set -euo pipefail
+          name=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].name')
+          version="${TAG#v}"
+          # crates.io versions are immutable: skip one that is already there.
+          if curl -fsS -A "kubera-release (github.com/${GITHUB_REPOSITORY})" \
+              "https://crates.io/api/v1/crates/${name}/${version}" >/dev/null 2>&1; then
+            echo "${name} ${version} is already on crates.io"
+            exit 0
+          fi
+          cargo publish --locked
 
   image:
     name: Container image (linux/amd64, linux/arm64)

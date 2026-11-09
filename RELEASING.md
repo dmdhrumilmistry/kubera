@@ -26,6 +26,13 @@ A release publishes, from one workflow run (`.github/workflows/release.yml`):
 3. First release only: make the `kubera` package public under the
    repository's Packages settings, or `docker pull` needs a login.
 
+If a release stops part way (for example the crates.io upload fails after the
+GitHub release was created), fix the cause, then run the workflow on `main`
+with **publish** and **complete** checked: it keeps the existing tag and
+GitHub release, publishes the crate from the tagged source if crates.io does
+not have that version yet, and pushes the image again.
+
 A manual run without **publish** only builds (useful to test the pipeline).
 The workflow refuses to publish from any branch but `main`, when the version
-input does not match `Cargo.toml`, or when the tag already exists.
+input does not match `Cargo.toml`, or when the tag already exists (unless
+**complete** is checked).
