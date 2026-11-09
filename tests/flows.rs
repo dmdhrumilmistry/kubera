@@ -568,3 +568,88 @@ async fn fallbacks_invalid_only_when_every_endpoint_rejects() {
     let out = verify::verify(&http(), &fallback_template(&server), &parts_token("tok1")).await;
     assert_eq!(out.verification.status, Status::Unknown);
 }
+
+#[tokio::test]
+async fn alerts_are_redacted_and_signed() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/hook"))
+        .and(header("content-type", "application/json"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let tok = format!("gh{}_{}", "p", "9nVq3kZ1Lr8XwT2pYb6Hd4Fs7Jc0Mg5Ae1Uo");
+    std::fs::write(dir.path().join("a.env"), format!("T={tok}\n")).unwrap();
+    let url = format!("{}/hook", server.uri());
+    let out = tokio::task::spawn_blocking({
+        let d = dir.path().to_path_buf();
+        move || {
+            std::process::Command::new(env!("CARGO_BIN_EXE_kubera"))
+                .args(["--allow-http", "scan", "fs", ".", "-f", "json"])
+                .args(["--notify-env", "HOOK", "--notify-secret-env", "HOOK_KEY"])
+                .env("HOOK", url)
+                .env("HOOK_KEY", "s3cret")
+                .current_dir(d)
+                .output()
+                .unwrap()
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let reqs = server.received_requests().await.unwrap();
+    assert_eq!(reqs.len(), 1);
+    let r = &reqs[0];
+    let body = String::from_utf8_lossy(&r.body);
+    assert!(!body.contains(&tok), "alerts must be redacted");
+    let v: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+    assert_eq!(v["count"], 1);
+    let ts = r
+        .headers
+        .get("x-kubera-timestamp")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    let sig = r
+        .headers
+        .get("x-kubera-signature")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert_eq!(sig, kubera::notify::signature("s3cret", ts, &r.body));
+
+    // A failing endpoint makes an otherwise clean exit non-zero.
+    let bad = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&bad)
+        .await;
+    let url = format!("{}/hook", bad.uri());
+    let d = dir.path().to_path_buf();
+    let out = tokio::task::spawn_blocking(move || {
+        std::process::Command::new(env!("CARGO_BIN_EXE_kubera"))
+            .args([
+                "--allow-http",
+                "scan",
+                "fs",
+                ".",
+                "-f",
+                "json",
+                "--notify-env",
+                "HOOK",
+            ])
+            .env("HOOK", url)
+            .current_dir(d)
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+}

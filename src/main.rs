@@ -390,6 +390,19 @@ struct ScanArgs {
     /// new ones). Exits 0.
     #[arg(long, conflicts_with = "no_baseline")]
     update_baseline: bool,
+    /// Send an alert when secrets are found, to the webhook URL held in this
+    /// environment variable (repeatable). Slack incoming webhooks get a
+    /// Slack message, other URLs a JSON payload. Secrets are redacted.
+    #[arg(long, value_name = "ENV_VAR")]
+    notify_env: Vec<String>,
+    /// Environment variable with a key to sign generic webhook payloads
+    /// (X-Kubera-Signature: HMAC-SHA256 over "<timestamp>.<body>").
+    #[arg(long, value_name = "ENV_VAR")]
+    notify_secret_env: Option<String>,
+    /// Which findings trigger an alert [default: live ones with --verify,
+    /// otherwise all].
+    #[arg(long, value_enum, value_name = "WHICH")]
+    notify_on: Option<NotifyOn>,
     /// Do not decode base64 / URL-encoded / escaped text before scanning.
     #[arg(long)]
     no_decode: bool,
@@ -410,6 +423,14 @@ struct ScanArgs {
     /// Browse the results in the interactive TUI instead of printing them.
     #[arg(short = 'i', long)]
     interactive: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum NotifyOn {
+    /// Only verified (live) secrets.
+    Live,
+    /// Every reported finding.
+    All,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -727,6 +748,30 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         .max_file_size
         .or(ctx.cfg.max_file_size)
         .unwrap_or(sources::fs::DEFAULT_MAX_FILE_SIZE);
+    let notify_secret = match &opts.notify_secret_env {
+        Some(var) => Some(std::env::var(var).with_context(|| {
+            format!("environment variable `{var}` (from --notify-secret-env) is not set")
+        })?),
+        None => None,
+    };
+    let notify_targets = opts
+        .notify_env
+        .iter()
+        .map(|v| kubera::notify::Target::from_env(v, notify_secret.clone(), g.allow_http))
+        .collect::<Result<Vec<_>>>()?;
+    let notify_on = opts
+        .notify_on
+        .unwrap_or(if opts.verify || opts.only_verified {
+            NotifyOn::Live
+        } else {
+            NotifyOn::All
+        });
+    if notify_on == NotifyOn::Live
+        && !notify_targets.is_empty()
+        && !(opts.verify || opts.only_verified)
+    {
+        bail!("--notify-on live needs --verify (otherwise nothing is known to be live)");
+    }
     let target = match &source {
         ScanSource::Fs { paths, .. } => scan::Target::Paths(paths.clone()),
         ScanSource::Git {
@@ -906,29 +951,53 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         );
         return Ok(0);
     }
+    let label = match &source {
+        ScanSource::Fs { paths, .. } => paths
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
+        ScanSource::Git { repo, .. } => kubera::sources::remote::parse(repo)
+            .ok()
+            .flatten()
+            .map(|r| r.display().to_string())
+            .unwrap_or_else(|| repo.clone()),
+        ScanSource::Stdin { .. } => "stdin".into(),
+        ScanSource::Staged { repo, .. } => format!("staged changes in {}", repo.display()),
+        ScanSource::Image { image, .. } => image.clone(),
+        ScanSource::Repos { .. } => format!(
+            "{} repositories",
+            mass_results.as_ref().map(|r| r.len()).unwrap_or(0)
+        ),
+    };
+    let mut notify_failed = false;
+    if !notify_targets.is_empty() {
+        let alert: Vec<Finding> = findings
+            .iter()
+            .filter(|f| notify_on == NotifyOn::All || f.status() == Some(Status::Verified))
+            .cloned()
+            .collect();
+        if !alert.is_empty() {
+            for t in &notify_targets {
+                match kubera::notify::send(&ctx.http, t, &alert, &label).await {
+                    Ok(()) => eprintln!(
+                        "{} alert sent to {} ({} finding(s))",
+                        ctx.style.dim("›"),
+                        t.display(),
+                        alert.len()
+                    ),
+                    Err(e) => {
+                        notify_failed = true;
+                        eprintln!("warning: alert to {} failed: {e:#}", t.display());
+                    }
+                }
+            }
+        }
+    }
     if opts.interactive {
         if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
             bail!("--interactive needs a terminal");
         }
-        let label = match &source {
-            ScanSource::Fs { paths, .. } => paths
-                .iter()
-                .map(|p| p.display().to_string())
-                .collect::<Vec<_>>()
-                .join(", "),
-            ScanSource::Git { repo, .. } => kubera::sources::remote::parse(repo)
-                .ok()
-                .flatten()
-                .map(|r| r.display().to_string())
-                .unwrap_or_else(|| repo.clone()),
-            ScanSource::Stdin { .. } => "stdin".into(),
-            ScanSource::Staged { repo, .. } => format!("staged changes in {}", repo.display()),
-            ScanSource::Image { image, .. } => image.clone(),
-            ScanSource::Repos { .. } => format!(
-                "{} repositories",
-                mass_results.as_ref().map(|r| r.len()).unwrap_or(0)
-            ),
-        };
         let svc = services(ctx, engine, filter, max_size);
         tokio::task::block_in_place(|| {
             kubera::tui::run(svc, kubera::tui::Start::Results(findings, label))
@@ -1031,6 +1100,9 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
     }
     Ok(if opts.fail && !shown.is_empty() {
         EXIT_FINDINGS
+    } else if notify_failed {
+        // A scheduled scan whose alert was lost must not look clean.
+        1
     } else {
         0
     })

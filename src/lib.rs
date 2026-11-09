@@ -33,6 +33,7 @@ pub mod hook;
 pub mod http;
 pub mod mass;
 pub mod mcp;
+pub mod notify;
 pub mod render;
 pub mod report;
 pub mod report_html;
