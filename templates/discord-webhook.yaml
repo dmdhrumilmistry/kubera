@@ -1,0 +1,40 @@
+id: discord-webhook
+name: Discord Webhook
+platform: Discord
+description: Discord webhook URL (post messages into a channel, impersonating any name).
+severity: medium
+tags: [chat, webhook]
+references:
+  - https://discord.com/developers/docs/resources/webhook
+detect:
+  keywords: [discord.com/api/webhooks, discordapp.com/api/webhooks]
+  patterns:
+    - name: url
+      regex: '(?P<url>https://(?:ptb\.|canary\.)?discord(?:app)?\.com/api/webhooks/(?P<webhook_id>[0-9]{17,20})/[A-Za-z0-9_-]{60,72})'
+      captures: [webhook_id]
+verify:
+  # GET only reads the webhook's metadata; nothing is posted.
+  request:
+    url: "{{ url }}"
+  valid: { status: [200] }
+  invalid: { status: [401, 404] }
+  extract:
+    - { name: name, label: Name, json: name }
+    - { name: channel_id, label: Channel, json: channel_id }
+    - { name: guild_id, label: Server, json: guild_id }
+rotate:
+  instructions: |
+    Create a replacement webhook first (channel settings -> Integrations),
+    then `--execute` deletes the leaked webhook via DELETE.
+  steps:
+    - name: delete_webhook
+      description: Delete the leaked webhook
+      request:
+        method: DELETE
+        url: "{{ url }}"
+      expect: { status: [204] }
+tests:
+  positive:
+    - "https://discord.com/api/w{{'e'}}bhooks/275195145122529628/Yo6zlap_I-PUjGHW8JWmVa4dnZBKIlac4yNS2-L3Sh9-PLjRC1v8_2JN6HYskfmdc4wr"
+  negative:
+    - "https://discord.com/api/webhooks/123/abc"

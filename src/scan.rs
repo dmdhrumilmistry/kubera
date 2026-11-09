@@ -76,6 +76,8 @@ impl Collector {
 }
 
 /// What to scan.
+// Built once per scan, so the size difference between variants is irrelevant.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum Target {
     /// Files and directories.
@@ -85,9 +87,16 @@ pub enum Target {
         repo: String,
         options: crate::sources::git::GitOptions,
         auth: crate::sources::remote::Auth,
+        /// Ref tips already scanned (incremental mode, see [`crate::state`]).
+        baseline: Option<std::collections::BTreeMap<String, String>>,
+        /// Persistent bare mirror for remote repositories: fetched instead
+        /// of cloned on later runs (mass scanning).
+        mirror: Option<std::path::PathBuf>,
     },
     /// In-memory text (stdin).
     Text(String),
+    /// A container image (pulled, exported from Docker, or an archive).
+    Image(std::sync::Arc<crate::sources::image::Image>),
 }
 
 /// Progress notifications emitted while scanning.
@@ -101,6 +110,16 @@ pub enum Progress {
     Diffs(usize),
 }
 
+/// Result of [`run_detailed`].
+#[derive(Debug, Default)]
+pub struct Outcome {
+    pub findings: Vec<Finding>,
+    /// Git targets: commits scanned.
+    pub commits_scanned: usize,
+    /// Git targets: ref tips at scan time (for incremental state).
+    pub tips: std::collections::BTreeMap<String, String>,
+}
+
 /// Scan a target end to end and return de-duplicated, sorted findings.
 pub fn run(
     engine: &Engine,
@@ -109,6 +128,17 @@ pub fn run(
     max_file_size: u64,
     progress: &(dyn Fn(Progress) + Sync),
 ) -> anyhow::Result<Vec<Finding>> {
+    Ok(run_detailed(engine, filter, target, max_file_size, progress)?.findings)
+}
+
+/// Like [`run`], with scan statistics.
+pub fn run_detailed(
+    engine: &Engine,
+    filter: &Filter,
+    target: &Target,
+    max_file_size: u64,
+    progress: &(dyn Fn(Progress) + Sync),
+) -> anyhow::Result<Outcome> {
     use crate::sources::{self, git, remote};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -137,20 +167,60 @@ pub fn run(
             repo,
             options,
             auth,
+            baseline,
+            mirror,
         } => {
             let remote_repo = remote::parse(repo)?;
-            let (_tmp, path, web) = match &remote_repo {
-                Some(r) => {
+            let (_tmp, path, web) = match (&remote_repo, mirror) {
+                (Some(r), Some(dir)) => {
                     progress(Progress::Cloning(r.display().to_string()));
-                    let (d, p) = git::clone(r, auth, options)?;
+                    git::update_mirror(r, auth, dir)?;
+                    (None, dir.clone(), Some(r.clone()))
+                }
+                (Some(r), None) => {
+                    progress(Progress::Cloning(r.display().to_string()));
+                    // A shallow clone cannot express "since the baseline".
+                    let mut opts = options.clone();
+                    if baseline.is_some() {
+                        opts.max_depth = None;
+                    }
+                    let (d, p) = git::clone(r, auth, &opts)?;
                     (Some(d), p, Some(r.clone()))
                 }
-                None => {
+                (None, _) => {
                     let p = std::path::PathBuf::from(repo);
                     let origin = git::origin_remote(&p);
                     (None, p, origin)
                 }
             };
+            let mut options = options.clone();
+            let tips = git::ref_tips(&path, options.branch.as_deref())?;
+            if let Some(base) = baseline {
+                if options.since_commit.is_some() {
+                    anyhow::bail!("incremental state cannot be combined with --since-commit");
+                }
+                let mut include: Vec<String> = tips.values().cloned().collect();
+                include.sort();
+                include.dedup();
+                let mut exclude: Vec<String> = base
+                    .values()
+                    .filter(|sha| git::commit_exists(&path, sha))
+                    .cloned()
+                    .collect();
+                exclude.sort();
+                exclude.dedup();
+                if include.iter().all(|t| exclude.contains(t)) {
+                    // Nothing new since the last passing scan.
+                    return Ok(Outcome {
+                        findings: Vec::new(),
+                        commits_scanned: 0,
+                        tips,
+                    });
+                }
+                options.branch = None;
+                options.include = include;
+                options.exclude = exclude;
+            }
             let diffs = AtomicUsize::new(0);
             let mut batch: Vec<sources::Chunk> = Vec::new();
             let flush = |batch: &mut Vec<sources::Chunk>| {
@@ -168,7 +238,7 @@ pub fn run(
                 progress(Progress::Diffs(n));
                 batch.clear();
             };
-            git::scan(&path, options, |chunk| {
+            let commits = git::scan(&path, &options, |chunk| {
                 batch.push(chunk);
                 if batch.len() >= 256 {
                     flush(&mut batch);
@@ -185,7 +255,35 @@ pub fn run(
                     }
                 }
             }
-            return Ok(findings);
+            return Ok(Outcome {
+                findings,
+                commits_scanned: commits,
+                tips,
+            });
+        }
+        Target::Image(img) => {
+            let mut batch: Vec<crate::sources::Chunk> = Vec::new();
+            let files = AtomicUsize::new(0);
+            let flush = |batch: &mut Vec<crate::sources::Chunk>| {
+                batch.par_iter().for_each(|c| {
+                    collector.push(scan_chunk(engine, filter, c));
+                });
+                let n = files.fetch_add(batch.len(), Ordering::Relaxed) + batch.len();
+                progress(Progress::Files { done: n, total: 0 });
+                batch.clear();
+            };
+            crate::sources::image::walk(img, max_file_size, &mut |chunk| {
+                let excluded = chunk.location.path.as_deref().is_some_and(|p| {
+                    filter.path_excluded(std::path::Path::new(p.trim_start_matches('/')))
+                });
+                if !excluded {
+                    batch.push(chunk);
+                }
+                if batch.len() >= 256 {
+                    flush(&mut batch);
+                }
+            })?;
+            flush(&mut batch);
         }
         Target::Text(text) => {
             let chunk = crate::sources::Chunk {
@@ -199,5 +297,8 @@ pub fn run(
             collector.push(scan_chunk(engine, filter, &chunk));
         }
     }
-    Ok(collector.into_findings())
+    Ok(Outcome {
+        findings: collector.into_findings(),
+        ..Default::default()
+    })
 }

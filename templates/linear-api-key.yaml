@@ -1,0 +1,52 @@
+id: linear-api-key
+name: Linear API Key
+platform: Linear
+description: Linear personal API key (issues, projects and comments of the workspace).
+severity: high
+tags: [project-management]
+references:
+  - https://developers.linear.app/docs/graphql/working-with-the-graphql-api
+detect:
+  keywords: [lin_api_]
+  patterns:
+    - name: token
+      regex: '\b(lin_api_[A-Za-z0-9]{40})\b'
+      min_entropy: 3.5
+verify:
+  # GraphQL: a POST with a JSON query.
+  request:
+    method: POST
+    url: https://api.linear.app/graphql
+    headers: { Authorization: "{{ token }}" }
+    json: { query: "{ viewer { id name email } }" }
+  valid:
+    status: [200]
+    json: [{ path: data.viewer.id, exists: true }]
+  invalid:
+    any:
+      - { status: [401] }
+      - { status: [400], body_contains: [AUTHENTICATION] }
+  extract:
+    - { name: name, label: User, json: data.viewer.name }
+    - { name: email, label: Email, json: data.viewer.email }
+analyze:
+  steps:
+    - name: organization
+      description: Workspace and teams
+      request:
+        method: POST
+        url: https://api.linear.app/graphql
+        headers: { Authorization: "{{ token }}" }
+        json: { query: "{ organization { name urlKey } teams { nodes { name } } }" }
+      extract:
+        - { name: org, label: Workspace, json: data.organization.name }
+        - { name: teams, label: Teams, json: "data.teams.nodes.*.name" }
+rotate:
+  instructions: |
+    Settings -> Security & access -> Personal API keys: revoke the leaked key
+    and create a new one with the minimum scopes.
+tests:
+  positive:
+    - "LINEAR_API_KEY=l{{'i'}}n_api_7U8TgBT2NLZnY70Pb1oPArq3FK3WYl0UnieR0iLQ"
+  negative:
+    - "lin_api_xxxx"

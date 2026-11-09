@@ -6,6 +6,12 @@ kubera scan git <REPO>         # full history of a local path or remote URL
 kubera scan stdin              # anything piped in
 ```
 
+| Also | |
+|---|---|
+| `kubera scan image <ref>` | Container images: see [Container images](containers.md) |
+| `kubera scan repos --github-org ORG` | Whole organizations: see [Incremental and mass scanning](incremental.md) |
+| `kubera scan git . --state FILE` | Only commits added since the last passing scan |
+
 Add `-i` to any scan to browse the results in the [interactive TUI](tui.md) instead of printing them.
 
 ## Filesystem

@@ -1,0 +1,38 @@
+id: mailgun-api-key
+name: Mailgun API Key
+platform: Mailgun
+description: Mailgun private API key (send email, read logs and lists).
+severity: high
+tags: [email]
+references:
+  - https://documentation.mailgun.com/docs/mailgun/api-reference/authentication/
+detect:
+  keywords: ["key-", mailgun]
+  patterns:
+    - name: key
+      regex: '\b(?:(key-[a-f0-9]{32})|([a-f0-9]{32}-[a-f0-9]{8}-[a-f0-9]{8}))\b'
+      min_entropy: 3.2
+verify:
+  request:
+    url: https://api.mailgun.net/v3/domains
+    auth: { type: basic, username: api, password: "{{ key }}" }
+  valid: { status: [200] }
+  invalid: { status: [401, 403] }
+  extract:
+    - { name: domains, label: Domains, json: "items.*.name" }
+  fallbacks:
+    - label: EU region
+      request:
+        url: https://api.eu.mailgun.net/v3/domains
+        auth: { type: basic, username: api, password: "{{ key }}" }
+rotate:
+  instructions: |
+    1. Create a new key: Mailgun dashboard -> API Security -> Add new key.
+    2. Deploy it, then delete the leaked key on the same page.
+    3. Review sending logs for unexpected messages.
+tests:
+  positive:
+    - "MAILGUN_KEY=k{{'e'}}y-c42d3609fdbd68869e5a11b99b6bed27"
+    - "mailgun: bdd6f{{'1'}}cf970d62bc5cdbabf77777fce0-aeff93fa-6147ec1c"
+  negative:
+    - "ke{{'y'}}-00000000000000000000000000000000"

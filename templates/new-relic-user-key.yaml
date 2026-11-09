@@ -1,0 +1,43 @@
+id: new-relic-user-key
+name: New Relic User API Key
+platform: New Relic
+description: New Relic user API key (NerdGraph access to every account the user can see).
+severity: high
+tags: [observability]
+references:
+  - https://docs.newrelic.com/docs/apis/nerdgraph/get-started/introduction-new-relic-nerdgraph/
+detect:
+  keywords: [NRAK-]
+  patterns:
+    - name: key
+      regex: '\b(NRAK-[A-Z0-9]{27})\b'
+verify:
+  request:
+    method: POST
+    url: https://api.newrelic.com/graphql
+    headers: { API-Key: "{{ key }}" }
+    json: { query: "{ actor { user { email name } } }" }
+  valid:
+    status: [200]
+    json: [{ path: data.actor.user.email, exists: true }]
+  invalid:
+    any:
+      - { status: [401, 403] }
+      - { status: [200], json: [{ path: data.actor.user, exists: false }] }
+  extract:
+    - { name: email, label: Email, json: data.actor.user.email }
+  fallbacks:
+    - label: EU region
+      request:
+        method: POST
+        url: https://api.eu.newrelic.com/graphql
+        headers: { API-Key: "{{ key }}" }
+        json: { query: "{ actor { user { email name } } }" }
+rotate:
+  instructions: |
+    one.newrelic.com -> API keys: delete the leaked user key and create a new one.
+tests:
+  positive:
+    - "NEW_RELIC_API_KEY=N{{'R'}}AK-0GW6LT00563ADCD0RT4SKQC7MCN"
+  negative:
+    - "NRAK-short"

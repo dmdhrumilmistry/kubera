@@ -1,0 +1,30 @@
+id: rubygems-api-key
+name: RubyGems API Key
+platform: RubyGems
+description: RubyGems.org API key. Can push gem versions (supply-chain risk).
+severity: critical
+tags: [registry, supply-chain]
+references:
+  - https://guides.rubygems.org/rubygems-org-api/#gem-methods
+detect:
+  keywords: [rubygems_]
+  patterns:
+    - name: key
+      regex: '\b(rubygems_[a-f0-9]{48})\b'
+verify:
+  request:
+    url: https://rubygems.org/api/v1/gems.json
+    headers: { Authorization: "{{ key }}" }
+  valid: { status: [200] }
+  invalid: { status: [401, 403] }
+  extract:
+    - { name: gems, label: Gems, json: "*.name" }
+rotate:
+  instructions: |
+    rubygems.org -> Settings -> API keys: delete the leaked key, create a
+    scoped replacement, and check recent pushes of your gems.
+tests:
+  positive:
+    - "GEM_HOST_API_KEY=r{{'u'}}bygems_df182f3f5be3b629f5ef559918d486b38b475f68159d3940"
+  negative:
+    - "rubygems_xyz"

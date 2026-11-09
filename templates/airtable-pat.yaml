@@ -1,0 +1,32 @@
+id: airtable-pat
+name: Airtable Personal Access Token
+platform: Airtable
+description: Airtable personal access token.
+severity: high
+tags: [productivity]
+references:
+  - https://airtable.com/developers/web/api/get-user-id-scopes
+detect:
+  keywords: [pat]
+  patterns:
+    - name: token
+      regex: '\b(pat[A-Za-z0-9]{14}\.[a-f0-9]{64})\b'
+verify:
+  request:
+    url: https://api.airtable.com/v0/meta/whoami
+    auth: { type: bearer, token: "{{ token }}" }
+  valid: { status: [200] }
+  invalid: { status: [401] }
+  extract:
+    - { name: user_id, label: User, json: id }
+    - { name: email, label: Email, json: email }
+    - { name: scopes, label: Scopes, json: scopes }
+rotate:
+  instructions: |
+    airtable.com/create/tokens: regenerate or delete the leaked token and
+    create a replacement with the minimum scopes and bases.
+tests:
+  positive:
+    - "AIRTABLE_TOKEN=p{{'a'}}thn9YG4Ln65nJwF.db8624abc19630109fc37993416d43a8da73740642fe83665fe9b733374bc661"
+  negative:
+    - "path.to.file"

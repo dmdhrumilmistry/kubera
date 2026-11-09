@@ -1,14 +1,26 @@
 # Installation
 
-## From source
-
-Building requires Rust **1.88** or newer ([rustup](https://rustup.rs)).
+## One-line install (Linux, macOS, Termux)
 
 ```bash
-cargo install --git https://github.com/dmdhrumilmistry/kubera --locked
+curl -fsSL https://raw.githubusercontent.com/dmdhrumilmistry/kubera/main/install.sh | sh
 ```
 
-Or from a clone:
+The script picks the prebuilt binary for your OS and CPU (static Linux musl, macOS Intel/Apple Silicon, Android/Termux aarch64), **verifies its SHA-256 checksum** and installs it to `~/.local/bin` (or `$PREFIX/bin` on Termux). Set `KUBERA_VERSION=v0.1.0` to pin a release or `KUBERA_INSTALL_DIR` to change the location. Read the script first if you prefer: it's short.
+
+## Cargo
+
+```bash
+cargo install kubera-cli --locked
+```
+
+The crate is called `kubera-cli` (the `kubera` name on crates.io belongs to an unrelated project); the installed command is `kubera`. Requires Rust **1.88** or newer ([rustup](https://rustup.rs)).
+
+## Prebuilt binaries
+
+Every [GitHub release](https://github.com/dmdhrumilmistry/kubera/releases) has archives for Linux (x86_64/aarch64, static), macOS (x86_64/arm64), Windows (x86_64) and Android (aarch64), each with a `.sha256` file.
+
+## From source
 
 ```bash
 git clone https://github.com/dmdhrumilmistry/kubera

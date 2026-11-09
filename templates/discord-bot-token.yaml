@@ -1,0 +1,41 @@
+id: discord-bot-token
+name: Discord Bot Token
+platform: Discord
+description: Discord bot token (act as the bot in every server it joined).
+severity: high
+tags: [chat]
+references:
+  - https://discord.com/developers/docs/resources/user#get-current-user
+detect:
+  keywords: [discord]
+  patterns:
+    - name: token
+      regex: '\b([MNO][A-Za-z0-9_-]{23,25}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,38})\b'
+      min_entropy: 3.5
+verify:
+  request:
+    url: https://discord.com/api/v10/users/@me
+    headers: { Authorization: "Bot {{ token }}" }
+  valid: { status: [200] }
+  invalid: { status: [401] }
+  extract:
+    - { name: username, label: Bot, json: username }
+    - { name: bot_id, label: Id, json: id }
+analyze:
+  steps:
+    - name: guilds
+      description: Servers the bot is in
+      request:
+        url: https://discord.com/api/v10/users/@me/guilds
+        headers: { Authorization: "Bot {{ token }}" }
+      extract:
+        - { name: guilds, label: Servers, json: "*.name" }
+rotate:
+  instructions: |
+    1. Developer Portal -> your application -> Bot -> Reset Token.
+    2. Deploy the new token; the old one stops working immediately.
+tests:
+  positive:
+    - "d{{'i'}}scord_token = MkC7p8sGzV{{'Z'}}xE5lqRUTxrWY97t.b9jFqQ.zIl1TXTdIt1vjhzRmZtVED3HuX6tHmv4IMBI7P"
+  negative:
+    - "token = M.x.y"

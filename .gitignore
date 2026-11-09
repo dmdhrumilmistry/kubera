@@ -1,3 +1,4 @@
 /target
 *.sarif
 /docs/book
+__pycache__/

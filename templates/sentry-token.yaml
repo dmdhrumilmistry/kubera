@@ -1,0 +1,31 @@
+id: sentry-token
+name: Sentry Auth Token
+platform: Sentry
+description: Sentry organization (sntrys_) or user (sntryu_) auth token.
+severity: high
+tags: [observability]
+references:
+  - https://docs.sentry.io/account/auth-tokens/
+detect:
+  keywords: [sntrys_, sntryu_]
+  patterns:
+    - name: token
+      regex: '(?:\b(sntryu_[a-f0-9]{64})\b|(sntrys_eyJ[A-Za-z0-9+/=_-]{60,400}))'
+verify:
+  request:
+    url: https://sentry.io/api/0/organizations/
+    auth: { type: bearer, token: "{{ token }}" }
+  # Org tokens may lack org:read and get 403: still a live token.
+  valid: { status: [200, 403] }
+  invalid: { status: [401] }
+  extract:
+    - { name: orgs, label: Organizations, json: "*.slug" }
+rotate:
+  instructions: |
+    Sentry -> Settings -> Auth Tokens (user) or Organization Tokens: revoke
+    the leaked token and create a new one; update CI release steps.
+tests:
+  positive:
+    - "SENTRY_AUTH_TOKEN=s{{'n'}}tryu_37b212eb446905e849dd61ff38d3ddb160c60797b8fb10a4e7bbf32fbcb4aa67"
+  negative:
+    - "sntryu_xyz"

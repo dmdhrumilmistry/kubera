@@ -155,6 +155,9 @@ pub fn validate(t: &Template) -> Result<()> {
     if t.detect.patterns.is_empty() {
         bail!("detect.patterns must not be empty");
     }
+    if t.detect.patterns.iter().all(|p| p.optional) {
+        bail!("at least one pattern must not be optional");
+    }
     if t.detect.keywords.iter().any(|k| k.trim().is_empty()) || t.detect.keywords.is_empty() {
         bail!("detect.keywords must contain at least one non-empty keyword");
     }
@@ -195,6 +198,13 @@ pub fn validate(t: &Template) -> Result<()> {
         check_matcher(&v.valid)?;
         if let Some(m) = &v.invalid {
             check_matcher(m)?;
+        }
+        for (i, fb) in v.fallbacks.iter().enumerate() {
+            check_request(&fb.request, &vars)
+                .with_context(|| format!("verify.fallbacks[{i}].request"))?;
+            for m in fb.valid.iter().chain(fb.invalid.iter()) {
+                check_matcher(m)?;
+            }
         }
         check_extracts(&v.extract)?;
         vars.extend(v.extract.iter().map(|e| e.name.clone()));
@@ -280,7 +290,7 @@ fn check_matcher(m: &Matcher) -> Result<()> {
             bail!("json condition on `{}` needs `equals` or `exists`", j.path);
         }
     }
-    Ok(())
+    m.any.iter().try_for_each(check_matcher)
 }
 
 fn check_str(s: &str, vars: &BTreeSet<String>) -> Result<()> {

@@ -1,0 +1,47 @@
+id: okta-api-token
+name: Okta API Token
+platform: Okta
+description: Okta API (SSWS) token with the org domain. Acts with the creating admin's privileges.
+severity: critical
+tags: [identity]
+references:
+  - https://developer.okta.com/docs/api/openapi/okta-management/management/tag/ApiToken/
+detect:
+  keywords: [okta]
+  max_distance: 1024
+  patterns:
+    - name: token
+      regex: '\b(00[A-Za-z0-9_-]{40})\b'
+      min_entropy: 3.5
+    - name: domain
+      regex: '\b([a-z0-9-]+\.(?:okta|oktapreview|okta-emea)\.com)\b'
+      secret: false
+      optional: true
+verify:
+  request:
+    url: "https://{{ domain }}/api/v1/users/me"
+    headers: { Authorization: "SSWS {{ token }}" }
+  valid: { status: [200] }
+  invalid: { status: [401] }
+  extract:
+    - { name: login, label: User, json: profile.login }
+rotate:
+  instructions: |
+    Create a replacement token first (Security -> API -> Tokens) and deploy
+    it. `--execute` then revokes the leaked token with
+    DELETE /api/v1/api-tokens/current.
+  steps:
+    - name: revoke
+      description: Revoke the leaked token
+      request:
+        method: DELETE
+        url: "https://{{ domain }}/api/v1/api-tokens/current"
+        headers: { Authorization: "SSWS {{ token }}" }
+      expect: { status: [204] }
+tests:
+  positive:
+    - |
+      OKTA_ORG=acme.o{{'k'}}ta.com
+      OKTA_API_TOKEN=00QAs{{'O'}}P5BVfc2SRrjPjkI3YuyZyYkEUzXN2nXiHNY3
+  negative:
+    - "OKTA_API_TOKEN=00short"

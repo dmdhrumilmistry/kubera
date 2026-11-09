@@ -1,0 +1,33 @@
+id: pulumi-token
+name: Pulumi Access Token
+platform: Pulumi
+description: Pulumi Cloud access token (stacks, state, secrets config).
+severity: critical
+tags: [infrastructure]
+references:
+  - https://www.pulumi.com/docs/pulumi-cloud/reference/cloud-rest-api/
+detect:
+  keywords: [pul-]
+  patterns:
+    - name: token
+      regex: '\b(pul-[a-f0-9]{40})\b'
+verify:
+  request:
+    url: https://api.pulumi.com/api/user
+    headers:
+      Authorization: "token {{ token }}"
+      Accept: application/vnd.pulumi+8
+  valid: { status: [200] }
+  invalid: { status: [401] }
+  extract:
+    - { name: login, label: User, json: githubLogin }
+    - { name: name, label: Name, json: name }
+rotate:
+  instructions: |
+    app.pulumi.com -> Personal access tokens: delete the leaked token and
+    create a new one; update CI.
+tests:
+  positive:
+    - "PULUMI_ACCESS_TOKEN=p{{'u'}}l-0066e119d603ec22fe95c5b2fdec420cfd578317"
+  negative:
+    - "pul-xyz"

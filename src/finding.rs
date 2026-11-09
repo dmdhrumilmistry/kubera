@@ -15,6 +15,7 @@ pub enum SourceKind {
     Filesystem,
     Git,
     Stdin,
+    Container,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -38,6 +39,9 @@ pub struct Location {
     /// Web link to the exact line at the commit (GitHub, GitLab, Bitbucket).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub link: Option<String>,
+    /// Container images: digest of the layer holding the file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub layer: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]

@@ -1,0 +1,34 @@
+id: mailchimp-api-key
+name: Mailchimp API Key
+platform: Mailchimp
+description: Mailchimp Marketing API key (audiences, campaigns, subscriber PII).
+severity: high
+tags: [email, marketing]
+references:
+  - https://mailchimp.com/developer/marketing/docs/fundamentals/#api-structure
+detect:
+  keywords: ["-us"]
+  patterns:
+    - name: key
+      regex: '\b(?P<key>[a-f0-9]{32}-(?P<dc>us[0-9]{1,2}))\b'
+      captures: [dc]
+      min_entropy: 3.2
+verify:
+  request:
+    url: "https://{{ dc }}.api.mailchimp.com/3.0/"
+    auth: { type: basic, username: kubera, password: "{{ key }}" }
+  valid: { status: [200] }
+  invalid: { status: [401, 403] }
+  extract:
+    - { name: account, label: Account, json: account_name }
+    - { name: email, label: Email, json: email }
+    - { name: total_subscribers, label: Subscribers, json: total_subscribers }
+rotate:
+  instructions: |
+    1. Account -> Extras -> API keys: create a new key.
+    2. Deploy it, then disable and delete the leaked key.
+tests:
+  positive:
+    - "MAILCHIMP_KEY=7b190d9d0a9f544bf209ba1e403443d6-u{{'s'}}21"
+  negative:
+    - "00000000000000000000000000000000-u{{'s'}}21"

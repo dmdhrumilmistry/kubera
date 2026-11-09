@@ -1,0 +1,36 @@
+id: razorpay-key
+name: Razorpay Live API Key
+platform: Razorpay
+description: Razorpay live key id + key secret.
+severity: critical
+tags: [payments]
+references:
+  - https://razorpay.com/docs/api/authentication/
+detect:
+  keywords: [rzp_live_]
+  max_distance: 512
+  patterns:
+    - name: key_id
+      regex: '\b(rzp_live_[A-Za-z0-9]{14})\b'
+      secret: false
+    - name: key_secret
+      regex: '(?i)secret[^\n]{0,20}?\b([A-Za-z0-9]{24})\b'
+      min_entropy: 3.5
+verify:
+  request:
+    url: https://api.razorpay.com/v1/payments
+    query: { count: "1" }
+    auth: { type: basic, username: "{{ key_id }}", password: "{{ key_secret }}" }
+  valid: { status: [200] }
+  invalid: { status: [401] }
+rotate:
+  instructions: |
+    Dashboard -> Account & Settings -> API Keys: regenerate the live key and
+    deploy the new secret.
+tests:
+  positive:
+    - |
+      RAZORPAY_KEY_ID=r{{'z'}}p_live_tQADpNH06Vkwez
+      RAZORPAY_KEY_SECRET=67ZZ7HPa8F0e3Dbxolb0PeVy
+  negative:
+    - "rzp_test_abcdefghijklmn"

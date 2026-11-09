@@ -1,0 +1,23 @@
+id: hashicorp-vault-token
+name: HashiCorp Vault Token
+platform: HashiCorp
+description: Vault service (hvs.) or batch (hvb.) token.
+severity: critical
+tags: [secrets-manager]
+references:
+  - https://developer.hashicorp.com/vault/docs/concepts/tokens#token-prefixes
+detect:
+  keywords: [hvs., hvb.]
+  patterns:
+    - name: token
+      regex: '\b(hv[sb]\.[A-Za-z0-9_-]{90,140})'
+      min_entropy: 4.0
+rotate:
+  instructions: |
+    Revoke it: `vault token revoke <token>` (or by accessor), then audit what
+    the token's policies allowed and rotate those secrets.
+tests:
+  positive:
+    - "VAULT_TOKEN=hv{{'s'}}.vmfT3fWjUkHHXyBKB0vmZ6SCUCK6Xb5U4apOFltslmzXUZg8G33cAy5MWmOBcwqK9jYAuuXrPnK3HMZdUDhiD3j07fJl0Kj"
+  negative:
+    - "hvs.short"

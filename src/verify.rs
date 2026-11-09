@@ -37,43 +37,71 @@ pub async fn verify(http: &Http, t: &Template, parts: &BTreeMap<String, String>)
             vars,
         };
     };
-    let resp = match http.execute(&v.request, &vars).await {
-        Ok(r) => r,
-        Err(e) => {
-            return Outcome {
-                verification: Verification {
-                    status: Status::Unknown,
-                    message: Some(mask_secrets(&format!("{e:#}"), parts)),
-                    details: BTreeMap::new(),
-                },
-                vars,
-            };
+    // Primary endpoint first, then fallbacks until one verifies the secret.
+    let attempts = std::iter::once((None, &v.request, &v.valid, v.invalid.as_ref())).chain(
+        v.fallbacks.iter().map(|f| {
+            (
+                Some(f.label.clone().unwrap_or_else(|| f.request.url.clone())),
+                &f.request,
+                f.valid.as_ref().unwrap_or(&v.valid),
+                f.invalid.as_ref().or(v.invalid.as_ref()),
+            )
+        }),
+    );
+    let mut status = Status::Unknown;
+    let mut message = None;
+    let mut verified_resp = None;
+    let mut endpoint = None;
+    let mut all_invalid = true;
+    let mut first_invalid = None;
+    let mut unknown_reasons = Vec::new();
+    for (label, req, valid, invalid) in attempts {
+        let resp = match http.execute(req, &vars).await {
+            Ok(r) => r,
+            Err(e) => {
+                all_invalid = false;
+                unknown_reasons.push(format!("{e:#}"));
+                continue;
+            }
+        };
+        match http::check(valid, &resp) {
+            Ok(()) => {
+                status = Status::Verified;
+                endpoint = label;
+                verified_resp = Some(resp);
+                break;
+            }
+            Err(why_not_valid) => match invalid {
+                Some(inv) if http::check(inv, &resp).is_ok() => {
+                    first_invalid.get_or_insert_with(|| {
+                        format!("HTTP {}: {}", resp.status, http::snippet(&resp.body))
+                    });
+                }
+                _ => {
+                    all_invalid = false;
+                    unknown_reasons.push(format!(
+                        "unexpected response ({why_not_valid}): {}",
+                        http::snippet(&resp.body)
+                    ));
+                }
+            },
         }
-    };
-    let (status, message) = match http::check(&v.valid, &resp) {
-        Ok(()) => (Status::Verified, None),
-        Err(why_not_valid) => match &v.invalid {
-            Some(inv) if http::check(inv, &resp).is_ok() => (
-                Status::Invalid,
-                Some(format!(
-                    "HTTP {}: {}",
-                    resp.status,
-                    http::snippet(&resp.body)
-                )),
-            ),
-            _ => (
-                Status::Unknown,
-                Some(format!(
-                    "unexpected response ({why_not_valid}): {}",
-                    http::snippet(&resp.body)
-                )),
-            ),
-        },
-    };
+    }
+    if status != Status::Verified {
+        if all_invalid {
+            status = Status::Invalid;
+            message = first_invalid;
+        } else {
+            message = Some(unknown_reasons.join(" | "));
+        }
+    }
     let mut details = BTreeMap::new();
-    if status == Status::Verified {
+    if let Some(resp) = &verified_resp {
+        if let Some(ep) = endpoint {
+            details.insert("Endpoint".to_string(), serde_json::Value::String(ep));
+        }
         for e in &v.extract {
-            if let Some(val) = http::extract(e, &resp) {
+            if let Some(val) = http::extract(e, resp) {
                 vars.insert(e.name.clone(), http::value_to_var(&val));
                 let shown = if e.secret {
                     serde_json::Value::String(crate::finding::redact(&http::value_to_var(&val)))

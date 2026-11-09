@@ -1,0 +1,33 @@
+id: gitlab-runner-token
+name: GitLab Runner Authentication Token
+platform: GitLab
+description: GitLab runner authentication token (glrt-). Lets an attacker register a runner and receive CI jobs and their secrets.
+severity: critical
+tags: [ci, supply-chain]
+references:
+  - https://docs.gitlab.com/ee/api/runners.html#verify-authentication-for-a-registered-runner
+detect:
+  keywords: [glrt-]
+  patterns:
+    - name: token
+      regex: '\b(glrt-[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]+)*)'
+      min_entropy: 3.5
+verify:
+  # Runner API: a form POST.
+  request:
+    method: POST
+    url: https://gitlab.com/api/v4/runners/verify
+    form: { token: "{{ token }}" }
+  valid: { status: [200] }
+  invalid: { status: [403] }
+  extract:
+    - { name: runner_id, label: Runner, json: id }
+rotate:
+  instructions: |
+    Project/Group -> Settings -> CI/CD -> Runners: reset the runner's token
+    (or delete the runner) and re-register it.
+tests:
+  positive:
+    - "token = \"g{{'l'}}rt-TnKfXDK2vaKg5d7byNCVRHvx1a\""
+  negative:
+    - "glrt-short"

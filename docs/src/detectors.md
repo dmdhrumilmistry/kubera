@@ -1,33 +1,82 @@
 # Builtin detectors
 
+Kubera ships **64 detectors**. Every verifier was checked against the live vendor API with fake credentials (they must come back `invalid`, proving the endpoint, headers and matchers are right).
+
 | Detector | Platform | Severity | Verify | Analyze | Rotate |
 |---|---|---|---|---|---|
-| `aws-access-key` | AWS | critical | STS `GetCallerIdentity` (SigV4) | IAM user, attached policies, groups, access keys | **API** |
-| `github-token` | GitHub | critical | `GET /user` | scopes, rate limit, orgs, repositories | **API** (revoke) |
-| `gitlab-pat` | GitLab | critical | `GET /api/v4/user` | token scopes and expiry, writable projects | **API** |
-| `sendgrid-api-key` | SendGrid | high | `GET /v3/scopes` | key name, account, verified senders | **API** |
-| `slack-token` | Slack | high | `auth.test` | channels, workspace | **API** (revoke) |
-| `stripe-secret-key` | Stripe | critical | `GET /v1/balance` | account, read probes on charges, customers, payouts and webhooks | manual |
-| `openai-api-key` | OpenAI | high | `GET /v1/models` | owner, models, files, fine-tuning | manual |
-| `anthropic-api-key` | Anthropic | high | `GET /v1/models` | models | manual |
-| `npm-token` | npm | critical | `GET /-/whoami` | tokens, maintained packages | manual |
-| `huggingface-token` | Hugging Face | high | `GET /api/whoami-v2` | role, orgs, models | manual |
-| `digitalocean-token` | DigitalOcean | critical | `GET /v2/account` | droplets, projects | manual |
-| `telegram-bot-token` | Telegram | medium | `getMe` | webhook target | manual |
-| `slack-webhook` | Slack | medium | empty-payload probe (posts nothing) | - | manual |
+| `age-secret-key` | age | high | - | - | manual |
+| `airtable-pat` | Airtable | high | GET api.airtable.com | - | manual |
+| `algolia-admin-key` | Algolia | high | GET (per-tenant host) | - | manual |
+| `anthropic-api-key` | Anthropic | high | GET api.anthropic.com | yes | manual |
+| `asana-pat` | Asana | high | GET app.asana.com | - | manual |
+| `aws-access-key` | AWS | critical | POST sts.amazonaws.com | yes | **API** (POST) |
+| `azure-storage-connection-string` | Azure | critical | - | - | manual |
+| `brevo-api-key` | Brevo | high | GET api.brevo.com | - | manual |
+| `buildkite-token` | Buildkite | high | GET api.buildkite.com | - | **API** (DELETE) |
+| `circleci-pat` | CircleCI | high | GET circleci.com | - | manual |
+| `cloudflare-api-token` | Cloudflare | critical | GET api.cloudflare.com | - | **API** (PUT) |
+| `contentful-pat` | Contentful | high | GET api.contentful.com | yes | manual |
+| `database-connection-uri` | Generic | high | - | - | manual |
+| `databricks-token` | Databricks | critical | GET (per-tenant host) | - | manual |
+| `datadog-api-key` | Datadog | high | GET api.datadoghq.com +5 fallback(s) | - | manual |
+| `digitalocean-token` | DigitalOcean | critical | GET api.digitalocean.com | yes | manual |
+| `discord-bot-token` | Discord | high | GET discord.com | yes | manual |
+| `discord-webhook` | Discord | medium | GET (per-tenant host) | - | **API** (DELETE) |
+| `doppler-token` | Doppler | critical | GET api.doppler.com | - | **API** (POST) |
+| `dropbox-access-token` | Dropbox | high | POST api.dropboxapi.com | - | manual |
+| `figma-pat` | Figma | medium | GET api.figma.com | - | manual |
+| `gcp-service-account-key` | Google Cloud | critical | - | - | manual |
+| `github-token` | GitHub | critical | GET api.github.com | yes | **API** (POST) |
+| `gitlab-pat` | GitLab | critical | GET gitlab.com | yes | **API** (POST) |
+| `gitlab-runner-token` | GitLab | critical | POST gitlab.com | - | manual |
 | `google-api-key` | Google Cloud | medium | - | - | manual |
+| `groq-api-key` | Groq | medium | GET api.groq.com | - | manual |
+| `hashicorp-vault-token` | HashiCorp | critical | - | - | manual |
+| `heroku-api-key` | Heroku | critical | GET api.heroku.com | yes | manual |
+| `huggingface-token` | Hugging Face | high | GET huggingface.co | yes | manual |
+| `linear-api-key` | Linear | high | POST api.linear.app | yes | manual |
+| `mailchimp-api-key` | Mailchimp | high | GET (per-tenant host) | - | manual |
+| `mailgun-api-key` | Mailgun | high | GET api.mailgun.net +1 fallback(s) | - | manual |
+| `mapbox-secret-token` | Mapbox | medium | GET api.mapbox.com | - | manual |
+| `netlify-token` | Netlify | high | GET api.netlify.com | yes | manual |
+| `new-relic-user-key` | New Relic | high | POST api.newrelic.com +1 fallback(s) | - | manual |
+| `notion-token` | Notion | high | GET api.notion.com | - | manual |
+| `npm-token` | npm | critical | GET registry.npmjs.org | yes | manual |
+| `okta-api-token` | Okta | critical | GET (per-tenant host) | - | **API** (DELETE) |
+| `openai-api-key` | OpenAI | high | GET api.openai.com | yes | manual |
+| `paypal-oauth-credentials` | PayPal | critical | POST api-m.paypal.com +1 fallback(s) | - | manual |
+| `pinecone-api-key` | Pinecone | high | GET api.pinecone.io | - | manual |
+| `postman-api-key` | Postman | high | GET api.getpostman.com | yes | manual |
+| `postmark-token` | Postmark | high | GET api.postmarkapp.com +1 fallback(s) | - | manual |
 | `private-key` | Generic | high | - | - | manual |
+| `pulumi-token` | Pulumi | critical | GET api.pulumi.com | - | manual |
+| `pypi-token` | PyPI | critical | - | - | manual |
+| `razorpay-key` | Razorpay | critical | GET api.razorpay.com | - | manual |
+| `replicate-api-token` | Replicate | medium | GET api.replicate.com | - | manual |
+| `rubygems-api-key` | RubyGems | critical | GET rubygems.org | - | manual |
+| `sendgrid-api-key` | SendGrid | high | GET api.sendgrid.com | yes | **API** (DELETE, POST) |
+| `sentry-token` | Sentry | high | GET sentry.io | - | manual |
+| `shopify-access-token` | Shopify | critical | GET (per-tenant host) | - | manual |
+| `slack-token` | Slack | high | POST slack.com | yes | **API** (POST) |
+| `slack-webhook` | Slack | medium | POST (per-tenant host) | - | manual |
+| `snyk-api-token` | Snyk | high | GET api.snyk.io | - | manual |
+| `square-access-token` | Square | critical | GET connect.squareup.com +1 fallback(s) | - | manual |
+| `stripe-secret-key` | Stripe | critical | GET api.stripe.com | yes | manual |
+| `supabase-management-token` | Supabase | critical | GET api.supabase.com | - | manual |
+| `telegram-bot-token` | Telegram | medium | GET api.telegram.org | yes | manual |
+| `terraform-cloud-token` | HashiCorp | critical | GET app.terraform.io | - | manual |
+| `twilio` | Twilio | critical | GET api.twilio.com | yes | **API** (POST) |
+| `typeform-pat` | Typeform | medium | GET api.typeform.com | - | manual |
+| `xai-api-key` | xAI | medium | GET api.x.ai | - | manual |
 
-The template sources are in [`templates/`](https://github.com/dmdhrumilmistry/kubera/tree/main/templates). Print the active version of any detector with:
-
-```bash
-kubera templates show aws-access-key
-```
+Print any template with `kubera templates show <id>`; sources live in [`templates/`](https://github.com/dmdhrumilmistry/kubera/tree/main/templates).
 
 ## Notes
 
-- **aws-access-key** pairs an access key id with a 40-character secret found within 2 KiB of it. The secret part must have entropy above 4.3 bits/char, which rules out git SHAs and other hex strings. Rotation creates a new key for the same IAM user, then *deactivates* the leaked one (IAM users can hold at most two keys).
-- **github-token** covers classic and fine-grained PATs plus `gho_`, `ghu_`, `ghs_` and `ghr_` tokens. GitHub cannot mint a replacement PAT through its API, so rotation revokes the leaked token through the public credential revocation API after you create the replacement.
-- **gitlab-pat** targets gitlab.com. For self-managed GitLab, copy the template, keep the `id` (to override) or pick a new one, and change the host.
-- **sendgrid-api-key** recreates the key with the *same scopes* as the leaked one, then deletes the leaked key **using the new key**, which also proves the new key works.
-- **slack-webhook** verifies by POSTing `{}`. A live webhook rejects the empty payload with HTTP 400 without posting anything.
+- **Multi-part secrets** pair parts found near each other: `aws-access-key` (key id + secret), `twilio` (account SID + auth token), `paypal-oauth-credentials`, `razorpay-key`, `algolia-admin-key`, `azure-storage-connection-string`, `gcp-service-account-key`.
+- **Optional parts:** `shopify-access-token`, `okta-api-token` and `databricks-token` report the token even when its host is not nearby; verification then needs the host and reports `unknown`.
+- **Fallback endpoints:** `datadog-api-key` tries all six Datadog sites; `mailgun-api-key` and `new-relic-user-key` try their EU regions; `square-access-token` and `paypal-oauth-credentials` try sandbox; `postmark-token` tries server- then account-token headers. A key is `invalid` only when every endpoint rejects it.
+- **Rotation by API** uses the method each vendor needs: `PUT` (Cloudflare rolls the token value in place), `DELETE` (Discord webhooks, Okta, Buildkite revoke), `POST` (Twilio promotes a new auth token, GitLab rotates, SendGrid recreates, Doppler/Slack/GitHub revoke).
+- **Detection-only** templates cover credentials whose verification needs a database or cloud protocol rather than HTTPS: `database-connection-uri`, `azure-storage-connection-string`, `gcp-service-account-key`, `pypi-token`, `hashicorp-vault-token`, `age-secret-key`, `private-key`.
+- **AWS** pairs an access key id with a 40-character secret found within 2 KiB of it; entropy above 4.3 bits/char rules out git SHAs.
+- **Slack webhooks** are verified by POSTing `{}`: a live webhook rejects the empty payload with HTTP 400 without posting anything; **Discord webhooks** by a GET that only reads metadata.

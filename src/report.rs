@@ -210,6 +210,14 @@ fn pretty(out: &mut dyn Write, findings: &[Finding], st: &Style) -> Result<()> {
                 st.dim(loc.date.as_deref().unwrap_or(""))
             )?;
         }
+        if let Some(layer) = &loc.layer {
+            writeln!(
+                out,
+                "{bar} {} {}",
+                st.dim("layer"),
+                st.gold(&layer[..layer.len().min(19)])
+            )?;
+        }
         if let Some(l) = &loc.link {
             writeln!(out, "{bar} {} {}", st.dim("↗"), st.cyan(l))?;
         }

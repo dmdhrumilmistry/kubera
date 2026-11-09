@@ -1,0 +1,27 @@
+id: azure-storage-connection-string
+name: Azure Storage Account Key
+platform: Azure
+description: Azure Storage account name + key (full access to blobs, queues, tables and files).
+severity: critical
+tags: [cloud, storage]
+references:
+  - https://learn.microsoft.com/azure/storage/common/storage-account-keys-manage
+detect:
+  keywords: [AccountKey=]
+  max_distance: 512
+  patterns:
+    - name: account
+      regex: 'AccountName=([a-z0-9]{3,24})'
+      secret: false
+    - name: key
+      regex: 'AccountKey=([A-Za-z0-9+/]{86}==)'
+rotate:
+  instructions: |
+    Switch clients to the other key, then regenerate the leaked one:
+      az storage account keys renew -g <group> -n <account> --key key1
+    Prefer Entra ID auth or SAS tokens with expiry going forward.
+tests:
+  positive:
+    - "DefaultEndpointsProtocol=https;AccountName=acmeprod;A{{'c'}}countKey=29wqIEox95U40z82/KzUcAyD8bhEMq9GMHcxipLHbLDzyYYU9HrvnmwDl0A2UqZMKmvqPapZpWyje4NmbLxpKj==;EndpointSuffix=core.windows.net"
+  negative:
+    - "AccountKey=<your-key>"

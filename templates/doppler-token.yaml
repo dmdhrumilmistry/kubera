@@ -1,0 +1,42 @@
+id: doppler-token
+name: Doppler Token
+platform: Doppler
+description: Doppler personal, service, service-account, CLI, SCIM or audit token (access to stored secrets).
+severity: critical
+tags: [secrets-manager]
+references:
+  - https://docs.doppler.com/reference/api
+  - https://docs.doppler.com/reference/auth-revoke
+detect:
+  keywords: [dp.pt., dp.st., dp.sa., dp.ct., dp.scim., dp.audit.]
+  patterns:
+    - name: token
+      regex: '\b(dp\.(?:pt|st|sa|ct|scim|audit)\.[A-Za-z0-9]{40,44})\b'
+verify:
+  request:
+    url: https://api.doppler.com/v3/me
+    auth: { type: bearer, token: "{{ token }}" }
+  valid: { status: [200] }
+  invalid: { status: [401, 403] }
+  extract:
+    - { name: workplace, label: Workplace, json: workplace.name }
+    - { name: token_type, label: Type, json: type }
+    - { name: token_name, label: Name, json: name }
+rotate:
+  instructions: |
+    Create a replacement token in Doppler first and deploy it.
+    `--execute` then revokes the leaked token via POST /v3/auth/revoke.
+  steps:
+    - name: revoke
+      description: Revoke the leaked token
+      request:
+        method: POST
+        url: https://api.doppler.com/v3/auth/revoke
+        auth: { type: bearer, token: "{{ token }}" }
+        json: { token: "{{ token }}" }
+      expect: { status: [200] }
+tests:
+  positive:
+    - "DOPPLER_TOKEN=d{{'p'}}.st.SSPd62o0H9cFR3w1uqy3FXgQeuhLN1bHoMn2DO1QY6X"
+  negative:
+    - "dp.st.short"
