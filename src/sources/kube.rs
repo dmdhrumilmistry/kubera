@@ -76,8 +76,11 @@ pub fn default_kubeconfig() -> Option<PathBuf> {
     Some(PathBuf::from(home).join(".kube/config"))
 }
 
+/// PEM client certificate and key.
+type ClientCert = (Vec<u8>, Vec<u8>);
+
 /// Run an `exec` credential plugin and return its token / client cert.
-fn exec_credential(exec: &Value) -> Result<(Option<String>, Option<(Vec<u8>, Vec<u8>)>)> {
+fn exec_credential(exec: &Value) -> Result<(Option<String>, Option<ClientCert>)> {
     let cmd = s(exec, "/command").context("exec plugin without command")?;
     let mut c = std::process::Command::new(cmd);
     for a in exec["args"].as_array().into_iter().flatten() {
@@ -116,10 +119,7 @@ fn exec_credential(exec: &Value) -> Result<(Option<String>, Option<(Vec<u8>, Vec
     Ok((token, cert))
 }
 
-fn build_client(
-    ca: Option<Vec<u8>>,
-    identity: Option<(Vec<u8>, Vec<u8>)>,
-) -> Result<reqwest::Client> {
+fn build_client(ca: Option<Vec<u8>>, identity: Option<ClientCert>) -> Result<reqwest::Client> {
     let mut b = reqwest::Client::builder()
         .user_agent(concat!("kubera/", env!("CARGO_PKG_VERSION")))
         .redirect(reqwest::redirect::Policy::none())
