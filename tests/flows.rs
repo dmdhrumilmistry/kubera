@@ -890,3 +890,105 @@ async fn buckets_s3_signed_and_gcs() {
     .unwrap();
     assert_eq!(got, vec!["dir/a.txt"]);
 }
+
+#[tokio::test]
+async fn kubernetes_secrets_configmaps_and_workloads() {
+    use base64::Engine as _;
+    let b64 = |s: &str| base64::engine::general_purpose::STANDARD.encode(s);
+    let t = |body: &str| format!("gh{}_{}", "p", body);
+    let (t1, t2, t3, t4) = (
+        t("9nVq3kZ1Lr8XwT2pYb6Hd4Fs7Jc0Mg5Ae1Uo"),
+        t("Zz9nVq3kZ1Lr8XwT2pYb6Hd4Fs7Jc0Mg5Ae1"),
+        t("Yy9nVq3kZ1Lr8XwT2pYb6Hd4Fs7Jc0Mg5Ae1"),
+        t("Xx9nVq3kZ1Lr8XwT2pYb6Hd4Fs7Jc0Mg5Ae1"),
+    );
+    let server = MockServer::start().await;
+    let list = |items: serde_json::Value| {
+        ResponseTemplate::new(200)
+            .set_body_json(serde_json::json!({"items": items, "metadata": {}}))
+    };
+    Mock::given(method("GET"))
+        .and(path("/api/v1/secrets"))
+        .and(header("authorization", "Bearer kube-token"))
+        .respond_with(list(serde_json::json!([
+            {"metadata": {"namespace": "prod", "name": "ci"}, "type": "Opaque",
+             "data": {"GITHUB_TOKEN": b64(&t1)}},
+            {"metadata": {"namespace": "prod", "name": "sa"},
+             "type": "kubernetes.io/service-account-token", "data": {"token": b64(&t4)}}
+        ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/configmaps"))
+        .respond_with(list(serde_json::json!([
+            {"metadata": {"namespace": "prod", "name": "app",
+              "annotations": {"kubectl.kubernetes.io/last-applied-configuration":
+                format!("{{\"data\":{{\"token\":\"{t2}\"}}}}")}},
+             "data": {"LOG_LEVEL": "info"}}
+        ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/apis/apps/v1/deployments"))
+        .respond_with(list(serde_json::json!([
+            {"metadata": {"namespace": "prod", "name": "api"},
+             "spec": {"template": {"spec": {"containers": [
+                {"env": [{"name": "GH", "value": t3}]}]}}}}
+        ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/pods"))
+        .respond_with(list(serde_json::json!([
+            {"metadata": {"namespace": "prod", "name": "api-1",
+              "ownerReferences": [{"kind": "ReplicaSet"}]},
+             "spec": {"containers": [{"env": [{"name": "GH", "value": t3}]}]}}
+        ])))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let kc = dir.path().join("config");
+    std::fs::write(
+        &kc,
+        format!(
+            "apiVersion: v1\nkind: Config\ncurrent-context: dev\ncontexts:\n- name: dev\n  context: {{cluster: k, user: u}}\nclusters:\n- name: k\n  cluster: {{server: '{}'}}\nusers:\n- name: u\n  user: {{token: kube-token}}\n",
+            server.uri()
+        ),
+    )
+    .unwrap();
+    let out = tokio::task::spawn_blocking(move || {
+        std::process::Command::new(env!("CARGO_BIN_EXE_kubera"))
+            .args(["--allow-http", "scan", "k8s", "-f", "json", "--kubeconfig"])
+            .arg(&kc)
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let mut paths: Vec<String> = v
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| {
+            assert_eq!(f["location"]["source"], "kubernetes");
+            assert_eq!(f["location"]["repository"], "k8s:dev");
+            f["location"]["path"].as_str().unwrap().to_string()
+        })
+        .collect();
+    paths.sort();
+    // The service account token and the controller-owned pod are skipped.
+    assert_eq!(
+        paths,
+        vec![
+            "configmap/prod/app",
+            "deployment/prod/api",
+            "secret/prod/ci"
+        ]
+    );
+}

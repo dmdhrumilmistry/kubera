@@ -6,6 +6,7 @@ pub mod fs;
 pub mod git;
 pub mod github;
 pub mod image;
+pub mod kube;
 pub mod remote;
 
 use crate::finding::Location;

@@ -408,6 +408,30 @@ enum ScanSource {
         #[command(flatten)]
         opts: ScanArgs,
     },
+    /// Scan a live Kubernetes cluster: Secrets (decoded), ConfigMaps, and
+    /// literal env values, args and annotations of workloads (read-only
+    /// list calls). Uses the kubeconfig like kubectl, or the pod's service
+    /// account with --in-cluster.
+    #[command(alias = "kubernetes")]
+    K8s {
+        /// Kubeconfig file [default: $KUBECONFIG or ~/.kube/config].
+        #[arg(long, value_name = "FILE")]
+        kubeconfig: Option<PathBuf>,
+        /// Context to use [default: current-context].
+        #[arg(long)]
+        context: Option<String>,
+        /// Use the service account of the pod kubera runs in.
+        #[arg(long, conflicts_with_all = ["kubeconfig", "context"])]
+        in_cluster: bool,
+        /// Only these namespaces (repeatable) [default: all].
+        #[arg(short = 'n', long = "namespace", value_name = "NS")]
+        namespaces: Vec<String>,
+        /// What to scan (comma separated) [default: all].
+        #[arg(long, value_enum, value_delimiter = ',')]
+        what: Vec<kubera::sources::kube::What>,
+        #[command(flatten)]
+        opts: ScanArgs,
+    },
     /// Scan the staged changes of a repository: only the lines the next
     /// commit adds (what the pre-commit hook runs).
     Staged {
@@ -790,6 +814,7 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         | ScanSource::Staged { opts, .. }
         | ScanSource::Github { opts, .. }
         | ScanSource::Bucket { opts, .. }
+        | ScanSource::K8s { opts, .. }
         | ScanSource::Stdin { opts } => opts,
     };
     let engine = Engine::new(ctx.templates.iter().map(|l| l.template.clone()).collect())?;
@@ -909,7 +934,9 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         }
         ScanSource::Repos { .. } => scan::Target::Text(String::new()),
         ScanSource::Staged { repo, .. } => scan::Target::Staged(repo.clone()),
-        ScanSource::Github { .. } | ScanSource::Bucket { .. } => scan::Target::Text(String::new()),
+        ScanSource::Github { .. } | ScanSource::Bucket { .. } | ScanSource::K8s { .. } => {
+            scan::Target::Text(String::new())
+        }
         ScanSource::Image {
             image,
             platform,
@@ -966,7 +993,48 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         }
     };
     let mut mass_results: Option<Vec<kubera::mass::RepoResult>> = None;
-    let (commits_scanned, tips, mut findings) = if let ScanSource::Bucket {
+    let (commits_scanned, tips, mut findings) = if let ScanSource::K8s {
+        kubeconfig,
+        context,
+        in_cluster,
+        namespaces,
+        what,
+        ..
+    } = &source
+    {
+        use kubera::sources::kube;
+        let cluster = if *in_cluster {
+            kube::Cluster::in_cluster()?
+        } else {
+            let path = kubeconfig
+                .clone()
+                .or_else(kube::default_kubeconfig)
+                .context("no kubeconfig found; pass --kubeconfig")?;
+            kube::Cluster::from_kubeconfig(&path, context.as_deref(), g.allow_http)?
+        };
+        if show_progress {
+            eprintln!(
+                "{} cluster {} ({})",
+                ctx.style.dim("›"),
+                cluster.name,
+                cluster.server
+            );
+        }
+        let what = if what.is_empty() {
+            kube::ALL.to_vec()
+        } else {
+            what.clone()
+        };
+        let (chunks, warnings) = kube::collect(&cluster, &what, namespaces).await?;
+        for w in warnings {
+            eprintln!("warning: {w}");
+        }
+        (
+            0,
+            Default::default(),
+            scan::scan_chunks(&engine, &filter, &chunks),
+        )
+    } else if let ScanSource::Bucket {
         url,
         region,
         endpoint_url,
@@ -1101,6 +1169,12 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
             .join(", "),
         ScanSource::Image { image, .. } => image.clone(),
         ScanSource::Bucket { url, .. } => url.clone(),
+        ScanSource::K8s { context, .. } => {
+            format!(
+                "Kubernetes {}",
+                context.as_deref().unwrap_or("current context")
+            )
+        }
         ScanSource::Repos { .. } => format!(
             "{} repositories",
             mass_results.as_ref().map(|r| r.len()).unwrap_or(0)
