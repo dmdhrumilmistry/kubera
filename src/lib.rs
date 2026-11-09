@@ -21,6 +21,7 @@
 //! (`http`, `steps`) for a single credential.
 
 pub mod analyze;
+pub mod baseline;
 pub mod brand;
 pub mod checkpoint;
 pub mod config;

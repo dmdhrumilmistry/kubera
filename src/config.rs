@@ -136,6 +136,11 @@ impl Filter {
         })
     }
 
+    /// Also drop findings with these fingerprints (baselines, triage).
+    pub fn suppress<'a>(&mut self, fingerprints: impl Iterator<Item = &'a str>) {
+        self.fingerprints.extend(fingerprints.map(str::to_string));
+    }
+
     pub fn path_excluded(&self, rel: &Path) -> bool {
         self.exclude_paths.is_match(rel)
     }

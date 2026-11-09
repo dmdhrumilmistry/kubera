@@ -39,6 +39,7 @@ fn services() -> Services {
         http: Http::new(HttpOptions::default()).unwrap(),
         max_file_size: 1 << 20,
         runtime: None,
+        baseline: None,
     }
 }
 

@@ -142,6 +142,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                 ("/", "filter"),
                 ("f", "status"),
                 ("e", "export"),
+                ("x/m", "triage"),
                 ("?", "help"),
                 ("q", "back"),
             ],
@@ -825,6 +826,9 @@ fn draw_help(f: &mut Frame, area: Rect, theme: &Theme) {
         ("/", "filter by text"),
         ("f", "filter by status"),
         ("e", "export findings (redacted JSON, 0600)"),
+        ("x", "mark false positive (saved to baseline)"),
+        ("m", "mark accepted risk (saved to baseline)"),
+        ("u", "undo the last mark"),
         ("q  esc", "back / quit"),
         ("ctrl+c", "quit"),
     ];

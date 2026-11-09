@@ -743,3 +743,32 @@ fn pre_commit_hook_blocks_secrets_but_not_clean_commits() {
     let out = commit("no hook now");
     assert!(out.status.success());
 }
+
+#[test]
+fn baseline_suppresses_known_findings_and_reports_new_ones() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    std::fs::write(d.join("old.env"), format!("T={}\n", fake_github_token())).unwrap();
+    let out = kubera(&["scan", "fs", ".", "--update-baseline"], d);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = std::fs::read_to_string(d.join(".kubera-baseline.json")).unwrap();
+    assert!(text.contains("\"decision\": \"baseline\""), "{text}");
+    assert!(!text.contains(&fake_github_token()), "baseline must not hold secrets");
+
+    // Picked up automatically: nothing new to report.
+    let out = kubera(&["scan", "fs", ".", "-f", "json", "--fail"], d);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(json(&out).as_array().unwrap().len(), 0);
+    // ...unless disabled.
+    let out = kubera(&["scan", "fs", ".", "-f", "json", "--no-baseline"], d);
+    assert_eq!(json(&out).as_array().unwrap().len(), 1);
+
+    // A new secret is still reported.
+    let tok2 = format!("gh{}_{}", "p", "Zz9nVq3kZ1Lr8XwT2pYb6Hd4Fs7Jc0Mg5Ae1");
+    std::fs::write(d.join("new.env"), format!("T={tok2}\n")).unwrap();
+    let out = kubera(&["scan", "fs", ".", "-f", "json", "--fail"], d);
+    assert_eq!(out.status.code(), Some(183));
+    let v = json(&out);
+    assert_eq!(v.as_array().unwrap().len(), 1);
+    assert_eq!(v[0]["location"]["path"], "./new.env");
+}

@@ -92,6 +92,7 @@ mod tests {
             http: Http::new(HttpOptions::default()).unwrap(),
             max_file_size: 1 << 20,
             runtime: None,
+            baseline: None,
         }
     }
 
@@ -153,6 +154,38 @@ mod tests {
         let mut app = App::new(svc);
         app.set_results(fs, "./demo".into());
         app
+    }
+
+    #[test]
+    fn triage_saves_to_baseline_hides_and_undoes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("baseline.json");
+        let mut svc = services();
+        svc.baseline = Some(path.clone());
+        let fs = vec![
+            finding(&svc, "aws-access-key", "infra/.env", None),
+            finding(&svc, "github-token", "src/app.py", None),
+        ];
+        let gh = fs[1].fingerprint.clone();
+        let mut app = App::new(svc);
+        app.set_results(fs.clone(), "./demo".into());
+        app.on_key(key(KeyCode::Down));
+        app.on_key(key(KeyCode::Char('x')));
+        assert_eq!(app.findings.len(), 1);
+        assert!(app.status.contains("false positive"), "{}", app.status);
+        let b = crate::baseline::Baseline::load(&path).unwrap();
+        assert_eq!(
+            b.get(&gh).unwrap().decision,
+            crate::baseline::Decision::FalsePositive
+        );
+        // A later result set (rescan) stays triaged.
+        app.set_results(fs.clone(), "./demo".into());
+        assert_eq!(app.findings.len(), 1);
+        app.on_key(key(KeyCode::Char('u')));
+        // Undo needs the triaged finding from this session: set_results
+        // above kept it out, so undo restores it into the list.
+        assert_eq!(app.findings.len(), 2);
+        assert!(crate::baseline::Baseline::load(&path).unwrap().entries.is_empty());
     }
 
     #[test]

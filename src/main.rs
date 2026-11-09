@@ -378,6 +378,18 @@ struct ScanArgs {
     /// Glob of paths to skip, relative to the scan root (repeatable).
     #[arg(long = "exclude-path", value_name = "GLOB")]
     exclude_paths: Vec<String>,
+    /// Baseline / triage file: findings recorded there are not reported
+    /// [default: .kubera-baseline.json when present].
+    #[arg(long, value_name = "FILE")]
+    baseline: Option<PathBuf>,
+    /// Ignore the baseline file.
+    #[arg(long, conflicts_with = "baseline")]
+    no_baseline: bool,
+    /// Record every finding of this scan in the baseline file (adopting
+    /// kubera on a codebase with known findings: later scans only report
+    /// new ones). Exits 0.
+    #[arg(long, conflicts_with = "no_baseline")]
+    update_baseline: bool,
     /// Do not decode base64 / URL-encoded / escaped text before scanning.
     #[arg(long)]
     no_decode: bool,
@@ -649,7 +661,8 @@ async fn run(cli: Cli) -> Result<u8> {
         } => {
             let ctx = context(&cli.global)?;
             let engine = Engine::new(ctx.templates.iter().map(|l| l.template.clone()).collect())?;
-            let filter = Filter::new(&ctx.cfg.excludes(&[], false), &ctx.cfg.allowlist)?;
+            let mut filter = Filter::new(&ctx.cfg.excludes(&[], false), &ctx.cfg.allowlist)?;
+            filter.suppress(kubera::baseline::Baseline::resolve(None)?.fingerprints());
             let token = match git_token_env {
                 Some(var) => Some(std::env::var(&var).with_context(|| {
                     format!("environment variable `{var}` (from --git-token-env) is not set")
@@ -699,7 +712,17 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
     let excludes = ctx
         .cfg
         .excludes(&opts.exclude_paths, opts.no_default_excludes);
-    let filter = Filter::new(&excludes, &ctx.cfg.allowlist)?;
+    let mut filter = Filter::new(&excludes, &ctx.cfg.allowlist)?;
+    let mut baseline = if opts.no_baseline {
+        None
+    } else {
+        Some(kubera::baseline::Baseline::resolve(
+            opts.baseline.as_deref(),
+        )?)
+    };
+    if let Some(b) = &baseline {
+        filter.suppress(b.fingerprints());
+    }
     let max_size = opts
         .max_file_size
         .or(ctx.cfg.max_file_size)
@@ -867,6 +890,21 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
             };
             kinds.contains(&k)
         });
+    }
+    if opts.update_baseline {
+        let b = baseline.as_mut().expect("baseline enabled");
+        let added = findings
+            .iter()
+            .filter(|f| b.add(f, kubera::baseline::Decision::Baseline, None))
+            .count();
+        b.save()?;
+        eprintln!(
+            "{} recorded {added} new finding(s) in {} ({} total); later scans report only new ones",
+            ctx.style.green("✓"),
+            b.path.display(),
+            b.entries.len()
+        );
+        return Ok(0);
     }
     if opts.interactive {
         if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
@@ -1338,6 +1376,7 @@ fn services(ctx: Ctx, engine: Engine, filter: Filter, max_file_size: u64) -> kub
         http: ctx.http,
         max_file_size,
         runtime: Some(tokio::runtime::Handle::current()),
+        baseline: Some(PathBuf::from(kubera::baseline::DEFAULT_FILE)),
     }
 }
 
@@ -1347,7 +1386,8 @@ fn cmd_tui(g: &GlobalArgs, target: Option<String>, git: bool, verify: bool) -> R
     }
     let ctx = context(g)?;
     let engine = Engine::new(ctx.templates.iter().map(|l| l.template.clone()).collect())?;
-    let filter = Filter::new(&ctx.cfg.excludes(&[], false), &ctx.cfg.allowlist)?;
+    let mut filter = Filter::new(&ctx.cfg.excludes(&[], false), &ctx.cfg.allowlist)?;
+    filter.suppress(kubera::baseline::Baseline::resolve(None)?.fingerprints());
     let max = ctx
         .cfg
         .max_file_size
