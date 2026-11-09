@@ -750,10 +750,17 @@ fn baseline_suppresses_known_findings_and_reports_new_ones() {
     let d = dir.path();
     std::fs::write(d.join("old.env"), format!("T={}\n", fake_github_token())).unwrap();
     let out = kubera(&["scan", "fs", ".", "--update-baseline"], d);
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let text = std::fs::read_to_string(d.join(".kubera-baseline.json")).unwrap();
     assert!(text.contains("\"decision\": \"baseline\""), "{text}");
-    assert!(!text.contains(&fake_github_token()), "baseline must not hold secrets");
+    assert!(
+        !text.contains(&fake_github_token()),
+        "baseline must not hold secrets"
+    );
 
     // Picked up automatically: nothing new to report.
     let out = kubera(&["scan", "fs", ".", "-f", "json", "--fail"], d);
@@ -771,4 +778,20 @@ fn baseline_suppresses_known_findings_and_reports_new_ones() {
     let v = json(&out);
     assert_eq!(v.as_array().unwrap().len(), 1);
     assert_eq!(v[0]["location"]["path"], "./new.env");
+}
+
+#[test]
+fn html_report_is_self_contained_and_redacted() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("a.env"),
+        format!("T={}\n", fake_github_token()),
+    )
+    .unwrap();
+    let out = kubera(&["scan", "fs", ".", "-f", "html"], dir.path());
+    let html = String::from_utf8_lossy(&out.stdout);
+    assert!(html.starts_with("<!doctype html>"));
+    assert!(html.contains("Content-Security-Policy"));
+    assert!(!html.contains(&fake_github_token()));
+    assert!(!html.contains("http://") && !html.contains("src=\"https://"));
 }

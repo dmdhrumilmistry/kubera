@@ -16,6 +16,8 @@ pub enum Format {
     Json,
     Jsonl,
     Sarif,
+    /// Self-contained interactive HTML page.
+    Html,
 }
 
 pub fn use_color() -> bool {
@@ -134,6 +136,7 @@ pub fn write_findings(
             serde_json::to_writer_pretty(&mut *out, &sarif(findings))?;
             writeln!(out)?;
         }
+        Format::Html => out.write_all(crate::report_html::render(findings).as_bytes())?,
         Format::Pretty => pretty(out, findings, style)?,
     }
     Ok(())

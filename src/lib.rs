@@ -35,6 +35,7 @@ pub mod mass;
 pub mod mcp;
 pub mod render;
 pub mod report;
+pub mod report_html;
 pub mod rotate;
 pub mod scan;
 pub mod sources;

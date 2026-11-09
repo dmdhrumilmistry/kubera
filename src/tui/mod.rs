@@ -185,7 +185,12 @@ mod tests {
         // Undo needs the triaged finding from this session: set_results
         // above kept it out, so undo restores it into the list.
         assert_eq!(app.findings.len(), 2);
-        assert!(crate::baseline::Baseline::load(&path).unwrap().entries.is_empty());
+        assert!(
+            crate::baseline::Baseline::load(&path)
+                .unwrap()
+                .entries
+                .is_empty()
+        );
     }
 
     #[test]
