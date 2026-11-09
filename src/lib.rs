@@ -28,6 +28,7 @@ pub mod decode;
 pub mod detect;
 pub mod finding;
 pub mod forge;
+pub mod hook;
 pub mod http;
 pub mod mass;
 pub mod mcp;

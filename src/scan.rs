@@ -131,6 +131,8 @@ pub enum Target {
         /// of cloned on later runs (mass scanning).
         mirror: Option<std::path::PathBuf>,
     },
+    /// The staged changes of a repository (pre-commit hook).
+    Staged(std::path::PathBuf),
     /// In-memory text (stdin).
     Text(String),
     /// A container image (pulled, exported from Docker, or an archive).
@@ -422,6 +424,18 @@ pub fn run_detailed(
                 }
             })?;
             flush(&mut batch);
+        }
+        Target::Staged(repo) => {
+            git::scan_staged(repo, &|c| {
+                let excluded = c
+                    .location
+                    .path
+                    .as_deref()
+                    .is_some_and(|p| filter.path_excluded(std::path::Path::new(p)));
+                if !excluded {
+                    collector.push(scan_chunk(engine, filter, &c));
+                }
+            })?;
         }
         Target::Text(text) => {
             let chunk = crate::sources::Chunk {

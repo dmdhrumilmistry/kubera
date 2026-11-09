@@ -677,3 +677,69 @@ fn archives_are_scanned_including_nested_ones() {
         String::from_utf8_lossy(&sarif.stdout).contains("release.bin!/WEB-INF/lib/inner.jar!/")
     );
 }
+
+#[test]
+fn pre_commit_hook_blocks_secrets_but_not_clean_commits() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    git(d, &["init", "-q", "-b", "main"]);
+    let out = kubera(&["hook", "install"], d);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // The hook finds `kubera` on PATH.
+    let bin = Path::new(env!("CARGO_BIN_EXE_kubera")).parent().unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let commit = |msg: &str| {
+        Command::new("git")
+            .args(["-c", "user.name=T", "-c", "user.email=t@example.com"])
+            .args(["commit", "-q", "-m", msg])
+            .current_dir(d)
+            .env("PATH", &path)
+            .env("NO_COLOR", "1")
+            .output()
+            .unwrap()
+    };
+
+    // An old secret already in history does not block later commits.
+    std::fs::write(d.join("app.py"), "print('hi')\n").unwrap();
+    git(d, &["add", "."]);
+    let out = commit("clean");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    std::fs::write(
+        d.join("app.py"),
+        format!("print('hi')\nTOKEN = '{}'\n", fake_github_token()),
+    )
+    .unwrap();
+    git(d, &["add", "."]);
+    let out = commit("leak");
+    assert!(
+        !out.status.success(),
+        "a commit adding a secret must be blocked"
+    );
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(all.contains("app.py:2"), "{all}");
+    assert!(all.contains("commit blocked"), "{all}");
+
+    // Staged scan as JSON reports only the staged line.
+    let v = json(&kubera(&["scan", "staged", "-f", "json"], d));
+    assert_eq!(v.as_array().unwrap().len(), 1);
+    assert!(v[0]["location"].get("commit").is_none());
+
+    let out = kubera(&["hook", "uninstall"], d);
+    assert!(out.status.success());
+    let out = commit("no hook now");
+    assert!(out.status.success());
+}

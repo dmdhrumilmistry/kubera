@@ -174,6 +174,30 @@ enum Command {
         #[command(subcommand)]
         cmd: TemplatesCmd,
     },
+    /// Git pre-commit hook that blocks commits adding secrets.
+    Hook {
+        #[command(subcommand)]
+        cmd: HookCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum HookCmd {
+    /// Install the pre-commit hook (runs `kubera scan staged --fail`).
+    Install {
+        /// Repository (default: the current one).
+        #[arg(default_value = ".")]
+        repo: PathBuf,
+        /// Replace an existing hook kubera did not write (kept as
+        /// pre-commit.bak).
+        #[arg(long)]
+        force: bool,
+    },
+    /// Remove the pre-commit hook installed by kubera.
+    Uninstall {
+        #[arg(default_value = ".")]
+        repo: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -318,6 +342,14 @@ enum ScanSource {
     },
     /// Scan standard input.
     Stdin {
+        #[command(flatten)]
+        opts: ScanArgs,
+    },
+    /// Scan the staged changes of a repository: only the lines the next
+    /// commit adds (what the pre-commit hook runs).
+    Staged {
+        #[arg(default_value = ".")]
+        repo: PathBuf,
         #[command(flatten)]
         opts: ScanArgs,
     },
@@ -583,6 +615,32 @@ async fn run(cli: Cli) -> Result<u8> {
             .await
         }
         Command::Templates { cmd } => cmd_templates(&cli.global, cmd),
+        Command::Hook { cmd } => {
+            let st = Style {
+                color: report::use_color(),
+            };
+            match cmd {
+                HookCmd::Install { repo, force } => match kubera::hook::install(&repo, force)? {
+                    kubera::hook::Installed::New(p) => {
+                        println!("{} installed {}", st.green("✓"), p.display())
+                    }
+                    kubera::hook::Installed::Updated(p) => {
+                        println!("{} updated {}", st.green("✓"), p.display())
+                    }
+                    kubera::hook::Installed::Replaced { hook, backup } => println!(
+                        "{} installed {} (previous hook kept as {})",
+                        st.green("✓"),
+                        hook.display(),
+                        backup.display()
+                    ),
+                },
+                HookCmd::Uninstall { repo } => match kubera::hook::uninstall(&repo)? {
+                    Some(p) => println!("{} removed {}", st.green("✓"), p.display()),
+                    None => println!("no kubera pre-commit hook installed"),
+                },
+            }
+            Ok(0)
+        }
         Command::Mcp {
             allow_verify,
             root,
@@ -632,6 +690,7 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         | ScanSource::Git { opts, .. }
         | ScanSource::Repos { opts, .. }
         | ScanSource::Image { opts, .. }
+        | ScanSource::Staged { opts, .. }
         | ScanSource::Stdin { opts } => opts,
     };
     let engine = Engine::new(ctx.templates.iter().map(|l| l.template.clone()).collect())?;
@@ -716,6 +775,7 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
             scan::Target::Text(text)
         }
         ScanSource::Repos { .. } => scan::Target::Text(String::new()),
+        ScanSource::Staged { repo, .. } => scan::Target::Staged(repo.clone()),
         ScanSource::Image {
             image,
             platform,
@@ -759,7 +819,8 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         }
     };
     let show_progress = std::io::stderr().is_terminal() && opts.format == Format::Pretty;
-    if show_progress && !opts.interactive {
+    let quiet = matches!(source, ScanSource::Staged { .. });
+    if show_progress && !opts.interactive && !quiet {
         kubera::brand::print_banner_stderr();
     }
     let progress = |p: scan::Progress| {
@@ -823,6 +884,7 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
                 .map(|r| r.display().to_string())
                 .unwrap_or_else(|| repo.clone()),
             ScanSource::Stdin { .. } => "stdin".into(),
+            ScanSource::Staged { repo, .. } => format!("staged changes in {}", repo.display()),
             ScanSource::Image { image, .. } => image.clone(),
             ScanSource::Repos { .. } => format!(
                 "{} repositories",

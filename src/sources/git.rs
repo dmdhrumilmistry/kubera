@@ -381,6 +381,44 @@ pub fn scan(
     Ok(commits.len())
 }
 
+/// Scan the lines added by the staged changes (`git diff --cached`): what
+/// the next commit would add. Used by the pre-commit hook.
+pub fn scan_staged(repo: &Path, sink: &(dyn Fn(Chunk) + Sync)) -> Result<()> {
+    let mut cmd = git();
+    cmd.arg("-C").arg(repo).args([
+        "diff",
+        "--cached",
+        "-U0",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--diff-filter=ACMR",
+        "--",
+    ]);
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("running git diff (is git installed?)")?;
+    let stdout = child.stdout.take().expect("piped stdout");
+    let parsed = parse_log(BufReader::new(stdout), sink);
+    let out = child.wait_with_output()?;
+    parsed?;
+    if !out.status.success() {
+        bail!(
+            "git diff --cached failed: {}; is {} a git repository?",
+            String::from_utf8_lossy(&out.stderr)
+                .trim()
+                .lines()
+                .last()
+                .unwrap_or("unknown error"),
+            repo.display()
+        );
+    }
+    Ok(())
+}
+
 /// Turn a user exclude glob into a git `:(exclude,glob)` pathspec when git's
 /// matching is guaranteed to be at most as broad as the caller's filter
 /// (git's `*` never crosses `/`; a literal name would also match a whole
@@ -534,8 +572,9 @@ fn parse_log(mut reader: impl BufRead, sink: &(dyn Fn(Chunk) + Sync)) -> Result<
     let mut in_hunk = false;
     let mut next_line = 0usize;
 
+    // Staged diffs (`git diff --cached`) have no commit header.
     let flush = |commit: &Option<Commit>, file: &mut Option<FileDiff>| {
-        if let (Some(c), Some(f)) = (commit, file.take()) {
+        if let Some(f) = file.take() {
             if f.text.is_empty() || f.path.is_none() {
                 return;
             }
@@ -545,10 +584,10 @@ fn parse_log(mut reader: impl BufRead, sink: &(dyn Fn(Chunk) + Sync)) -> Result<
                     source: SourceKind::Git,
                     path: f.path,
                     line: 0,
-                    commit: Some(c.hash.clone()),
-                    author: Some(c.author.clone()),
-                    email: Some(c.email.clone()),
-                    date: Some(c.date.clone()),
+                    commit: commit.as_ref().map(|c| c.hash.clone()),
+                    author: commit.as_ref().map(|c| c.author.clone()),
+                    email: commit.as_ref().map(|c| c.email.clone()),
+                    date: commit.as_ref().map(|c| c.date.clone()),
                     ..Default::default()
                 },
                 line_map: Some(f.lines),
