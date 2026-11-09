@@ -79,6 +79,14 @@ docs: ## Build the documentation site (needs mdbook)
 docs-serve: ## Serve the docs with live reload on http://localhost:3000
 	mdbook serve docs --open
 
+.PHONY: tui
+tui: build ## Launch the interactive TUI (debug build)
+	./target/debug/$(BIN)
+
+.PHONY: screenshots
+screenshots: ## Regenerate the docs images from the real TUI/CLI code
+	$(CARGO) run --locked -q --example screenshots -- docs/src/images
+
 .PHONY: test-termux
 test-termux: ## Build + test inside a Termux (Android) container (needs Docker)
 	$(DOCKER) run --rm $(TERMUX_DOCKER_ARGS) -v "$(CURDIR):/src:ro" $(TERMUX_IMAGE) bash -c '\

@@ -2,6 +2,7 @@
 
 pub mod fs;
 pub mod git;
+pub mod remote;
 
 use crate::finding::Location;
 

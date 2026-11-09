@@ -1,6 +1,27 @@
 # Verify, analyze and rotate
 
-These commands work on **one credential** you already hold, typically a finding from `scan`.
+These commands work on **one credential** you already hold, typically a finding from `scan`. In the [TUI](tui.md) the same actions are a keypress away (`v`, `a`, `p`).
+
+## Just paste it
+
+In a terminal, run the command without a secret and Kubera asks for it with a **hidden prompt**. Nothing is echoed, and nothing lands in shell history:
+
+```text
+$ kubera verify gitlab-pat
+GitLab Personal Access Token - token: (hidden)
+```
+
+Leave out the detector too, and Kubera **identifies the secret** by running its detectors over it:
+
+```text
+$ kubera verify
+Paste the secret (hidden):
+identified: Slack Token (slack-token)
+Slack Token invalid
+  message        HTTP 200: {"ok":false,"error":"invalid_auth"}
+```
+
+This works for `verify`, `analyze` and `rotate`, and with `--secret-env` / `--secret-stdin` as well. If a value matches several detectors, Kubera asks which one you mean (or, without a terminal, lists them).
 
 ## Passing the secret
 

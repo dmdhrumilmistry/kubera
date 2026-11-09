@@ -5,6 +5,7 @@
 //! external diff drivers, textconv filters, hooks and fsmonitor are disabled
 //! (they can execute commands configured by the repository), revisions are
 //! passed after `--end-of-options`, and clones never prompt for credentials.
+//! Remote URL handling and authentication live in [`super::remote`].
 
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -13,6 +14,7 @@ use std::process::{Command, Stdio};
 use anyhow::{Context, Result, bail};
 
 use super::Chunk;
+use super::remote::{Auth, RemoteRepo, Transport, clone_env};
 use crate::finding::{Location, SourceKind};
 
 const COMMIT_MARKER: &str = "\u{1}kubera-commit ";
@@ -45,30 +47,74 @@ fn git() -> Command {
     c
 }
 
-pub fn is_remote(target: &str) -> bool {
-    ["https://", "http://", "ssh://", "git://", "git@"]
-        .iter()
-        .any(|p| target.starts_with(p))
-}
-
 /// Clone a remote repository into a temp dir (bare, no checkout).
-pub fn clone(url: &str) -> Result<(tempfile::TempDir, PathBuf)> {
-    if url.starts_with('-') {
-        bail!("refusing suspicious repository url `{url}`");
-    }
+///
+/// Credentials are passed through the environment (see
+/// [`super::remote::clone_env`]), never on the command line.
+pub fn clone(
+    repo: &RemoteRepo,
+    auth: &Auth,
+    opts: &GitOptions,
+) -> Result<(tempfile::TempDir, PathBuf)> {
     let dir = tempfile::tempdir()?;
     let dest = dir.path().join("repo.git");
-    let status = git()
-        .args(["clone", "--bare", "--quiet", "--"])
-        .arg(url)
-        .arg(&dest)
+    let mut cmd = git();
+    cmd.args(["clone", "--bare", "--quiet"]);
+    if let (Some(n), None) = (opts.max_depth, &opts.since_commit) {
+        cmd.arg(format!("--depth={n}"));
+    }
+    if let Some(b) = &opts.branch {
+        check_rev(b)?;
+        // Commit ids cannot be cloned as a branch; fetch everything then.
+        let is_sha = b.len() >= 7 && b.chars().all(|c| c.is_ascii_hexdigit());
+        if !is_sha {
+            cmd.args(["--single-branch", "--branch", b]);
+        }
+    }
+    cmd.arg("--").arg(&repo.clone_url).arg(&dest);
+    for (k, v) in clone_env(repo, auth)? {
+        cmd.env(k, v);
+    }
+    let out = cmd
         .stdin(Stdio::null())
-        .status()
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
         .context("running git clone (is git installed?)")?;
-    if !status.success() {
-        bail!("git clone of {url} failed ({status})");
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        let hint = match repo.transport {
+            Transport::Ssh => {
+                " (check your SSH key / agent and host key; kubera never prompts when stdin is not a terminal)"
+            }
+            Transport::Https | Transport::Http => {
+                " (private repository? pass a token with --token-env)"
+            }
+            _ => "",
+        };
+        bail!(
+            "git clone of {} failed: {}{hint}",
+            repo.display(),
+            err.trim().lines().last().unwrap_or("unknown error")
+        );
     }
     Ok((dir, dest))
+}
+
+/// The `origin` remote of a local repository, if it is a known forge
+/// (used to link findings to the web UI).
+pub fn origin_remote(repo: &Path) -> Option<RemoteRepo> {
+    let out = git()
+        .arg("-C")
+        .arg(repo)
+        .args(["config", "--get", "remote.origin.url"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    let url = String::from_utf8(out.stdout).ok()?;
+    let r = super::remote::parse(url.trim()).ok()??;
+    r.web.is_some().then_some(r)
 }
 
 fn check_rev(r: &str) -> Result<()> {
@@ -159,6 +205,7 @@ pub fn scan(repo: &Path, opts: &GitOptions, mut sink: impl FnMut(Chunk)) -> Resu
                         author: Some(c.author.clone()),
                         email: Some(c.email.clone()),
                         date: Some(c.date.clone()),
+                        ..Default::default()
                     },
                     line_map: Some(f.lines),
                 });

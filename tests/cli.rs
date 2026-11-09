@@ -217,3 +217,121 @@ fn rotate_requires_confirmation_without_tty() {
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("--yes"));
 }
+
+fn repo_with_secret() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    git(d, &["init", "-q", "-b", "main"]);
+    std::fs::write(
+        d.join("cfg.env"),
+        format!("TOKEN={}\n", fake_github_token()),
+    )
+    .unwrap();
+    git(d, &["add", "."]);
+    git(d, &["commit", "-q", "-m", "add"]);
+    git(
+        d,
+        &["remote", "add", "origin", "git@github.com:acme/widgets.git"],
+    );
+    dir
+}
+
+#[test]
+fn scan_git_remote_url_and_web_links() {
+    let src = repo_with_secret();
+    let cwd = tempfile::tempdir().unwrap();
+
+    // Remote transport (clone into a temp dir), exercised offline via file://.
+    let url = format!("file://{}", src.path().display());
+    let out = kubera(&["scan", "git", &url, "-f", "json"], cwd.path());
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v = json(&out);
+    assert_eq!(v[0]["location"]["repository"], url.as_str());
+    assert_eq!(v[0]["location"]["path"], "cfg.env");
+
+    // Local repository with a GitHub origin: findings link to the line.
+    let out = kubera(
+        &["scan", "git", src.path().to_str().unwrap(), "-f", "json"],
+        cwd.path(),
+    );
+    let v = json(&out);
+    let link = v[0]["location"]["link"].as_str().unwrap();
+    let commit = v[0]["location"]["commit"].as_str().unwrap();
+    assert_eq!(
+        link,
+        format!("https://github.com/acme/widgets/blob/{commit}/cfg.env#L1")
+    );
+}
+
+#[tokio::test]
+async fn private_repo_token_is_sent_as_scoped_header() {
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::any};
+    let server = MockServer::start().await;
+    Mock::given(any())
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    let url = format!("{}/acme/private.git", server.uri());
+    let cwd = tempfile::tempdir().unwrap();
+    let run = |args: Vec<String>| {
+        let cwd = cwd.path().to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            Command::new(env!("CARGO_BIN_EXE_kubera"))
+                .args(&args)
+                .current_dir(cwd)
+                .env("KUBERA_TEST_TOKEN", "glpat-test-0123")
+                .env("NO_COLOR", "1")
+                .output()
+                .unwrap()
+        })
+    };
+
+    // Plain http never receives credentials.
+    let out = run(vec![
+        "scan".into(),
+        "git".into(),
+        url.clone(),
+        "--token-env".into(),
+        "KUBERA_TEST_TOKEN".into(),
+    ])
+    .await
+    .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("plain http"));
+    assert!(server.received_requests().await.unwrap().is_empty());
+
+    // With the test-only opt-in, git sends the token as a Basic auth header.
+    let out = run(vec![
+        "--allow-http".into(),
+        "scan".into(),
+        "git".into(),
+        url.clone(),
+        "--token-env".into(),
+        "KUBERA_TEST_TOKEN".into(),
+        "--token-user".into(),
+        "oauth2".into(),
+    ])
+    .await
+    .unwrap();
+    assert!(!out.status.success()); // the mock is not a git server
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("glpat-test-0123"), "{stderr}");
+    let reqs = server.received_requests().await.unwrap();
+    assert!(!reqs.is_empty());
+    use base64::Engine;
+    let expected = format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode("oauth2:glpat-test-0123")
+    );
+    assert!(
+        reqs.iter().any(|r| r
+            .headers
+            .get("authorization")
+            .is_some_and(|h| h.to_str().unwrap() == expected)),
+        "no request carried the expected Authorization header"
+    );
+}

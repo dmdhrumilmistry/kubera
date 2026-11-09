@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="280" viewBox="0 0 960 280" role="img" aria-label="Kubera - find, verify, analyze and rotate leaked secrets">
+  <defs>
+    <linearGradient id="bbg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#151c2c"/>
+      <stop offset="1" stop-color="#0b1020"/>
+    </linearGradient>
+    <linearGradient id="word" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ffd65c"/>
+      <stop offset="0.5" stop-color="#f5b700"/>
+      <stop offset="1" stop-color="#e58518"/>
+    </linearGradient>
+    <linearGradient id="crown" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffe08a"/>
+      <stop offset="1" stop-color="#f5b700"/>
+    </linearGradient>
+    <linearGradient id="pav" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f5b700"/>
+      <stop offset="1" stop-color="#d9770f"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.2" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#f5b700" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#f5b700" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse">
+      <path d="M24 0H0V24" fill="none" stroke="#ffffff" stroke-opacity="0.035"/>
+    </pattern>
+  </defs>
+  <rect width="960" height="280" rx="18" fill="url(#bbg)"/>
+  <rect width="960" height="280" rx="18" fill="url(#grid)"/>
+  <rect width="960" height="280" rx="18" fill="url(#glow)"/>
+  <rect x="1" y="1" width="958" height="278" rx="17" fill="none" stroke="#f5b700" stroke-opacity="0.22" stroke-width="2"/>
+  <g transform="translate(60 52) scale(1.4)">
+    <polygon points="28,48 46,28 82,28 100,48" fill="url(#crown)"/>
+    <polygon points="46,28 64,48 82,28" fill="#fff1c2" fill-opacity="0.55"/>
+    <polygon points="28,48 46,28 64,48" fill="#ffd34d" fill-opacity="0.35"/>
+    <polygon points="28,48 100,48 64,104" fill="url(#pav)"/>
+    <polygon points="46,48 64,104 28,48" fill="#ffc21a" fill-opacity="0.45"/>
+    <polygon points="82,48 100,48 64,104" fill="#b85a00" fill-opacity="0.35"/>
+    <line x1="28" y1="48" x2="100" y2="48" stroke="#fff1c2" stroke-opacity="0.8" stroke-width="1.5"/>
+    <circle cx="64" cy="60" r="7.5" fill="#0b1020"/>
+    <polygon points="59.5,63 68.5,63 71,82 57,82" fill="#0b1020"/>
+    <path d="M100 18 l2.5 6.5 l6.5 2.5 l-6.5 2.5 l-2.5 6.5 l-2.5 -6.5 l-6.5 -2.5 l6.5 -2.5 z" fill="#ffe08a"/>
+  </g>
+  <text x="270" y="150" fill="url(#word)" font-family="'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="96" font-weight="800" letter-spacing="2">kubera</text>
+  <text x="274" y="196" fill="#c9d1d9" font-family="'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="24">Find, verify, analyze and rotate leaked secrets.</text>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#f5b700">
+    <rect x="274" y="216" width="70" height="26" rx="13" fill="#f5b700" fill-opacity="0.12" stroke="#f5b700" stroke-opacity="0.4"/>
+    <text x="309" y="234" text-anchor="middle">scan</text>
+    <rect x="352" y="216" width="78" height="26" rx="13" fill="#f5b700" fill-opacity="0.12" stroke="#f5b700" stroke-opacity="0.4"/>
+    <text x="391" y="234" text-anchor="middle">verify</text>
+    <rect x="438" y="216" width="86" height="26" rx="13" fill="#f5b700" fill-opacity="0.12" stroke="#f5b700" stroke-opacity="0.4"/>
+    <text x="481" y="234" text-anchor="middle">analyze</text>
+    <rect x="532" y="216" width="78" height="26" rx="13" fill="#f5b700" fill-opacity="0.12" stroke="#f5b700" stroke-opacity="0.4"/>
+    <text x="571" y="234" text-anchor="middle">rotate</text>
+    <rect x="618" y="216" width="104" height="26" rx="13" fill="#f5b700" fill-opacity="0.12" stroke="#f5b700" stroke-opacity="0.4"/>
+    <text x="670" y="234" text-anchor="middle">templates</text>
+  </g>
+  <text x="900" y="264" fill="#8b949e" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" text-anchor="end">Rust · Linux · macOS · Windows · Termux</text>
+</svg>
