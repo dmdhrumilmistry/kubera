@@ -59,7 +59,7 @@
 | 📈 **Dashboard** | `scan --db` records every scan (redacted) in a local findings database; `kubera serve` shows trends, open live findings, per-repository and per-detector breakdowns and first / last seen, plus a JSON API. Localhost only by default. [Details →](https://dmdhrumilmistry.github.io/kubera/dashboard.html) |
 | 🔔 **Alerts** | **Slack** and HMAC-signed **webhooks** when a scheduled scan finds live secrets. [Details →](https://dmdhrumilmistry.github.io/kubera/alerts.html) |
 | 🤖 **MCP server** | `kubera mcp` lets AI assistants scan and verify, while secrets never reach the model. |
-| ⚡ **Fast** | ~875 MB/s on 4 vCPUs (333 MB of real code in 0.38 s, 38 MiB RAM); one `git log` per CPU scans all 24,445 commits of rust-lang/cargo in 3.7 s (10.6 s single-process). [Benchmarks →](https://dmdhrumilmistry.github.io/kubera/benchmarks.html) |
+| ⚡ **Fast** | ~660 MB/s on 4 vCPUs (335 MB of real code in 0.51 s, decoders on); one `git log` per CPU scans all 24,445 commits of rust-lang/cargo in 3.7 s (10.6 s single-process). [Benchmarks →](https://dmdhrumilmistry.github.io/kubera/benchmarks.html) |
 | 📱 **Everywhere** | Linux, macOS, Windows and Android (Termux), with layouts that adapt to phone screens. |
 
 ## Install
@@ -67,20 +67,17 @@
 ```bash
 curl -fsSL https://raw.githubusercontent.com/dmdhrumilmistry/kubera/main/install.sh | sh   # Linux, macOS, Termux
 cargo install kubera-cli --locked                                                        # any platform with Rust 1.88+
-brew install dmdhrumilmistry/tap/kubera                                                  # Homebrew (macOS, Linux)
 nix run github:dmdhrumilmistry/kubera -- --version                                       # Nix flake (builds from source)
 docker run --rm -v "$PWD:/scan" ghcr.io/dmdhrumilmistry/kubera scan git /scan              # container image
 ```
 
 ```powershell
 irm https://raw.githubusercontent.com/dmdhrumilmistry/kubera/main/install.ps1 | iex       # Windows (x86_64, ARM64)
-scoop bucket add kubera https://github.com/dmdhrumilmistry/scoop-bucket; scoop install kubera/kubera
-winget install dmdhrumilmistry.kubera
 ```
 
-Arch Linux: `paru -S kubera-bin` (AUR). Installed with a script or from a release archive? `kubera update` fetches the latest release, verifies it and swaps it in atomically (only when you run it; no background checks).
+Homebrew, Scoop, winget and AUR packages are on the way ([status](https://dmdhrumilmistry.github.io/kubera/installation.html#package-managers)). Installed with a script or from a release archive? `kubera update` fetches the latest release, verifies it and swaps it in atomically (only when you run it; no background checks).
 
-The installers download the release binary for your platform, **verify its SHA-256**, and install `kubera` to `~/.local/bin` (or `$PREFIX/bin` on Termux; `%LOCALAPPDATA%\Programs\kubera\bin` on Windows, added to your user PATH). Prebuilt archives for Linux, macOS, Windows and Android are on the [releases page](https://github.com/dmdhrumilmistry/kubera/releases). Releases are signed with Sigstore and carry GitHub build provenance and an SBOM ([verifying](https://dmdhrumilmistry.github.io/kubera/installation.html#verifying-a-release)). The crate is `kubera-cli`; the command is `kubera`. The image (`ghcr.io/dmdhrumilmistry/kubera`, linux/amd64 and arm64) runs as non-root and includes git. [Installation →](https://dmdhrumilmistry.github.io/kubera/installation.html)
+The installers download the release binary for your platform, **verify its SHA-256**, and install `kubera` to `~/.local/bin` (or `$PREFIX/bin` on Termux; `%LOCALAPPDATA%\Programs\kubera\bin` on Windows, added to your user PATH). Prebuilt archives for Linux, macOS, Windows and Android are on the [releases page](https://github.com/dmdhrumilmistry/kubera/releases). Release files come with SHA-256 checksums, Sigstore signatures and an SBOM, and releases after v0.2.0 also carry GitHub build provenance ([verifying](https://dmdhrumilmistry.github.io/kubera/installation.html#verifying-a-release)). The crate is `kubera-cli`; the command is `kubera`. The image (`ghcr.io/dmdhrumilmistry/kubera`, linux/amd64 and arm64) runs as non-root and includes git. [Installation →](https://dmdhrumilmistry.github.io/kubera/installation.html)
 
 ## Quick start
 
