@@ -60,6 +60,12 @@ A container image, every layer, no Docker needed:
 kubera scan image ghcr.io/acme/api:1.4.2
 ```
 
+What users install from npm, PyPI or crates.io, every published version:
+
+```bash
+kubera scan package npm:@acme/cli pypi:acme-tool crates:acme --all-versions
+```
+
 GitHub issues, pull requests, comments and Actions logs of an organization:
 
 ```bash

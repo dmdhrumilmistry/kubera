@@ -657,3 +657,196 @@ async fn confluence_pages_comments_and_versions() {
         .unwrap();
     assert_eq!(page["location"]["line"], 3);
 }
+
+fn tgz(files: &[(&str, &[u8])]) -> Vec<u8> {
+    use std::io::Write as _;
+    let mut b = tar::Builder::new(Vec::new());
+    for (n, d) in files {
+        let mut h = tar::Header::new_gnu();
+        h.set_size(d.len() as u64);
+        h.set_mode(0o644);
+        h.set_cksum();
+        b.append_data(&mut h, n, *d).unwrap();
+    }
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    gz.write_all(&b.into_inner().unwrap()).unwrap();
+    gz.finish().unwrap()
+}
+
+fn zip(files: &[(&str, &[u8])]) -> Vec<u8> {
+    use std::io::Write as _;
+    let mut z = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    for (n, d) in files {
+        z.start_file(*n, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        z.write_all(d).unwrap();
+    }
+    z.finish().unwrap().into_inner()
+}
+
+/// `repository path!/entry` of each finding, sorted.
+fn entries(found: &[serde_json::Value], source: &str) -> Vec<String> {
+    let mut v: Vec<String> = found
+        .iter()
+        .map(|f| {
+            let l = &f["location"];
+            assert_eq!(l["source"], source, "{f}");
+            format!(
+                "{} {}!/{}",
+                l["repository"].as_str().unwrap(),
+                l["path"].as_str().unwrap(),
+                l["entry"].as_str().unwrap_or("")
+            )
+        })
+        .collect();
+    v.sort();
+    v
+}
+
+#[tokio::test]
+async fn packages_npm_pypi_crates_verified_downloads() {
+    use base64::Engine as _;
+    use sha2::{Digest, Sha256, Sha512};
+    let [t1, t2, t3, t4] = fake_tokens();
+    let server = MockServer::start().await;
+    let uri = server.uri();
+    let npm_tgz = tgz(&[
+        ("package/package.json", b"{}"),
+        ("package/.env", format!("TOKEN={t1}\n").as_bytes()),
+    ]);
+    let sdist = tgz(&[("acme_tool-2.0/.env", format!("K={t2}\n").as_bytes())]);
+    let wheel = zip(&[(
+        "acme_tool/config.py",
+        format!("TOKEN = '{t3}'\n").as_bytes(),
+    )]);
+    let krate = tgz(&[(
+        "acme-0.3.0/tests/fixture.toml",
+        format!("token = \"{t4}\"\n").as_bytes(),
+    )]);
+    let sha256 = |b: &[u8]| hex::encode(Sha256::digest(b));
+    let integrity = format!(
+        "sha512-{}",
+        base64::engine::general_purpose::STANDARD.encode(Sha512::digest(&npm_tgz))
+    );
+    Mock::given(method("GET"))
+        .and(path("/@acme%2Fcli"))
+        .respond_with(json(serde_json::json!({
+            "dist-tags": {"latest": "1.1.0"},
+            "versions": {
+                "1.0.0": {"dist": {"tarball": format!("{uri}/@acme/cli/-/cli-1.0.0.tgz")}},
+                "1.1.0": {"dist": {"tarball": format!("{uri}/@acme/cli/-/cli-1.1.0.tgz"),
+                                   "integrity": integrity}}
+            }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/@acme/cli/-/cli-1.1.0.tgz"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(npm_tgz.clone()))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/pypi/acme-tool/json"))
+        .respond_with(json(serde_json::json!({
+            "info": {"version": "2.0"},
+            "urls": [
+                {"packagetype": "bdist_wheel", "filename": "acme_tool-2.0-cp312-cp312-linux_x86_64.whl",
+                 "url": format!("{uri}/files/native.whl"), "size": 10, "digests": {"sha256": "00"}},
+                {"packagetype": "bdist_wheel", "filename": "acme_tool-2.0-py3-none-any.whl",
+                 "url": format!("{uri}/files/acme_tool-2.0-py3-none-any.whl"),
+                 "size": wheel.len(), "digests": {"sha256": sha256(&wheel)}},
+                {"packagetype": "sdist", "filename": "acme_tool-2.0.tar.gz",
+                 "url": format!("{uri}/files/acme_tool-2.0.tar.gz"),
+                 "size": sdist.len(), "digests": {"sha256": sha256(&sdist)}}
+            ]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/files/acme_tool-2.0-py3-none-any.whl"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(wheel.clone()))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/files/acme_tool-2.0.tar.gz"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(sdist.clone()))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/crates/acme"))
+        .respond_with(json(
+            serde_json::json!({"crate": {"default_version": "0.3.0"}}),
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/crates/acme/0.3.0"))
+        .respond_with(json(serde_json::json!({"version": {
+            "num": "0.3.0", "checksum": sha256(&krate), "crate_size": krate.len()
+        }})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/crates/acme/acme-0.3.0.crate"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(krate.clone()))
+        .mount(&server)
+        .await;
+
+    let found = run(
+        &[
+            "scan",
+            "package",
+            "npm:@acme/cli",
+            "pypi:acme-tool",
+            "crates:acme",
+            "--registry-url",
+            &uri,
+        ],
+        &[],
+    )
+    .await;
+    assert_eq!(
+        entries(&found, "package"),
+        vec![
+            "crates:acme@0.3.0 acme-0.3.0.crate!/acme-0.3.0/tests/fixture.toml",
+            "npm:@acme/cli@1.1.0 cli-1.1.0.tgz!/package/.env",
+            "pypi:acme-tool@2.0 acme_tool-2.0-py3-none-any.whl!/acme_tool/config.py",
+            "pypi:acme-tool@2.0 acme_tool-2.0.tar.gz!/acme_tool-2.0/.env",
+        ]
+    );
+    // Only the latest npm version and one wheel were downloaded.
+    let reqs = server.received_requests().await.unwrap();
+    assert!(!reqs.iter().any(|r| r.url.path().ends_with("cli-1.0.0.tgz")));
+    assert!(!reqs.iter().any(|r| r.url.path().ends_with("native.whl")));
+
+    // A download that does not match the registry's digest stops the scan.
+    let bad = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/crates/acme/0.3.0"))
+        .respond_with(json(serde_json::json!({"version": {
+            "num": "0.3.0", "checksum": sha256(b"something else")
+        }})))
+        .mount(&bad)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/crates/acme/acme-0.3.0.crate"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(krate))
+        .mount(&bad)
+        .await;
+    let bad_uri = bad.uri();
+    let out = tokio::task::spawn_blocking(move || {
+        std::process::Command::new(env!("CARGO_BIN_EXE_kubera"))
+            .args(["--allow-http", "scan", "package", "crates:acme@0.3.0"])
+            .args(["--registry-url", &bad_uri])
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("sha256 mismatch"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

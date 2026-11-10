@@ -664,6 +664,30 @@ enum ScanSource {
         #[command(flatten)]
         opts: ScanArgs,
     },
+    /// Scan published packages: npm:<name>[@version], pypi:<name>[==version]
+    /// or crates:<name>[@version]. The tarball / sdist / wheel / .crate is
+    /// downloaded from the official registry, checked against the
+    /// registry's digest, and scanned like an archive on disk.
+    Package {
+        /// Package specs (latest version unless one is given).
+        #[arg(required = true, value_name = "SPEC")]
+        packages: Vec<String>,
+        /// Scan every published version (newest first, see --max-versions).
+        #[arg(long)]
+        all_versions: bool,
+        /// With --all-versions: at most N versions per package.
+        #[arg(long, default_value_t = 20, value_name = "N")]
+        max_versions: usize,
+        /// Largest package file downloaded.
+        #[arg(long, value_name = "BYTES", default_value_t = kubera::sources::archive::DEFAULT_MAX_ARCHIVE_SIZE)]
+        max_package_size: u64,
+        /// Registry base replacing the official registries and file hosts
+        /// (tests, mirrors).
+        #[arg(long, value_name = "URL", hide = true)]
+        registry_url: Option<String>,
+        #[command(flatten)]
+        opts: ScanArgs,
+    },
     /// Scan a cloud storage bucket: s3://bucket[/prefix] (also MinIO, R2
     /// and other S3-compatible stores with --endpoint-url) or
     /// gs://bucket[/prefix]. Archives inside are opened too.
@@ -1261,6 +1285,7 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         | ScanSource::Slack { opts, .. }
         | ScanSource::Jira { opts, .. }
         | ScanSource::Confluence { opts, .. }
+        | ScanSource::Package { opts, .. }
         | ScanSource::Bucket { opts, .. }
         | ScanSource::K8s { opts, .. }
         | ScanSource::Stdin { opts } => opts,
@@ -1390,7 +1415,8 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         | ScanSource::Bitbucket { .. }
         | ScanSource::Slack { .. }
         | ScanSource::Jira { .. }
-        | ScanSource::Confluence { .. } => scan::Target::Text(String::new()),
+        | ScanSource::Confluence { .. }
+        | ScanSource::Package { .. } => scan::Target::Text(String::new()),
         ScanSource::Image {
             image,
             platform,
@@ -1660,6 +1686,7 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         ScanSource::Slack { .. } => "Slack".into(),
         ScanSource::Jira { site, .. } => format!("Jira {site}"),
         ScanSource::Confluence { site, .. } => format!("Confluence {site}"),
+        ScanSource::Package { packages, .. } => packages.join(", "),
         ScanSource::Image { image, .. } => image.clone(),
         ScanSource::Bucket { url, .. } => url.clone(),
         ScanSource::K8s { context, .. } => {
@@ -2192,6 +2219,37 @@ async fn cmd_scan_api(
                 eprintln!("warning: {w}");
             }
             scan::scan_chunks(engine, filter, &collected.chunks)
+        }
+        ScanSource::Package {
+            packages,
+            all_versions,
+            max_versions,
+            max_package_size,
+            registry_url,
+            ..
+        } => {
+            use kubera::sources::package;
+            let refs = packages
+                .iter()
+                .map(|p| package::parse(p))
+                .collect::<Result<Vec<_>>>()?;
+            let mut client =
+                kubera::forge::Client::new(None, None, std::time::Duration::from_secs(300))?;
+            client.allow_http = g.allow_http;
+            let o = package::Options {
+                all_versions: *all_versions,
+                max_versions: *max_versions,
+                max_size: *max_package_size,
+                max_file_size: max_size,
+                registry_url: registry_url.clone(),
+            };
+            let collector = scan::Collector::default();
+            let n = package::scan(&client, &refs, &o, filter, &progress, &mut |c| {
+                collector.push(scan::scan_chunk(engine, filter, &c))
+            })
+            .await?;
+            progress(format!("{n} package file(s) scanned"));
+            collector.into_findings()
         }
         _ => return Ok(None),
     };

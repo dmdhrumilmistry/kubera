@@ -283,7 +283,12 @@ async fn detect_region(http: &reqwest::Client, bucket: &str) -> Option<String> {
 }
 
 /// Turn one downloaded object into chunks (text or archive entries).
-fn object_chunks(data: Vec<u8>, location: Location, max_size: u64, filter: &Filter) -> Vec<Chunk> {
+pub(crate) fn object_chunks(
+    data: Vec<u8>,
+    location: Location,
+    max_size: u64,
+    filter: &Filter,
+) -> Vec<Chunk> {
     use super::archive;
     if let Some(kind) = archive::kind(&data) {
         let mut out = Vec::new();

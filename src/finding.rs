@@ -34,6 +34,8 @@ pub enum SourceKind {
     Jira,
     /// Confluence pages, blog posts and comments.
     Confluence,
+    /// Published packages (npm, PyPI, crates.io).
+    Package,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

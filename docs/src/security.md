@@ -62,6 +62,10 @@ Kubera handles live credentials, so it is conservative by default.
 - **Buckets** (`scan bucket`): S3 credentials come from the standard `AWS_*` environment variables and are used only to sign requests (SigV4); a GCS access token comes from `--token-env`. Both are sent only to the storage endpoint, over HTTPS, without following redirects. Objects are filtered by path and size before download and never written to disk.
 - **Kubernetes** (`scan k8s`): only read-only `list` calls. TLS trusts only the cluster's CA when the kubeconfig names one. A cluster with `insecure-skip-tls-verify` and plain `http://` servers are refused, rather than sending a token over an unverified connection. RBAC denials become warnings, not failures.
 
+## Packages
+
+`scan package` downloads only from the official registries and their file hosts, over HTTPS, without credentials. Every file is checked against the registry's sha256 / sha512 digest before it is opened (a mismatch fails the scan), sizes are checked before downloading, and packages are read in memory with the archive limits below.
+
 ## Interactive use
 
 - Hidden prompts (`kubera verify` with no secret) keep secrets out of shell history and the screen.

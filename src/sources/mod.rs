@@ -11,6 +11,7 @@ pub mod gitlab;
 pub mod image;
 pub mod jira;
 pub mod kube;
+pub mod package;
 pub mod remote;
 pub mod slack;
 

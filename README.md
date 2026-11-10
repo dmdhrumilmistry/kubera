@@ -43,7 +43,7 @@
 
 |  |  |
 |---|---|
-| 🔍 **Detect** | Files, full git history (local, HTTPS, SSH or `github.com/org/repo`), **container images** and stdin, including secrets committed and later deleted, or deleted in a later image layer. Opens **archives** (jar, zip, whl, tar.gz, nested) and **decodes** base64, URL-encoded and escaped values. 89 detectors. |
+| 🔍 **Detect** | Files, full git history (local, HTTPS, SSH or `github.com/org/repo`), **container images**, **published npm / PyPI / crates.io packages** and stdin, including secrets committed and later deleted, or deleted in a later image layer. Opens **archives** (jar, zip, whl, tar.gz, nested) and **decodes** base64, URL-encoded and escaped values. 89 detectors. |
 | 🌐 **Beyond code** | **GitHub** issues, PRs, review comments, **Actions logs**, wikis and gists; **GitLab** issues, MRs, comments, CI job logs, snippets and wikis; **Bitbucket** issues, PRs, comments and Pipelines logs; **Slack** channels and threads; **Jira** issues, comments and history; **Confluence** pages, comments and versions; **S3 / GCS buckets** (and MinIO, R2); **live Kubernetes** Secrets, ConfigMaps and workload env. [GitHub →](https://dmdhrumilmistry.github.io/kubera/github.html) · [GitLab →](https://dmdhrumilmistry.github.io/kubera/gitlab.html) · [Bitbucket →](https://dmdhrumilmistry.github.io/kubera/bitbucket.html) · [Slack →](https://dmdhrumilmistry.github.io/kubera/slack.html) · [Jira and Confluence →](https://dmdhrumilmistry.github.io/kubera/jira.html) · [Buckets →](https://dmdhrumilmistry.github.io/kubera/buckets.html) · [Kubernetes →](https://dmdhrumilmistry.github.io/kubera/kubernetes.html) |
 | 🏢 **At scale** | Scan whole **GitHub / GitLab / Bitbucket orgs** with rate-limit handling and cached mirrors; **incremental** runs only read commits added since the last passing scan (47× faster re-scans); **resumable** long scans with `--checkpoint`. |
 | ✅ **Verify** | Asks each platform whether the secret is live, concurrently and de-duplicated. |
@@ -87,6 +87,7 @@ kubera scan fs .                         # scan a directory
 kubera scan git . --verify               # whole history, verify what's found
 kubera scan git github.com/org/repo -i   # a remote repo, results in the TUI
 kubera scan image ghcr.io/org/app:1.4     # every layer + ENV/history, no Docker needed
+kubera scan package npm:@acme/cli pypi:acme-tool crates:acme   # what users install
 kubera scan repos --github-org acme --token-env GH_TOKEN --cache-dir ~/.cache/kubera --state state.json
 kubera scan git . --state .kubera-state.json --fail   # CI: only new commits
 kubera scan fs . --fail -f sarif > kubera.sarif     # CI: SARIF + exit code 183
