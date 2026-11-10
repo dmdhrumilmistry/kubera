@@ -2034,6 +2034,17 @@ fn db_target(source: &ScanSource, label: &str) -> (String, &'static str, bool) {
             "k8s",
             !namespaces.is_empty() || !what.is_empty(),
         ),
+        // API sources read capped listings (item, run, version limits), so a
+        // finding missing from one scan is not proof it is gone: never let
+        // them resolve findings.
+        ScanSource::Gitlab { .. } => (format!("gitlab {label}"), "gitlab", true),
+        ScanSource::Bitbucket { .. } => (format!("bitbucket {label}"), "bitbucket", true),
+        ScanSource::Slack { .. } => (format!("slack {label}"), "slack", true),
+        ScanSource::Jira { .. } => (format!("jira {label}"), "jira", true),
+        ScanSource::Confluence { .. } => (format!("confluence {label}"), "confluence", true),
+        ScanSource::Package { .. } => (format!("package {label}"), "package", true),
+        ScanSource::Dockerhub { .. } => (format!("dockerhub {label}"), "dockerhub", true),
+        ScanSource::Huggingface { .. } => (format!("huggingface {label}"), "huggingface", true),
     }
 }
 
