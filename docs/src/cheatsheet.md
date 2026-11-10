@@ -114,6 +114,12 @@ An S3 bucket (credentials from `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`):
 kubera scan bucket s3://acme-backups
 ```
 
+An Azure Blob container (key from `AZURE_STORAGE_KEY`, or a SAS token with `--sas-env`):
+
+```bash
+kubera scan bucket az://acmedata/backups
+```
+
 A live Kubernetes cluster, current kubeconfig context:
 
 ```bash

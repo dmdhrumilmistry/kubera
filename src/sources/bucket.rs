@@ -1,5 +1,5 @@
 //! Cloud object storage: Amazon S3 (and S3-compatible stores such as MinIO
-//! or Cloudflare R2) and Google Cloud Storage.
+//! or Cloudflare R2), Google Cloud Storage and Azure Blob Storage.
 //!
 //! Objects are listed, filtered by path excludes and size *before* they are
 //! downloaded, fetched concurrently, and turned into chunks with the same
@@ -8,9 +8,11 @@
 //! Credentials: S3 requests are SigV4-signed with the standard
 //! `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN`
 //! variables (unsigned with `anonymous`, for public buckets); GCS takes an
-//! OAuth access token (e.g. `gcloud auth print-access-token`). They are only
-//! ever sent to the storage endpoint, over HTTPS, without following
-//! redirects.
+//! OAuth access token (e.g. `gcloud auth print-access-token`); Azure is
+//! signed with Shared Key (`AZURE_STORAGE_KEY`, which never leaves the
+//! process: only signatures are sent), takes a SAS token, or is anonymous
+//! for public containers. Credentials are only ever sent to the storage
+//! endpoint, over HTTPS, without following redirects.
 
 use std::time::Duration;
 
@@ -39,6 +41,10 @@ fn enc(s: &str) -> String {
 pub enum Store {
     S3,
     Gcs,
+    /// Azure Blob Storage; `bucket` is the container.
+    Azure {
+        account: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,14 +54,45 @@ pub struct BucketRef {
     pub prefix: String,
 }
 
-/// `s3://bucket/prefix` or `gs://bucket/prefix`.
+/// `s3://bucket/prefix`, `gs://bucket/prefix` or
+/// `az://account/container/prefix`.
 pub fn parse(url: &str) -> Result<BucketRef> {
     let (store, rest) = if let Some(r) = url.strip_prefix("s3://") {
         (Store::S3, r)
     } else if let Some(r) = url.strip_prefix("gs://") {
         (Store::Gcs, r)
+    } else if let Some(r) = url.strip_prefix("az://") {
+        let (account, rest) = r.split_once('/').unwrap_or((r, ""));
+        let ok = account.len() >= 3
+            && account.len() <= 24
+            && account
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+        if !ok {
+            bail!("`{account}` is not a valid storage account name");
+        }
+        let (container, prefix) = rest.split_once('/').unwrap_or((rest, ""));
+        let ok = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-';
+        let special = matches!(container, "$root" | "$web" | "$logs");
+        if !special
+            && (container.len() < 3
+                || container.len() > 63
+                || !container.chars().all(ok)
+                || container.starts_with('-'))
+        {
+            bail!("`{container}` is not a valid container name (az://account/container[/prefix])");
+        }
+        return Ok(BucketRef {
+            store: Store::Azure {
+                account: account.to_string(),
+            },
+            bucket: container.to_string(),
+            prefix: prefix.to_string(),
+        });
     } else {
-        bail!("expected s3://bucket[/prefix] or gs://bucket[/prefix], got `{url}`");
+        bail!(
+            "expected s3://bucket[/prefix], gs://bucket[/prefix] or az://account/container[/prefix], got `{url}`"
+        );
     };
     let (bucket, prefix) = rest.split_once('/').unwrap_or((rest, ""));
     let ok = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '.' | '_');
@@ -87,9 +124,39 @@ impl AwsCreds {
     }
 }
 
+/// How Azure requests are authorized.
+#[derive(Clone)]
+pub enum AzureAuth {
+    /// Shared Key: the decoded account key signs each request.
+    SharedKey(Vec<u8>),
+    /// A SAS token (`sv=...&sig=...`) appended to each request.
+    Sas(String),
+}
+
+impl AzureAuth {
+    /// The account key from `AZURE_STORAGE_KEY` (base64), checked against
+    /// `AZURE_STORAGE_ACCOUNT` when that is set.
+    pub fn shared_key_from_env(account: &str) -> Result<Option<Self>> {
+        use base64::Engine as _;
+        let Ok(key) = std::env::var("AZURE_STORAGE_KEY") else {
+            return Ok(None);
+        };
+        if let Ok(a) = std::env::var("AZURE_STORAGE_ACCOUNT")
+            && a != account
+        {
+            bail!("AZURE_STORAGE_ACCOUNT is `{a}`, but the URL names account `{account}`");
+        }
+        let key = base64::engine::general_purpose::STANDARD
+            .decode(key.trim())
+            .context("AZURE_STORAGE_KEY is not base64")?;
+        Ok(Some(Self::SharedKey(key)))
+    }
+}
+
 pub struct Options {
     pub aws: Option<AwsCreds>,
     pub gcs_token: Option<String>,
+    pub azure: Option<AzureAuth>,
     /// S3 region (detected from the bucket when `None`).
     pub region: Option<String>,
     /// S3-compatible endpoint, or the GCS API base (tests, emulators).
@@ -260,6 +327,142 @@ impl S3 {
     }
 }
 
+/// Azure Blob Storage REST API version sent with every request.
+const AZURE_VERSION: &str = "2021-08-06";
+
+struct Azure {
+    http: reqwest::Client,
+    /// `https://<account>.blob.core.windows.net`, or a path-style endpoint
+    /// such as Azurite's `http://127.0.0.1:10000/devstoreaccount1`.
+    base: String,
+    account: String,
+    container: String,
+    auth: Option<AzureAuth>,
+}
+
+impl Azure {
+    fn url(&self, blob: &str, query: &[(&str, &str)]) -> Result<reqwest::Url> {
+        let mut raw = format!("{}/{}", self.base, enc(&self.container));
+        if !blob.is_empty() {
+            let path = blob
+                .split('/')
+                .map(|seg| match seg {
+                    "." => "%2E".to_string(),
+                    ".." => "%2E%2E".to_string(),
+                    s => enc(s),
+                })
+                .collect::<Vec<_>>()
+                .join("/");
+            raw = format!("{raw}/{path}");
+        }
+        let mut u = reqwest::Url::parse(&raw)?;
+        let mut q: Vec<String> = query
+            .iter()
+            .map(|(k, v)| format!("{}={}", enc(k), enc(v)))
+            .collect();
+        if let Some(AzureAuth::Sas(sas)) = &self.auth {
+            q.push(sas.trim_start_matches('?').to_string());
+        }
+        if !q.is_empty() {
+            u.set_query(Some(&q.join("&")));
+        }
+        Ok(u)
+    }
+
+    async fn get(&self, u: reqwest::Url) -> Result<reqwest::Response> {
+        let date = chrono::Utc::now()
+            .format("%a, %d %b %Y %H:%M:%S GMT")
+            .to_string();
+        let mut rb = self
+            .http
+            .get(u.clone())
+            .header("x-ms-date", &date)
+            .header("x-ms-version", AZURE_VERSION);
+        if let Some(AzureAuth::SharedKey(key)) = &self.auth {
+            let sig = shared_key_signature(key, &self.account, &u, &date);
+            rb = rb.header("Authorization", format!("SharedKey {}:{sig}", self.account));
+        }
+        rb.send()
+            .await
+            .map_err(reqwest::Error::without_url)
+            .with_context(|| format!("GET {}", crate::http::redact_url(&u)))
+    }
+
+    async fn list(&self, prefix: &str, max: usize) -> Result<Vec<Object>> {
+        let blob = Regex::new(r"(?s)<Blob>(.*?)</Blob>")?;
+        let name = Regex::new(r"(?s)<Name>(.*?)</Name>")?;
+        let size = Regex::new(r"<Content-Length>(\d+)</Content-Length>")?;
+        let next = Regex::new(r"<NextMarker>(.+?)</NextMarker>")?;
+        let mut out = Vec::new();
+        let mut marker: Option<String> = None;
+        loop {
+            let mut q = vec![
+                ("restype", "container"),
+                ("comp", "list"),
+                ("maxresults", "5000"),
+            ];
+            if !prefix.is_empty() {
+                q.push(("prefix", prefix));
+            }
+            if let Some(m) = &marker {
+                q.push(("marker", m));
+            }
+            let resp = self.get(self.url("", &q)?).await?;
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            if status != 200 {
+                bail!(
+                    "listing az://{}/{} failed: HTTP {status} {}",
+                    self.account,
+                    self.container,
+                    s3_error(&body)
+                );
+            }
+            for c in blob.captures_iter(&body) {
+                let block = &c[1];
+                let (Some(k), Some(s)) = (name.captures(block), size.captures(block)) else {
+                    continue;
+                };
+                out.push(Object {
+                    key: xml_unescape(&k[1]),
+                    size: s[1].parse().unwrap_or(u64::MAX),
+                });
+            }
+            marker = next.captures(&body).map(|c| xml_unescape(&c[1]));
+            if marker.is_none() || out.len() >= max {
+                break;
+            }
+        }
+        out.truncate(max);
+        Ok(out)
+    }
+}
+
+/// Shared Key signature of a GET without body (Blob service).
+fn shared_key_signature(key: &[u8], account: &str, u: &reqwest::Url, date: &str) -> String {
+    use base64::Engine as _;
+    use hmac::{Hmac, KeyInit, Mac};
+    // VERB, then 11 standard headers that are all empty for a plain GET.
+    let mut s = String::from("GET\n");
+    s.push_str(&"\n".repeat(11));
+    s.push_str(&format!("x-ms-date:{date}\nx-ms-version:{AZURE_VERSION}\n"));
+    s.push_str(&format!("/{account}{}", u.path()));
+    let mut params: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    for (k, v) in u.query_pairs() {
+        params
+            .entry(k.to_ascii_lowercase())
+            .or_default()
+            .push(v.into_owned());
+    }
+    for (k, mut v) in params {
+        v.sort();
+        s.push_str(&format!("\n{k}:{}", v.join(",")));
+    }
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("hmac accepts any key length");
+    mac.update(s.as_bytes());
+    base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes())
+}
+
 fn s3_error(body: &str) -> String {
     Regex::new(r"<Code>(.*?)</Code>")
         .ok()
@@ -345,7 +548,7 @@ pub async fn scan(
     sink: &mut (dyn FnMut(Chunk) + Send),
 ) -> Result<usize> {
     let http = client()?;
-    match b.store {
+    match &b.store {
         Store::S3 => {
             let region = match (&o.region, &o.endpoint) {
                 (Some(r), _) => r.clone(),
@@ -486,11 +689,55 @@ pub async fn scan(
             }
             Ok(n)
         }
+        Store::Azure { account } => {
+            let base = match &o.endpoint {
+                Some(e) => e.trim_end_matches('/').to_string(),
+                None => format!("https://{account}.blob.core.windows.net"),
+            };
+            check_scheme(&reqwest::Url::parse(&base)?, o.allow_http)?;
+            let az = Azure {
+                http,
+                base,
+                account: account.clone(),
+                container: b.bucket.clone(),
+                auth: o.azure.clone(),
+            };
+            let objects: Vec<Object> = az
+                .list(&b.prefix, o.max_objects)
+                .await?
+                .into_iter()
+                .filter(|x| wanted(x, o.max_file_size, filter))
+                .collect();
+            let mut stream = futures::stream::iter(objects.into_iter().map(|obj| {
+                let az = &az;
+                async move {
+                    let resp = az.get(az.url(&obj.key, &[])?).await?;
+                    if resp.status().as_u16() != 200 {
+                        bail!("{}: HTTP {}", obj.key, resp.status().as_u16());
+                    }
+                    Ok((obj.key, resp.bytes().await?.to_vec()))
+                }
+            }))
+            .buffer_unordered(o.concurrency.max(1));
+            let mut n = 0;
+            while let Some(r) = stream.next().await {
+                match r {
+                    Ok((key, data)) => {
+                        n += 1;
+                        for c in object_chunks(data, location(b, &key), o.max_file_size, filter) {
+                            sink(c);
+                        }
+                    }
+                    Err(e) => eprintln!("warning: az://{account}/{}/{e:#}", b.bucket),
+                }
+            }
+            Ok(n)
+        }
     }
 }
 
 fn location(b: &BucketRef, key: &str) -> Location {
-    let (scheme, link) = match b.store {
+    let (scheme, link) = match &b.store {
         Store::S3 => (
             "s3",
             format!(
@@ -507,10 +754,22 @@ fn location(b: &BucketRef, key: &str) -> Location {
                 key.split('/').map(enc).collect::<Vec<_>>().join("/")
             ),
         ),
+        Store::Azure { account } => (
+            "az",
+            format!(
+                "https://{account}.blob.core.windows.net/{}/{}",
+                enc(&b.bucket),
+                key.split('/').map(enc).collect::<Vec<_>>().join("/")
+            ),
+        ),
+    };
+    let repository = match &b.store {
+        Store::Azure { account } => format!("az://{account}/{}", b.bucket),
+        _ => format!("{scheme}://{}", b.bucket),
     };
     Location {
         source: SourceKind::Bucket,
-        repository: Some(format!("{scheme}://{}", b.bucket)),
+        repository: Some(repository),
         path: Some(key.to_string()),
         link: Some(link),
         ..Default::default()
@@ -535,6 +794,41 @@ mod tests {
         assert!(parse("s3://UPPER").is_err());
         assert!(parse("s3://ab").is_err());
         assert!(parse("https://x").is_err());
+    }
+
+    #[test]
+    fn azure_urls_and_shared_key() {
+        let r = parse("az://acmedata/backups/2026/").unwrap();
+        assert_eq!(
+            r,
+            BucketRef {
+                store: Store::Azure {
+                    account: "acmedata".into()
+                },
+                bucket: "backups".into(),
+                prefix: "2026/".into()
+            }
+        );
+        assert_eq!(parse("az://acmedata/$web").unwrap().bucket, "$web");
+        assert!(parse("az://Acme/c1c").is_err());
+        assert!(parse("az://acmedata").is_err());
+        assert!(parse("az://acmedata/ab").is_err());
+        // Canonical string: empty standard headers, x-ms-* headers, then
+        // the resource with sorted, lower-cased query parameters.
+        let u = reqwest::Url::parse(
+            "https://acmedata.blob.core.windows.net/backups?restype=container&comp=list&prefix=a%2Fb",
+        )
+        .unwrap();
+        let sig = shared_key_signature(b"key", "acmedata", &u, "Tue, 10 Nov 2026 11:00:00 GMT");
+        use base64::Engine as _;
+        use hmac::{Hmac, KeyInit, Mac};
+        let expected = "GET\n\n\n\n\n\n\n\n\n\n\n\nx-ms-date:Tue, 10 Nov 2026 11:00:00 GMT\nx-ms-version:2021-08-06\n/acmedata/backups\ncomp:list\nprefix:a/b\nrestype:container";
+        let mut mac = Hmac::<Sha256>::new_from_slice(b"key").unwrap();
+        mac.update(expected.as_bytes());
+        assert_eq!(
+            sig,
+            base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes())
+        );
     }
 
     #[test]

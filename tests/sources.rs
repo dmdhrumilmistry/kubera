@@ -941,3 +941,106 @@ async fn dockerhub_org_images_are_listed_and_pulled() {
     let reqs = server.received_requests().await.unwrap();
     assert!(!reqs.iter().any(|r| r.url.path().contains("/v2/acme/huge/")));
 }
+
+#[tokio::test]
+async fn azure_blob_shared_key_and_sas() {
+    use base64::Engine as _;
+    use wiremock::matchers::header_regex;
+    let [t1, t2] = fake_tokens();
+    let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+    let site = zip(&[("app/.env", format!("T={t1}\n").as_bytes())]);
+    let server = MockServer::start().await;
+    let page1 = String::from(
+        r#"<?xml version="1.0" encoding="utf-8"?><EnumerationResults><Blobs>
+<Blob><Name>config/prod &amp; dev.env</Name><Properties><Content-Length>60</Content-Length></Properties></Blob>
+<Blob><Name>huge.log</Name><Properties><Content-Length>999999999999</Content-Length></Properties></Blob>
+</Blobs><NextMarker>m2</NextMarker></EnumerationResults>"#,
+    );
+    let page2 = format!(
+        r#"<?xml version="1.0" encoding="utf-8"?><EnumerationResults><Blobs>
+<Blob><Name>backups/site.zip</Name><Properties><Content-Length>{}</Content-Length></Properties></Blob>
+</Blobs><NextMarker /></EnumerationResults>"#,
+        site.len()
+    );
+    Mock::given(method("GET"))
+        .and(path("/backups"))
+        .and(query_param("comp", "list"))
+        .and(query_param_is_missing("marker"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(page1))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/backups"))
+        .and(query_param("marker", "m2"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(page2))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/backups/config/prod%20%26%20dev.env"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!("TOKEN={t2}\n")))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/backups/backups/site.zip"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(site))
+        .mount(&server)
+        .await;
+    let uri = server.uri();
+    let args = [
+        "scan",
+        "bucket",
+        "az://acmedata/backups",
+        "--endpoint-url",
+        &uri,
+    ];
+    let expect = vec!["backups/site.zip", "config/prod & dev.env"];
+
+    // Shared Key: every request is signed; the key itself is never sent.
+    let key = b64(b"not-a-real-account-key");
+    let found = run(
+        &args,
+        &[
+            ("AZURE_STORAGE_KEY", &key),
+            ("AZURE_STORAGE_ACCOUNT", "acmedata"),
+        ],
+    )
+    .await;
+    assert_eq!(paths(&found, "bucket"), expect);
+    assert_eq!(found[0]["location"]["repository"], "az://acmedata/backups");
+    let reqs = server.received_requests().await.unwrap();
+    assert_eq!(reqs.len(), 4, "the oversized blob is never downloaded");
+    for r in &reqs {
+        let auth = r.headers.get("authorization").unwrap().to_str().unwrap();
+        assert!(auth.starts_with("SharedKey acmedata:"), "{auth}");
+        assert!(r.headers.get("x-ms-date").is_some());
+        assert!(!auth.contains(&key));
+    }
+    server.reset().await;
+
+    // SAS: appended to every request, no Authorization header.
+    Mock::given(method("GET"))
+        .and(path("/backups"))
+        .and(query_param("sig", "s1g+"))
+        .and(query_param("comp", "list"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"<EnumerationResults><Blobs><Blob><Name>a.txt</Name><Properties><Content-Length>60</Content-Length></Properties></Blob></Blobs><NextMarker /></EnumerationResults>"#,
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/backups/a.txt"))
+        .and(query_param("sig", "s1g+"))
+        .and(header_regex("x-ms-version", r"^\d{4}-"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!("t={t1}\n")))
+        .mount(&server)
+        .await;
+    let found = run(
+        &[&args[..], &["--sas-env", "SAS"]].concat(),
+        &[("SAS", "?sv=2021-08-06&sp=rl&sig=s1g%2B")],
+    )
+    .await;
+    assert_eq!(paths(&found, "bucket"), vec!["a.txt"]);
+    for r in server.received_requests().await.unwrap() {
+        assert!(r.headers.get("authorization").is_none());
+    }
+}

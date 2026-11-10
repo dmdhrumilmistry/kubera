@@ -731,12 +731,15 @@ enum ScanSource {
         opts: ScanArgs,
     },
     /// Scan a cloud storage bucket: s3://bucket[/prefix] (also MinIO, R2
-    /// and other S3-compatible stores with --endpoint-url) or
-    /// gs://bucket[/prefix]. Archives inside are opened too.
+    /// and other S3-compatible stores with --endpoint-url),
+    /// gs://bucket[/prefix] or az://account/container[/prefix]. Archives
+    /// inside are opened too.
     ///
     /// S3 uses AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN
     /// (public buckets: --anonymous). GCS uses --token-env (an OAuth access
-    /// token, e.g. from `gcloud auth print-access-token`).
+    /// token, e.g. from `gcloud auth print-access-token`). Azure
+    /// (az://account/container[/prefix]) uses AZURE_STORAGE_KEY (Shared
+    /// Key), a SAS token with --sas-env, or --anonymous.
     Bucket {
         url: String,
         /// S3 region (default: detected from the bucket).
@@ -751,6 +754,9 @@ enum ScanSource {
         /// Environment variable with a GCS OAuth access token.
         #[arg(long, value_name = "ENV_VAR")]
         token_env: Option<String>,
+        /// Environment variable with an Azure SAS token (sv=...&sig=...).
+        #[arg(long, value_name = "ENV_VAR", conflicts_with = "anonymous")]
+        sas_env: Option<String>,
         /// List at most N objects.
         #[arg(long, default_value_t = 100_000, value_name = "N")]
         max_objects: usize,
@@ -1564,6 +1570,7 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         endpoint_url,
         anonymous,
         token_env,
+        sas_env,
         max_objects,
         downloads,
         ..
@@ -1587,9 +1594,23 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
                 "no AWS credentials in the environment; set AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY, or pass --anonymous for a public bucket"
             );
         }
+        let azure = match (&b.store, *anonymous) {
+            (bucket::Store::Azure { .. }, true) => None,
+            (bucket::Store::Azure { account }, false) => {
+                match env_secret(sas_env.as_ref(), "--sas-env")? {
+                    Some(sas) => Some(bucket::AzureAuth::Sas(sas)),
+                    None => Some(bucket::AzureAuth::shared_key_from_env(account)?.context(
+                        "no Azure credentials: set AZURE_STORAGE_KEY (Shared Key), pass --sas-env VAR \
+                         with a SAS token, or --anonymous for a public container",
+                    )?),
+                }
+            }
+            _ => None,
+        };
         let o = bucket::Options {
             aws,
             gcs_token,
+            azure,
             region: region.clone(),
             endpoint: endpoint_url.clone(),
             max_objects: *max_objects,
