@@ -1,0 +1,30 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+PackageIdentifier: dmdhrumilmistry.kubera
+PackageVersion: @VERSION@
+PackageLocale: en-US
+Publisher: dmdhrumilmistry
+PublisherUrl: https://github.com/dmdhrumilmistry
+PublisherSupportUrl: https://github.com/dmdhrumilmistry/kubera/issues
+PackageName: Kubera
+PackageUrl: https://github.com/dmdhrumilmistry/kubera
+License: MIT
+LicenseUrl: https://github.com/dmdhrumilmistry/kubera/blob/main/LICENSE
+ShortDescription: Template driven secret detection, verification, analysis and rotation
+Description: |-
+  Kubera finds leaked credentials in code, git history, GitHub/GitLab/Bitbucket organizations,
+  container images, GitHub issues and Actions logs, S3/GCS buckets and Kubernetes clusters,
+  checks whether they are live, shows what they can access, and rotates or revokes them.
+Moniker: kubera
+Tags:
+  - secrets
+  - secret-scanner
+  - security
+  - credentials
+  - git
+  - devsecops
+ReleaseNotesUrl: https://github.com/dmdhrumilmistry/kubera/releases/tag/v@VERSION@
+Documentations:
+  - DocumentLabel: Documentation
+    DocumentUrl: https://dmdhrumilmistry.github.io/kubera/
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

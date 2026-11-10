@@ -253,6 +253,120 @@ jobs:
           fi
           cargo publish --locked
 
+  # Homebrew formula, Scoop manifest, winget manifests and AUR PKGBUILD,
+  # rendered from packaging/templates/ with the checksums of the archives
+  # actually published on the release (in complete mode those can predate
+  # this run). Attached to the release as kubera-packaging-<tag>.tar.gz and
+  # pushed to the tap, bucket, AUR and winget-pkgs when their secret is set;
+  # each of those steps is skipped otherwise. See RELEASING.md.
+  packages:
+    name: Package manager manifests
+    if: needs.check.outputs.release == 'true'
+    needs: [check, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.check.outputs.tag }}
+    steps:
+      # Templates and scripts come from the workflow's commit; the version
+      # and checksums come from the published release.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download the published archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          patterns=()
+          for a in x86_64-apple-darwin.tar.gz aarch64-apple-darwin.tar.gz \
+                   x86_64-unknown-linux-musl.tar.gz aarch64-unknown-linux-musl.tar.gz \
+                   armv7-unknown-linux-musleabihf.tar.gz \
+                   x86_64-pc-windows-msvc.zip aarch64-pc-windows-msvc.zip; do
+            patterns+=(--pattern "kubera-$a" --pattern "kubera-$a.sha256")
+          done
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --dir "$RUNNER_TEMP/release" "${patterns[@]}"
+      - name: Render manifests
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/packaging"
+          # Hashes every archive and checks it against its .sha256 file.
+          python3 -I scripts/render-packages.py --version "${TAG#v}" \
+            --assets "$RUNNER_TEMP/release" --require-archives \
+            --out "$out" --tarball "$RUNNER_TEMP/kubera-packaging-$TAG.tar.gz"
+          ruby -c "$out/homebrew/kubera.rb"
+          ruby -rjson -e 'JSON.parse(File.read(ARGV[0]))' "$out/scoop/kubera.json"
+          ruby -ryaml -e 'ARGV.each { |f| YAML.safe_load_file(f) }' "$out"/winget/*.yaml
+          bash -n "$out/aur/PKGBUILD"
+          cd "$RUNNER_TEMP"
+          sha256sum "kubera-packaging-$TAG.tar.gz" > "kubera-packaging-$TAG.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packaging-${{ needs.check.outputs.tag }}
+          path: ${{ runner.temp }}/packaging
+          include-hidden-files: true # aur/.SRCINFO
+          if-no-files-found: error
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          have=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name')
+          for f in "kubera-packaging-$TAG.tar.gz" "kubera-packaging-$TAG.tar.gz.sha256"; do
+            if grep -qxF "$f" <<< "$have"; then
+              echo "release $TAG already has $f"
+            else
+              gh release upload "$TAG" "$RUNNER_TEMP/$f" --repo "$GITHUB_REPOSITORY"
+            fi
+          done
+      # A token for <owner>/homebrew-tap with contents: write.
+      - name: Homebrew tap
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::notice::HOMEBREW_TAP_TOKEN is not set; skipping the Homebrew tap (see RELEASING.md)"
+            exit 0
+          fi
+          scripts/gh-put-file.sh "$GITHUB_REPOSITORY_OWNER/homebrew-tap" Formula/kubera.rb \
+            "$RUNNER_TEMP/packaging/homebrew/kubera.rb" "kubera ${TAG#v}"
+      # A token for <owner>/scoop-bucket with contents: write.
+      - name: Scoop bucket
+        env:
+          GH_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::notice::SCOOP_BUCKET_TOKEN is not set; skipping the Scoop bucket (see RELEASING.md)"
+            exit 0
+          fi
+          scripts/gh-put-file.sh "$GITHUB_REPOSITORY_OWNER/scoop-bucket" bucket/kubera.json \
+            "$RUNNER_TEMP/packaging/scoop/kubera.json" "kubera ${TAG#v}"
+      # The private SSH key registered on the AUR account that owns kubera-bin.
+      - name: AUR
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          AUR_GIT_NAME: ${{ github.repository_owner }}
+          AUR_GIT_EMAIL: ${{ github.repository_owner }}@users.noreply.github.com
+        run: |
+          if [ -z "$AUR_SSH_PRIVATE_KEY" ]; then
+            echo "::notice::AUR_SSH_PRIVATE_KEY is not set; skipping the AUR (see RELEASING.md)"
+            exit 0
+          fi
+          scripts/aur-push.sh "${TAG#v}" "$RUNNER_TEMP/packaging/aur"
+      # A token that can push to <owner>/winget-pkgs (a fork of
+      # microsoft/winget-pkgs) and open pull requests.
+      - name: winget
+        env:
+          GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::notice::WINGET_TOKEN is not set; skipping winget (manifests are in the release; see RELEASING.md)"
+            exit 0
+          fi
+          scripts/winget-submit.sh "$GITHUB_REPOSITORY_OWNER" "${TAG#v}" "$RUNNER_TEMP/packaging/winget"
+
   image:
     name: Container image (linux/amd64, linux/arm64, linux/arm/v7)
     needs: [check, build]
