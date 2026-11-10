@@ -66,6 +66,10 @@ Kubera handles live credentials, so it is conservative by default.
 
 `scan package` downloads only from the official registries and their file hosts, over HTTPS, without credentials. Every file is checked against the registry's sha256 / sha512 digest before it is opened (a mismatch fails the scan), sizes are checked before downloading, and packages are read in memory with the archive limits below.
 
+## Hugging Face
+
+`scan huggingface` sends its optional token only to `huggingface.co` (API bearer header, origin-scoped git header). LFS files are only downloaded with `--include-lfs`, after their size and path were checked, from a redirect fetched without the token, and are sha256-verified before they are opened.
+
 ## Interactive use
 
 - Hidden prompts (`kubera verify` with no secret) keep secrets out of shell history and the screen.

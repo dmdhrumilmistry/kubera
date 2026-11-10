@@ -9,6 +9,7 @@ pub mod fs;
 pub mod git;
 pub mod github;
 pub mod gitlab;
+pub mod huggingface;
 pub mod image;
 pub mod jira;
 pub mod kube;

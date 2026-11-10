@@ -730,6 +730,43 @@ enum ScanSource {
         #[command(flatten)]
         opts: ScanArgs,
     },
+    /// Scan Hugging Face Hub repositories (models, datasets, Spaces): the
+    /// full git history of each, LFS files optionally.
+    #[command(alias = "hf")]
+    Huggingface {
+        /// owner (every repository of a user or organization) or
+        /// owner/name.
+        #[arg(required = true, value_name = "OWNER[/REPO]")]
+        targets: Vec<String>,
+        /// Repository type (comma separated) [default: model for
+        /// owner/name, every type for an owner].
+        #[arg(long = "type", value_enum, value_delimiter = ',')]
+        kind: Vec<kubera::sources::huggingface::RepoType>,
+        /// Environment variable with a Hugging Face token (private and
+        /// gated repositories).
+        #[arg(long, value_name = "ENV_VAR")]
+        token_env: Option<String>,
+        /// Also download and scan Git LFS files of the main branch (up to
+        /// --max-lfs-size each). Off by default: LFS mostly holds weights.
+        #[arg(long)]
+        include_lfs: bool,
+        /// With --include-lfs: largest LFS file downloaded.
+        #[arg(long, value_name = "BYTES", default_value_t = 64 * 1024 * 1024)]
+        max_lfs_size: u64,
+        /// Repositories listed per owner and type.
+        #[arg(long, default_value_t = 100, value_name = "N")]
+        limit: usize,
+        /// Hub base (tests, mirrors).
+        #[arg(
+            long,
+            value_name = "URL",
+            default_value = "https://huggingface.co",
+            hide = true
+        )]
+        hub_url: String,
+        #[command(flatten)]
+        opts: ScanArgs,
+    },
     /// Scan a cloud storage bucket: s3://bucket[/prefix] (also MinIO, R2
     /// and other S3-compatible stores with --endpoint-url),
     /// gs://bucket[/prefix] or az://account/container[/prefix]. Archives
@@ -1335,6 +1372,7 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         | ScanSource::Confluence { opts, .. }
         | ScanSource::Package { opts, .. }
         | ScanSource::Dockerhub { opts, .. }
+        | ScanSource::Huggingface { opts, .. }
         | ScanSource::Bucket { opts, .. }
         | ScanSource::K8s { opts, .. }
         | ScanSource::Stdin { opts } => opts,
@@ -1466,7 +1504,8 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         | ScanSource::Jira { .. }
         | ScanSource::Confluence { .. }
         | ScanSource::Package { .. }
-        | ScanSource::Dockerhub { .. } => scan::Target::Text(String::new()),
+        | ScanSource::Dockerhub { .. }
+        | ScanSource::Huggingface { .. } => scan::Target::Text(String::new()),
         ScanSource::Image {
             image,
             platform,
@@ -1753,6 +1792,7 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         ScanSource::Confluence { site, .. } => format!("Confluence {site}"),
         ScanSource::Package { packages, .. } => packages.join(", "),
         ScanSource::Dockerhub { orgs, .. } => format!("Docker Hub {}", orgs.join(", ")),
+        ScanSource::Huggingface { targets, .. } => format!("Hugging Face {}", targets.join(", ")),
         ScanSource::Image { image, .. } => image.clone(),
         ScanSource::Bucket { url, .. } => url.clone(),
         ScanSource::K8s { context, .. } => {
@@ -2385,6 +2425,67 @@ async fn cmd_scan_api(
                         Ok(f) => findings.extend(f),
                         Err(e) => eprintln!("warning: {r}: {e:#}"),
                     }
+                }
+            }
+            findings
+        }
+        ScanSource::Huggingface {
+            targets,
+            kind,
+            token_env,
+            include_lfs,
+            max_lfs_size,
+            limit,
+            hub_url,
+            opts,
+            ..
+        } => {
+            use kubera::sources::huggingface as hf;
+            let token = env_secret(token_env.as_ref(), "--token-env")?;
+            let mut client = kubera::forge::Client::new(
+                token.clone(),
+                None,
+                std::time::Duration::from_secs(900),
+            )?;
+            client.allow_http = g.allow_http;
+            let o = hf::Options {
+                hub: hub_url.clone(),
+                targets: targets.clone(),
+                types: kind.clone(),
+                limit: *limit,
+                max_lfs_size: *max_lfs_size,
+                max_file_size: max_size,
+            };
+            let repos = hf::repos(&client, &o, &progress).await?;
+            if repos.is_empty() {
+                bail!("no repositories found for {}", targets.join(", "));
+            }
+            let git: Vec<(String, String)> = repos
+                .iter()
+                .map(|r| {
+                    let url = hf::clone_url(hub_url, r);
+                    let label = url.split_once("://").map_or(url.as_str(), |x| x.1);
+                    (url.clone(), label.to_string())
+                })
+                .collect();
+            let auth = kubera::sources::remote::Auth {
+                token,
+                // The Hub takes any user name with a token.
+                user: Some("hf".into()),
+                allow_http: g.allow_http,
+                interactive: false,
+            };
+            let mut findings =
+                scan_git_repos(&git, &auth, engine, filter, max_size, opts.jobs, &progress);
+            if *include_lfs {
+                for r in &repos {
+                    progress(format!("{}: LFS files", r.id));
+                    let mut warnings = Vec::new();
+                    let chunks = hf::lfs_chunks(&client, &o, r, filter, &mut warnings).await?;
+                    for w in warnings {
+                        eprintln!("warning: {w}");
+                    }
+                    findings.extend(scan::scan_chunks(engine, filter, &chunks));
                 }
             }
             findings

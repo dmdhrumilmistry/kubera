@@ -36,6 +36,9 @@ pub enum SourceKind {
     Confluence,
     /// Published packages (npm, PyPI, crates.io).
     Package,
+    /// Hugging Face LFS files (repository history is `git`).
+    #[serde(rename = "huggingface")]
+    HuggingFace,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

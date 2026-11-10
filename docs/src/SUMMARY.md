@@ -25,6 +25,7 @@
 - [Large, incremental and mass scans](incremental.md)
 - [Container images](containers.md)
 - [Published packages](packages.md)
+- [Hugging Face Hub](huggingface.md)
 - [GitHub issues, PRs and Actions](github.md)
 - [GitLab issues, MRs and CI logs](gitlab.md)
 - [Bitbucket issues, PRs and Pipelines](bitbucket.md)

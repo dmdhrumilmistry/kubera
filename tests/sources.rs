@@ -1044,3 +1044,134 @@ async fn azure_blob_shared_key_and_sas() {
         assert!(r.headers.get("authorization").is_none());
     }
 }
+
+fn git(dir: &std::path::Path, args: &[&str]) {
+    let out = std::process::Command::new("git")
+        .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn huggingface_history_and_lfs_files() {
+    use sha2::{Digest, Sha256};
+    let [t1, t2] = fake_tokens();
+    // A Hub repository whose history holds a secret, served over git's
+    // dumb HTTP protocol by the mock server.
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir(&src).unwrap();
+    git(&src, &["init", "-q", "-b", "main"]);
+    std::fs::write(src.join("config.env"), format!("HF_PUSH={t1}\n")).unwrap();
+    git(&src, &["add", "."]);
+    git(&src, &["commit", "-q", "-m", "add config"]);
+    std::fs::remove_file(src.join("config.env")).unwrap();
+    git(&src, &["commit", "-q", "-am", "remove config"]);
+    let bare = dir.path().join("bare.git");
+    git(
+        dir.path(),
+        &["clone", "-q", "--bare", src.to_str().unwrap(), "bare.git"],
+    );
+    git(&bare, &["update-server-info"]);
+
+    let server = MockServer::start().await;
+    let uri = server.uri();
+    for e in walkdir::WalkDir::new(&bare) {
+        let e = e.unwrap();
+        if e.file_type().is_file() {
+            let rel = e.path().strip_prefix(&bare).unwrap().to_string_lossy();
+            Mock::given(method("GET"))
+                .and(path(format!("/acme/demo/{rel}")))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_bytes(std::fs::read(e.path()).unwrap()),
+                )
+                .mount(&server)
+                .await;
+        }
+    }
+    let lfs = format!("password={t2}\n");
+    Mock::given(method("GET"))
+        .and(path("/api/models"))
+        .and(query_param("author", "acme"))
+        .and(header("authorization", "Bearer hf-token"))
+        .respond_with(json(serde_json::json!([
+            {"id": "acme/demo"}, {"id": "someone-else/x"}
+        ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/models/acme/demo/tree/main"))
+        .respond_with(json(serde_json::json!([
+            {"type": "file", "path": "README.md", "size": 10},
+            {"type": "file", "path": "data/creds.txt", "size": lfs.len(),
+             "lfs": {"oid": hex::encode(Sha256::digest(lfs.as_bytes())), "size": lfs.len()}},
+            {"type": "file", "path": "model.safetensors",
+             "lfs": {"oid": "00", "size": 9_000_000_000u64}}
+        ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/acme/demo/resolve/main/data/creds.txt"))
+        .respond_with(
+            ResponseTemplate::new(302).insert_header("location", format!("{uri}/cdn/creds?sig=x")),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/cdn/creds"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(lfs))
+        .mount(&server)
+        .await;
+
+    let found = run(
+        &[
+            "scan",
+            "huggingface",
+            "acme",
+            "--type",
+            "model",
+            "--include-lfs",
+            "--hub-url",
+            &uri,
+            "--token-env",
+            "HF",
+        ],
+        &[("HF", "hf-token")],
+    )
+    .await;
+    let mut got: Vec<(String, String)> = found
+        .iter()
+        .map(|f| {
+            (
+                f["location"]["source"].as_str().unwrap().to_string(),
+                f["location"]["path"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    got.sort();
+    assert_eq!(
+        got,
+        vec![
+            ("git".to_string(), "config.env".to_string()),
+            ("huggingface".to_string(), "data/creds.txt".to_string()),
+        ]
+    );
+    let reqs = server.received_requests().await.unwrap();
+    let cdn = reqs.iter().find(|r| r.url.path() == "/cdn/creds").unwrap();
+    assert!(cdn.headers.get("authorization").is_none());
+    assert!(
+        !reqs
+            .iter()
+            .any(|r| r.url.path().contains("model.safetensors"))
+    );
+    assert!(!reqs.iter().any(|r| r.url.path().contains("someone-else")));
+}

@@ -72,6 +72,12 @@ Every image a Docker Hub organization publishes (newest tag of each repository):
 kubera scan dockerhub acme
 ```
 
+Every model, dataset and Space of a Hugging Face organization, full git history:
+
+```bash
+kubera scan huggingface acme --token-env HF_TOKEN
+```
+
 GitHub issues, pull requests, comments and Actions logs of an organization:
 
 ```bash
