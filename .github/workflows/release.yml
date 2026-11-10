@@ -11,7 +11,12 @@ name: Release
 #     silicon), Windows (x86_64, ARM64) and FreeBSD (x86_64), attached to a GitHub release, with SHA-256 checksums;
 #   * the `kubera-cli` crate on crates.io (secret CARGO_REGISTRY_TOKEN);
 #   * a multi-arch container image, ghcr.io/<owner>/kubera:<version> and
-#     :latest, built from the same static Linux binaries.
+#     :latest, built from the same static Linux binaries;
+#   * keyless Sigstore signatures (<asset>.sigstore.json, cosign) for every
+#     archive, the CycloneDX SBOM and the manifests tarball, GitHub build
+#     provenance attestations for them (gh attestation verify), and a
+#     signed, attested image;
+#   * package manager manifests (Homebrew, Scoop, winget, AUR).
 # Pull requests that touch release inputs run the builds without publishing.
 
 on:
@@ -188,6 +193,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write # keyless signing (Sigstore) and attestations
+      attestations: write
     steps:
       # Completing an existing release publishes the crate from the tagged
       # source, so crates.io and the GitHub release always match.
@@ -237,6 +244,105 @@ jobs:
             --title "kubera $TAG" \
             --generate-notes \
             "${target[@]}"
+      # CycloneDX SBOM of the released source (the tag in complete mode),
+      # covering the dependencies of every target.
+      - name: SBOM
+        env:
+          TAG: ${{ needs.check.outputs.tag }}
+        run: |
+          set -euo pipefail
+          cargo install --locked cargo-cyclonedx --version 0.5.10
+          cargo cyclonedx --format json --spec-version 1.5 --target all --override-filename "kubera-$TAG.cdx"
+          mkdir -p "$RUNNER_TEMP/sbom"
+          mv "kubera-$TAG.cdx.json" "$RUNNER_TEMP/sbom/"
+      - uses: sigstore/cosign-installer@v4.1.3
+      # Keyless signatures and provenance for what the release holds, never
+      # replacing anything published: in complete mode only missing
+      # signatures are added. Everything is signed as published (downloaded
+      # back and checked against its .sha256), so signatures cover the bytes
+      # users get even when this run rebuilt different ones.
+      - name: Sign release assets
+        id: sign
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.check.outputs.tag }}
+          DIST: ${{ runner.temp }}/dist
+        run: |
+          set -euo pipefail
+          rel="$RUNNER_TEMP/release"
+          mkdir -p "$rel" "$RUNNER_TEMP/bundles"
+          have=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name')
+          has() { grep -qxF "$1" <<< "$have"; }
+          sha() { sha256sum "$1" | cut -d' ' -f1; }
+          # .sha256 files are `<hex>  <name>`, CRLF-terminated for Windows.
+          check() {
+            local want
+            want=$(cut -d' ' -f1 < "$rel/$1.sha256" | tr -d '\r')
+            [ "$(sha "$rel/$1")" = "$want" ] || { echo "$1 does not match $1.sha256" >&2; exit 1; }
+          }
+          # No attestation for this digest yet (the API answers 404).
+          unattested() {
+            local n
+            n=$(gh api "repos/$GITHUB_REPOSITORY/attestations/sha256:$1" --jq '.attestations | length' 2>/dev/null) || n=0
+            [ "${n:-0}" = "0" ]
+          }
+
+          sbom="kubera-$TAG.cdx.json"
+          sbom_new=false
+          if has "$sbom"; then
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$rel" --pattern "$sbom" --pattern "$sbom.sha256"
+          else
+            cp "$RUNNER_TEMP/sbom/$sbom" "$rel/"
+            ( cd "$rel" && sha256sum "$sbom" > "$sbom.sha256" )
+            gh release upload "$TAG" "$rel/$sbom" "$rel/$sbom.sha256" --repo "$GITHUB_REPOSITORY"
+            sbom_new=true
+          fi
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$rel" --skip-existing \
+            --pattern 'kubera-*-*.tar.gz' --pattern 'kubera-*-*.zip' --pattern 'kubera-*.sha256'
+
+          : > "$RUNNER_TEMP/provenance.sha256"
+          : > "$RUNNER_TEMP/archives.sha256"
+          for f in "$rel"/kubera-*.tar.gz "$rel"/kubera-*.zip "$rel/$sbom"; do
+            name=$(basename "$f")
+            case "$name" in kubera-packaging-*) continue ;; esac
+            check "$name"
+            if ! has "$name.sigstore.json"; then
+              cosign sign-blob --yes --bundle "$RUNNER_TEMP/bundles/$name.sigstore.json" "$f"
+            fi
+            # Provenance only for bytes this run produced (everything in a
+            # new release; in complete mode, the assets it added) and only
+            # once per digest.
+            sum=$(sha "$f")
+            if [ "$name" = "$sbom" ]; then
+              [ "$sbom_new" = true ] && echo "$sum  $name" >> "$RUNNER_TEMP/provenance.sha256"
+            elif [ -f "$DIST/$name" ] && [ "$(sha "$DIST/$name")" = "$sum" ] && unattested "$sum"; then
+              echo "$sum  $name" | tee -a "$RUNNER_TEMP/provenance.sha256" >> "$RUNNER_TEMP/archives.sha256"
+            fi
+          done
+
+          shopt -s nullglob
+          bundles=("$RUNNER_TEMP"/bundles/*.sigstore.json)
+          if [ "${#bundles[@]}" -gt 0 ]; then
+            echo "adding ${#bundles[@]} signature bundle(s) to $TAG"
+            gh release upload "$TAG" "${bundles[@]}" --repo "$GITHUB_REPOSITORY"
+          else
+            echo "every asset of $TAG is already signed"
+          fi
+          echo "sbom=$rel/$sbom" >> "$GITHUB_OUTPUT"
+          [ -s "$RUNNER_TEMP/provenance.sha256" ] && echo "provenance=true" >> "$GITHUB_OUTPUT"
+          [ -s "$RUNNER_TEMP/archives.sha256" ] && echo "archives=true" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Build provenance attestation
+        if: steps.sign.outputs.provenance == 'true'
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-checksums: ${{ runner.temp }}/provenance.sha256
+      - name: SBOM attestation
+        if: steps.sign.outputs.archives == 'true'
+        uses: actions/attest-sbom@v4
+        with:
+          subject-checksums: ${{ runner.temp }}/archives.sha256
+          sbom-path: ${{ steps.sign.outputs.sbom }}
       - name: Publish to crates.io
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
@@ -253,6 +359,137 @@ jobs:
           fi
           cargo publish --locked
 
+  # Homebrew formula, Scoop manifest, winget manifests and AUR PKGBUILD,
+  # rendered from packaging/templates/ with the checksums of the archives
+  # actually published on the release (in complete mode those can predate
+  # this run). Attached to the release as kubera-packaging-<tag>.tar.gz and
+  # pushed to the tap, bucket, AUR and winget-pkgs when their secret is set;
+  # each of those steps is skipped otherwise. See RELEASING.md.
+  packages:
+    name: Package manager manifests
+    if: needs.check.outputs.release == 'true'
+    needs: [check, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write # sign and attest the manifests tarball
+      attestations: write
+    env:
+      TAG: ${{ needs.check.outputs.tag }}
+    steps:
+      # Templates and scripts come from the workflow's commit; the version
+      # and checksums come from the published release.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download the published archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          patterns=()
+          for a in x86_64-apple-darwin.tar.gz aarch64-apple-darwin.tar.gz \
+                   x86_64-unknown-linux-musl.tar.gz aarch64-unknown-linux-musl.tar.gz \
+                   armv7-unknown-linux-musleabihf.tar.gz \
+                   x86_64-pc-windows-msvc.zip aarch64-pc-windows-msvc.zip; do
+            patterns+=(--pattern "kubera-$a" --pattern "kubera-$a.sha256")
+          done
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --dir "$RUNNER_TEMP/release" "${patterns[@]}"
+      - name: Render manifests
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/packaging"
+          # Hashes every archive and checks it against its .sha256 file.
+          python3 -I scripts/render-packages.py --version "${TAG#v}" \
+            --assets "$RUNNER_TEMP/release" --require-archives \
+            --out "$out" --tarball "$RUNNER_TEMP/kubera-packaging-$TAG.tar.gz"
+          ruby -c "$out/homebrew/kubera.rb"
+          ruby -rjson -e 'JSON.parse(File.read(ARGV[0]))' "$out/scoop/kubera.json"
+          ruby -ryaml -e 'ARGV.each { |f| YAML.safe_load_file(f) }' "$out"/winget/*.yaml
+          bash -n "$out/aur/PKGBUILD"
+          cd "$RUNNER_TEMP"
+          sha256sum "kubera-packaging-$TAG.tar.gz" > "kubera-packaging-$TAG.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packaging-${{ needs.check.outputs.tag }}
+          path: ${{ runner.temp }}/packaging
+          include-hidden-files: true # aur/.SRCINFO
+          if-no-files-found: error
+      - uses: sigstore/cosign-installer@v4.1.3
+      # Like the archives: add what is missing, never replace an asset.
+      - name: Attach to the release
+        id: attach
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          have=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name')
+          has() { grep -qxF "$1" <<< "$have"; }
+          tarball="kubera-packaging-$TAG.tar.gz"
+          cd "$RUNNER_TEMP"
+          if has "$tarball"; then
+            echo "release $TAG already has $tarball"
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$tarball" --clobber
+          else
+            gh release upload "$TAG" "$tarball" "$tarball.sha256" --repo "$GITHUB_REPOSITORY"
+            echo "subject=$RUNNER_TEMP/$tarball" >> "$GITHUB_OUTPUT"
+          fi
+          if ! has "$tarball.sigstore.json"; then
+            cosign sign-blob --yes --bundle "$tarball.sigstore.json" "$tarball"
+            gh release upload "$TAG" "$tarball.sigstore.json" --repo "$GITHUB_REPOSITORY"
+          fi
+      - name: Provenance attestation
+        if: steps.attach.outputs.subject != ''
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: ${{ steps.attach.outputs.subject }}
+      # A token for <owner>/homebrew-tap with contents: write.
+      - name: Homebrew tap
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::notice::HOMEBREW_TAP_TOKEN is not set; skipping the Homebrew tap (see RELEASING.md)"
+            exit 0
+          fi
+          scripts/gh-put-file.sh "$GITHUB_REPOSITORY_OWNER/homebrew-tap" Formula/kubera.rb \
+            "$RUNNER_TEMP/packaging/homebrew/kubera.rb" "kubera ${TAG#v}"
+      # A token for <owner>/scoop-bucket with contents: write.
+      - name: Scoop bucket
+        env:
+          GH_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::notice::SCOOP_BUCKET_TOKEN is not set; skipping the Scoop bucket (see RELEASING.md)"
+            exit 0
+          fi
+          scripts/gh-put-file.sh "$GITHUB_REPOSITORY_OWNER/scoop-bucket" bucket/kubera.json \
+            "$RUNNER_TEMP/packaging/scoop/kubera.json" "kubera ${TAG#v}"
+      # The private SSH key registered on the AUR account that owns kubera-bin.
+      - name: AUR
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          AUR_GIT_NAME: ${{ github.repository_owner }}
+          AUR_GIT_EMAIL: ${{ github.repository_owner }}@users.noreply.github.com
+        run: |
+          if [ -z "$AUR_SSH_PRIVATE_KEY" ]; then
+            echo "::notice::AUR_SSH_PRIVATE_KEY is not set; skipping the AUR (see RELEASING.md)"
+            exit 0
+          fi
+          scripts/aur-push.sh "${TAG#v}" "$RUNNER_TEMP/packaging/aur"
+      # A token that can push to <owner>/winget-pkgs (a fork of
+      # microsoft/winget-pkgs) and open pull requests.
+      - name: winget
+        env:
+          GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::notice::WINGET_TOKEN is not set; skipping winget (manifests are in the release; see RELEASING.md)"
+            exit 0
+          fi
+          scripts/winget-submit.sh "$GITHUB_REPOSITORY_OWNER" "${TAG#v}" "$RUNNER_TEMP/packaging/winget"
+
   image:
     name: Container image (linux/amd64, linux/arm64, linux/arm/v7)
     needs: [check, build]
@@ -260,6 +497,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write # keyless image signature and provenance
+      attestations: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -296,7 +535,8 @@ jobs:
             type=semver,pattern={{version}},value=${{ needs.check.outputs.tag }}
             type=semver,pattern={{major}}.{{minor}},value=${{ needs.check.outputs.tag }}
             type=raw,value=latest,enable=${{ needs.check.outputs.release == 'true' }}
-      - uses: docker/build-push-action@v6
+      - id: build
+        uses: docker/build-push-action@v6
         with:
           context: .
           target: prebuilt
@@ -304,6 +544,26 @@ jobs:
           push: ${{ needs.check.outputs.release == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # BuildKit SBOM and provenance, stored with the image.
+          sbom: true
+          provenance: mode=max
+      # Each push is a new digest, so it is always signed: complete mode
+      # pushes the image again and signs that, nothing published is re-signed.
+      - uses: sigstore/cosign-installer@v4.1.3
+        if: needs.check.outputs.release == 'true'
+      - name: Sign the image (keyless)
+        if: needs.check.outputs.release == 'true'
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/kubera
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "$IMAGE@$DIGEST"
+      - name: Image provenance attestation
+        if: needs.check.outputs.release == 'true'
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ghcr.io/${{ github.repository_owner }}/kubera
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
       - name: Smoke test (amd64)
         run: |
           docker buildx build --load --target prebuilt --platform linux/amd64 -t kubera:smoke .

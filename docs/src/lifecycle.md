@@ -131,6 +131,18 @@ kubera rotate sendgrid-api-key -e SG_KEY --set key_name=prod-mailer-2026-11 --ex
 
 When a platform has no API for rotation (Stripe, OpenAI, Telegram, ...), `rotate` prints the template's manual instructions.
 
+### Update secret stores
+
+Add `--store` to write the new credential where its consumers read it, once the rotation succeeds: a GitHub Actions secret, a Vault KV v2 secret or an AWS Secrets Manager secret. The dry-run plan lists these writes too.
+
+```bash
+kubera rotate gitlab-pat -e LEAKED_TOKEN --execute \
+  --store github:acme/payments:GITLAB_TOKEN --store-token-env GH_ADMIN_TOKEN \
+  --store 'vault:secret/ci/gitlab#token'
+```
+
+Everything is checked before the rotation starts, and a failed store write never loses the new credential: it is printed instead, and `rotate` exits with `4`. See [Secret stores after rotation](secret-stores.md).
+
 ### Rotation support
 
 | Detector | Automated steps |

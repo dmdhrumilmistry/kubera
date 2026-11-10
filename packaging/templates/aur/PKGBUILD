@@ -1,0 +1,33 @@
+# Maintainer: dmdhrumilmistry <56185972+dmdhrumilmistry@users.noreply.github.com>
+#
+# Rendered by scripts/render-packages.py from
+# https://github.com/dmdhrumilmistry/kubera/blob/main/packaging/templates/aur/PKGBUILD
+pkgname=kubera-bin
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc="Template driven secret detection, verification, analysis and rotation"
+arch=('x86_64' 'aarch64' 'armv7h')
+url="https://github.com/dmdhrumilmistry/kubera"
+license=('MIT')
+optdepends=('git: scan git history and use the pre-commit hook')
+provides=('kubera')
+conflicts=('kubera')
+_rel="https://github.com/dmdhrumilmistry/kubera/releases/download/v${pkgver}"
+source_x86_64=("kubera-${pkgver}-x86_64.tar.gz::${_rel}/kubera-x86_64-unknown-linux-musl.tar.gz")
+source_aarch64=("kubera-${pkgver}-aarch64.tar.gz::${_rel}/kubera-aarch64-unknown-linux-musl.tar.gz")
+source_armv7h=("kubera-${pkgver}-armv7h.tar.gz::${_rel}/kubera-armv7-unknown-linux-musleabihf.tar.gz")
+sha256sums_x86_64=('@SHA256:x86_64-unknown-linux-musl@')
+sha256sums_aarch64=('@SHA256:aarch64-unknown-linux-musl@')
+sha256sums_armv7h=('@SHA256:armv7-unknown-linux-musleabihf@')
+
+package() {
+  local target
+  case "${CARCH}" in
+    x86_64) target=x86_64-unknown-linux-musl ;;
+    aarch64) target=aarch64-unknown-linux-musl ;;
+    armv7h) target=armv7-unknown-linux-musleabihf ;;
+  esac
+  install -Dm755 "kubera-${target}/kubera" "${pkgdir}/usr/bin/kubera"
+  install -Dm644 "kubera-${target}/LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  install -Dm644 "kubera-${target}/README.md" "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+}

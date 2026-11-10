@@ -1,0 +1,19 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+PackageIdentifier: dmdhrumilmistry.kubera
+PackageVersion: @VERSION@
+InstallerType: zip
+NestedInstallerType: portable
+NestedInstallerFiles:
+  - RelativeFilePath: kubera.exe
+    PortableCommandAlias: kubera
+Commands:
+  - kubera
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/dmdhrumilmistry/kubera/releases/download/v@VERSION@/kubera-x86_64-pc-windows-msvc.zip
+    InstallerSha256: @SHA256UPPER:x86_64-pc-windows-msvc@
+  - Architecture: arm64
+    InstallerUrl: https://github.com/dmdhrumilmistry/kubera/releases/download/v@VERSION@/kubera-aarch64-pc-windows-msvc.zip
+    InstallerSha256: @SHA256UPPER:aarch64-pc-windows-msvc@
+ManifestType: installer
+ManifestVersion: 1.6.0

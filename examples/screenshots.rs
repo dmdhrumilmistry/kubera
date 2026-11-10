@@ -217,6 +217,7 @@ fn rotation_plan(svc: &Services, f: &Finding) -> rotate::Report {
         steps: Vec::new(),
         completed: false,
         outputs: BTreeMap::new(),
+        stores: Vec::new(),
     }
 }
 

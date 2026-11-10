@@ -142,7 +142,14 @@ Many platforms have no rotation API (Stripe, OpenAI, Figma, ...). For those, `ku
 
 ### 4. Update every consumer
 
-Put the new credential wherever the old one was used: the secret manager, CI secrets, deployment environment, other services. Redeploy, and check that things still work. Some rotations keep the old credential around for a rollback: AWS, for example, **deactivates** the leaked key instead of deleting it. Delete it once the new key is deployed, as the plan's instructions say.
+Put the new credential wherever the old one was used: the secret manager, CI secrets, deployment environment, other services. Kubera can do the common ones as part of the rotation: `--store` writes the new credential to a GitHub Actions secret, Vault or AWS Secrets Manager once the rotation succeeds, without printing it:
+
+```bash
+kubera rotate gitlab-pat --secret-env LEAKED_TOKEN --execute \
+  --store github:acme/payments:GITLAB_TOKEN --store-token-env GH_ADMIN_TOKEN
+```
+
+See [Secret stores after rotation](secret-stores.md). Redeploy, and check that things still work. Some rotations keep the old credential around for a rollback: AWS, for example, **deactivates** the leaked key instead of deleting it. Delete it once the new key is deployed, as the plan's instructions say.
 
 ### 5. Verify again
 
@@ -157,6 +164,7 @@ Then check the vendor's audit log (CloudTrail for AWS, the audit log for GitHub,
 
 ### 6. Clean up
 
+- Track the follow-up: `kubera remediate --issues github:<owner>/<repo>` opens one issue per live secret in a private repository, with the locations and this checklist, and never a duplicate. See [Remediation](remediation.md).
 - Remove the secret from the current code. Read it from the environment or a secret manager instead.
 - The old value is still in git history, so later scans keep reporting it, now as invalid. Follow the [invalid branch](#invalid-secrets-mark-them-and-move-on): mark it, and rewrite history only if you need to.
 
@@ -196,19 +204,14 @@ It changes every commit hash after the leak and needs a force push. Agree on a t
 
 </div>
 
-With [git filter-repo](https://github.com/newren/git-filter-repo), in a fresh clone:
+Kubera prepares the rewrite for [git filter-repo](https://github.com/newren/git-filter-repo). `kubera purge` takes the findings file, finds the raw values in the repository's history (a redacted file is fine), writes a `--replace-text` expressions file (mode `0600`, outside the repository) and prints the exact commands. It never rewrites or pushes anything itself:
 
 ```bash
-git clone https://github.com/acme/payments.git payments-rewrite
-cd payments-rewrite
-printf '%s\n' '<leaked value>==>REMOVED' > ../replacements.txt
-git filter-repo --replace-text ../replacements.txt
-git remote add origin https://github.com/acme/payments.git   # filter-repo removes it
-git push --force origin --all
-git push --force origin --tags
+kubera scan git . -f json > findings.json
+kubera purge --findings findings.json --repo .
 ```
 
-A plain clone has only the default branch locally. Check out the other branches you need first, and read the filter-repo documentation for the details. On GitHub, pull request refs and cached views may still show the old commits until GitHub Support removes them.
+Then run the printed commands: a fresh bare clone (every branch and tag), `git filter-repo`, a scan to check, and the force push. Delete the expressions file afterwards, it holds the raw secrets. On GitHub, pull request refs and cached views may still show the old commits until GitHub Support removes them. Details in [Remediation](remediation.md#prepare-a-history-rewrite).
 
 ## Unknown results: verify again
 
@@ -232,6 +235,15 @@ Some detectors have no verifier, for example private keys. Kubera cannot ask any
 1. Open the file and commit from the Overview tab. Is it a real key, and what trusts it?
 2. If it is real, replace it. Press <kbd>p</kbd> (or run `kubera rotate private-key`) for the runbook: generate a new key pair, install the new public key or certificate, then remove the old one and revoke its certificate.
 3. Mark it: <kbd>m</kbd> once replaced, or <kbd>x</kbd> if it is a test key or an example.
+
+## Track progress over time
+
+Add `--db` to your scans (or `db: true` to `.kubera.yaml`) and every scan is recorded, redacted, in a local findings database. `kubera serve` then shows a dashboard on `http://127.0.0.1:8484/`: open and live findings, trends, which repositories and detectors leak most, and when each secret was first and last seen. See [Findings dashboard](dashboard.md).
+
+```bash
+kubera scan git . --verify --db
+kubera serve
+```
 
 ## Make decisions stick: the baseline file
 
@@ -278,8 +290,11 @@ More in [Baselines and triage](triage.md).
 | <kbd>a</kbd> | `kubera analyze <detector>` |
 | <kbd>p</kbd> | `kubera rotate <detector>` (dry run) |
 | Not in the TUI | `kubera rotate <detector> --execute -o new.json` |
+| Not in the TUI | `kubera rotate <detector> --execute --store github:<owner>/<repo>:<NAME>` |
 | Mark every finding at once | `kubera scan git . --update-baseline` (decision `baseline`) |
 | <kbd>e</kbd> | `kubera scan git <repo> --verify -f json > findings.json` |
+| Not in the TUI | `kubera remediate --findings findings.json --issues github:<owner>/<repo>` |
+| Not in the TUI | `kubera purge --findings findings.json --repo .` |
 
 `verify`, `analyze` and `rotate` ask for the secret at a hidden prompt, or take `-e part=VAR` / `--secret-stdin`. See [Verify, analyze and rotate](lifecycle.md).
 

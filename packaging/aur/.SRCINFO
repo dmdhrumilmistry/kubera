@@ -1,0 +1,20 @@
+pkgbase = kubera-bin
+	pkgdesc = Template driven secret detection, verification, analysis and rotation
+	pkgver = 0.2.0
+	pkgrel = 1
+	url = https://github.com/dmdhrumilmistry/kubera
+	arch = x86_64
+	arch = aarch64
+	arch = armv7h
+	license = MIT
+	optdepends = git: scan git history and use the pre-commit hook
+	provides = kubera
+	conflicts = kubera
+	source_x86_64 = kubera-0.2.0-x86_64.tar.gz::https://github.com/dmdhrumilmistry/kubera/releases/download/v0.2.0/kubera-x86_64-unknown-linux-musl.tar.gz
+	sha256sums_x86_64 = cf3d04077b6da3bf70418246799c6e5ecfde3d36634c0786ab2dab037c4526ca
+	source_aarch64 = kubera-0.2.0-aarch64.tar.gz::https://github.com/dmdhrumilmistry/kubera/releases/download/v0.2.0/kubera-aarch64-unknown-linux-musl.tar.gz
+	sha256sums_aarch64 = da57373b70553f126fe79c1dd4310b0d04268d107e823120db9878ec1f443176
+	source_armv7h = kubera-0.2.0-armv7h.tar.gz::https://github.com/dmdhrumilmistry/kubera/releases/download/v0.2.0/kubera-armv7-unknown-linux-musleabihf.tar.gz
+	sha256sums_armv7h = 302d12c7d2080e4272df8a5c972e685e9a9fb804c6592184270bda2bfdec5bb5
+
+pkgname = kubera-bin

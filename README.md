@@ -49,14 +49,17 @@
 | ✅ **Verify** | Asks each platform whether the secret is live, concurrently and de-duplicated. |
 | 🧭 **Analyze** | Owner, scopes, reachable resources and permission probes. |
 | 🔁 **Rotate** | Dry-run plan by default; vendor API calls only with `--execute` and confirmation. Manual runbooks for platforms with no API. |
+| 🔐 **Close the loop** | `rotate --store` writes the new credential to **GitHub Actions secrets** (sealed-box encrypted locally), **Vault** KV v2 or **AWS Secrets Manager**, checked before anything rotates and never lost if a store fails. [Details →](https://dmdhrumilmistry.github.io/kubera/secret-stores.html) |
 | 🖥️ **Interactive** | A keyboard-driven TUI, hidden secret prompts, and auto-identification of pasted secrets. |
+| 🧹 **Remediate** | `kubera remediate` opens **one GitHub issue per live secret** (deduplicated by fingerprint, optional committer mention, private repositories only); `kubera purge` prepares a **git filter-repo** history rewrite of the leaked values and prints the commands. [Details →](https://dmdhrumilmistry.github.io/kubera/remediation.html) |
 | 🗂️ **Triage** | A committed **baseline** so CI only fails on new leaks; mark false positives (`x`) or accepted risks (`m`) in the TUI. [Details →](https://dmdhrumilmistry.github.io/kubera/triage.html) |
 | 🛡️ **Prevent** | A **pre-commit hook** (`kubera hook install`, or the pre-commit framework), a **GitHub Action** with code scanning, and a **Docker image**. [CI →](https://dmdhrumilmistry.github.io/kubera/ci.html) |
 | 🧩 **Templates** | Everything per-platform lives in validated YAML, with built-in test samples. |
 | 📤 **Outputs** | Pretty cards, JSON, JSONL, SARIF 2.1.0 and a self-contained **HTML report**, with links to the exact line on GitHub, GitLab and Bitbucket. Secrets redacted by default. |
+| 📈 **Dashboard** | `scan --db` records every scan (redacted) in a local findings database; `kubera serve` shows trends, open live findings, per-repository and per-detector breakdowns and first / last seen, plus a JSON API. Localhost only by default. [Details →](https://dmdhrumilmistry.github.io/kubera/dashboard.html) |
 | 🔔 **Alerts** | **Slack** and HMAC-signed **webhooks** when a scheduled scan finds live secrets. [Details →](https://dmdhrumilmistry.github.io/kubera/alerts.html) |
 | 🤖 **MCP server** | `kubera mcp` lets AI assistants scan and verify, while secrets never reach the model. |
-| ⚡ **Fast** | ~875 MB/s on 4 vCPUs (333 MB of real code in 0.38 s, 38 MiB RAM); one `git log` per CPU scans all 24,445 commits of rust-lang/cargo in 3.7 s (10.6 s single-process). [Benchmarks →](https://dmdhrumilmistry.github.io/kubera/benchmarks.html) |
+| ⚡ **Fast** | ~660 MB/s on 4 vCPUs (335 MB of real code in 0.51 s, decoders on); one `git log` per CPU scans all 24,445 commits of rust-lang/cargo in 3.7 s (10.6 s single-process). [Benchmarks →](https://dmdhrumilmistry.github.io/kubera/benchmarks.html) |
 | 📱 **Everywhere** | Linux, macOS, Windows and Android (Termux), with layouts that adapt to phone screens. |
 
 ## Install
@@ -64,10 +67,17 @@
 ```bash
 curl -fsSL https://raw.githubusercontent.com/dmdhrumilmistry/kubera/main/install.sh | sh   # Linux, macOS, Termux
 cargo install kubera-cli --locked                                                        # any platform with Rust 1.88+
+nix run github:dmdhrumilmistry/kubera -- --version                                       # Nix flake (builds from source)
 docker run --rm -v "$PWD:/scan" ghcr.io/dmdhrumilmistry/kubera scan git /scan              # container image
 ```
 
-The installer downloads the release binary for your platform, **verifies its SHA-256**, and installs `kubera` to `~/.local/bin` (or `$PREFIX/bin` on Termux). Prebuilt archives for Linux, macOS, Windows and Android are on the [releases page](https://github.com/dmdhrumilmistry/kubera/releases). The crate is `kubera-cli`; the command is `kubera`. The image (`ghcr.io/dmdhrumilmistry/kubera`, linux/amd64 and arm64) runs as non-root and includes git. [Installation →](https://dmdhrumilmistry.github.io/kubera/installation.html)
+```powershell
+irm https://raw.githubusercontent.com/dmdhrumilmistry/kubera/main/install.ps1 | iex       # Windows (x86_64, ARM64)
+```
+
+Homebrew, Scoop, winget and AUR packages are on the way ([status](https://dmdhrumilmistry.github.io/kubera/installation.html#package-managers)). Installed with a script or from a release archive? `kubera update` fetches the latest release, verifies it and swaps it in atomically (only when you run it; no background checks).
+
+The installers download the release binary for your platform, **verify its SHA-256**, and install `kubera` to `~/.local/bin` (or `$PREFIX/bin` on Termux; `%LOCALAPPDATA%\Programs\kubera\bin` on Windows, added to your user PATH). Prebuilt archives for Linux, macOS, Windows and Android are on the [releases page](https://github.com/dmdhrumilmistry/kubera/releases). Release files come with SHA-256 checksums, Sigstore signatures and an SBOM, and releases after v0.2.0 also carry GitHub build provenance ([verifying](https://dmdhrumilmistry.github.io/kubera/installation.html#verifying-a-release)). The crate is `kubera-cli`; the command is `kubera`. The image (`ghcr.io/dmdhrumilmistry/kubera`, linux/amd64 and arm64) runs as non-root and includes git. [Installation →](https://dmdhrumilmistry.github.io/kubera/installation.html)
 
 ## Quick start
 
@@ -86,6 +96,7 @@ kubera scan bucket s3://acme-backups --verify        # S3 / GCS, archives opened
 kubera scan k8s --verify                             # live cluster: Secrets, ConfigMaps, env
 kubera hook install                                  # block commits that add secrets
 kubera scan git . --update-baseline                  # accept today's findings; fail only on new ones
+kubera scan git . --verify --db && kubera serve      # record scans, open the local dashboard
 ```
 
 Check a single credential. Paste it at a hidden prompt, and Kubera works out what it is:
@@ -95,6 +106,7 @@ kubera verify                            # "Paste the secret (hidden):" → iden
 kubera analyze gitlab-pat --secret-env TOKEN
 kubera rotate  gitlab-pat --secret-env TOKEN                        # dry run: shows the plan
 kubera rotate  gitlab-pat --secret-env TOKEN --execute -o new.json  # rotate, new token saved 0600
+kubera rotate  gitlab-pat --secret-env TOKEN --execute --store github:acme/api:GITLAB_TOKEN --store-token-env GH_TOKEN  # straight into an Actions secret
 ```
 
 ## Interactive TUI

@@ -10,6 +10,9 @@
 #   KUBERA_INSTALL_DIR  install directory (default: $PREFIX/bin on Termux,
 #                       otherwise ~/.local/bin)
 #   KUBERA_DOWNLOAD_BASE  override the release download URL (mirrors, tests)
+#   KUBERA_VERIFY_ATTESTATION  set to 1 to also verify the archive's GitHub
+#                       build provenance with `gh attestation verify` (needs
+#                       the GitHub CLI, logged in); on top of the checksum
 set -eu
 
 REPO="dmdhrumilmistry/kubera"
@@ -111,6 +114,14 @@ main() {
     actual=$(sha256 "$tmp/$asset")
     [ -n "$expected" ] && [ "$expected" = "$actual" ] \
         || die "checksum mismatch for $asset (expected $expected, got $actual)"
+
+    if [ "${KUBERA_VERIFY_ATTESTATION:-0}" = "1" ]; then
+        need gh || die "KUBERA_VERIFY_ATTESTATION=1 needs the GitHub CLI (gh)"
+        say "verifying build provenance attestation"
+        gh attestation verify "$tmp/$asset" --repo "$REPO" \
+            --signer-workflow "$REPO/.github/workflows/release.yml" >/dev/null \
+            || die "attestation verification failed for $asset"
+    fi
 
     tar -xzf "$tmp/$asset" -C "$tmp"
     mkdir -p "$dir"

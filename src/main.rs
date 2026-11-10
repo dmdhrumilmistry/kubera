@@ -135,6 +135,24 @@ enum Command {
         /// instead of printing it.
         #[arg(short = 'o', long, value_name = "FILE")]
         output_file: Option<PathBuf>,
+        /// After a successful rotation, also write the new credential where
+        /// its consumers read it (repeatable):
+        /// `github:<owner>/<repo>:<SECRET_NAME>[=<output>]`,
+        /// `vault:<mount>/<path>#<key>[=<output>]`,
+        /// `aws-sm:<secret-id>[#<json-key>][=<output>]`.
+        #[arg(long = "store", value_name = "DEST")]
+        store: Vec<String>,
+        /// Environment variable with a GitHub token that may write Actions
+        /// secrets (for `github:` stores).
+        #[arg(long, value_name = "ENV_VAR")]
+        store_token_env: Option<String>,
+        /// GitHub API base for `github:` stores (GitHub Enterprise:
+        /// https://ghe.example.com/api/v3).
+        #[arg(long, value_name = "URL")]
+        store_github_api: Option<String>,
+        /// AWS region for `aws-sm:` stores [default: $AWS_REGION].
+        #[arg(long, value_name = "REGION")]
+        store_region: Option<String>,
         #[arg(long, value_enum, default_value_t = OutFormat::Pretty)]
         format: OutFormat,
     },
@@ -169,6 +187,85 @@ enum Command {
         #[arg(long, value_name = "USER")]
         git_token_user: Option<String>,
     },
+    /// Act on a findings file (`kubera scan ... -f json > findings.json`):
+    /// open one GitHub issue per leaked secret. Dry run unless --execute.
+    Remediate {
+        /// Findings from `scan -f json` or `-f jsonl` (`-` for stdin).
+        /// Redacted files work: issues use fingerprints and locations.
+        #[arg(long, value_name = "FILE")]
+        findings: PathBuf,
+        /// Open issues in this repository: `github:<owner>/<repo>`. It must
+        /// be private unless --allow-public-repo.
+        #[arg(long, value_name = "DEST")]
+        issues: String,
+        /// Environment variable with a GitHub token (issues: write).
+        #[arg(long, value_name = "ENV_VAR")]
+        token_env: Option<String>,
+        /// GitHub API base (GitHub Enterprise: https://ghe.example.com/api/v3).
+        #[arg(long, value_name = "URL", default_value = kubera::store::GITHUB_API)]
+        api_url: String,
+        /// Label for new issues (repeatable) [default: kubera, leaked-secret].
+        #[arg(long = "label", value_name = "LABEL")]
+        labels: Vec<String>,
+        /// Open issues for every finding, not only verified (live) ones.
+        #[arg(long)]
+        all: bool,
+        /// Look up the GitHub account of the commit author and @mention it.
+        #[arg(long)]
+        mention_committer: bool,
+        /// Allow issues in a public repository (they would be visible to
+        /// everyone).
+        #[arg(long)]
+        allow_public_repo: bool,
+        /// Actually open the issues.
+        #[arg(long)]
+        execute: bool,
+        #[arg(long, value_enum, default_value_t = OutFormat::Pretty)]
+        format: OutFormat,
+    },
+    /// Prepare a git history rewrite that removes the leaked values of a
+    /// findings file: writes a `git filter-repo --replace-text` expressions
+    /// file and prints the commands. Never rewrites or pushes by itself.
+    Purge {
+        /// Findings from `scan -f json` (redacted is fine: the repository is
+        /// scanned again for the raw values; a --show-secrets file is used
+        /// as is).
+        #[arg(long, value_name = "FILE")]
+        findings: PathBuf,
+        /// The repository whose history holds the secrets.
+        #[arg(long, value_name = "PATH", default_value = ".")]
+        repo: PathBuf,
+        /// Expressions file to create (mode 0600, never overwritten, must be
+        /// outside the repository) [default: <repo>-kubera-purge.txt next
+        /// to the repository].
+        #[arg(short = 'o', long, value_name = "FILE")]
+        output: Option<PathBuf>,
+        /// Text that replaces each secret.
+        #[arg(long, default_value = "***REMOVED***")]
+        replacement: String,
+        #[arg(long, value_enum, default_value_t = OutFormat::Pretty)]
+        format: OutFormat,
+    },
+    /// Local web dashboard over the findings database (`scan --db`):
+    /// trends, open live findings, breakdowns, and a JSON API.
+    Serve {
+        /// Findings database [default: `db:` in .kubera.yaml, else <user
+        /// data dir>/kubera/findings.jsonl].
+        #[arg(long, value_name = "PATH")]
+        db: Option<PathBuf>,
+        /// Address to listen on. Non-loopback addresses need
+        /// --allow-remote and --token-env.
+        #[arg(long, default_value = kubera::serve::DEFAULT_LISTEN, value_name = "ADDR:PORT")]
+        listen: std::net::SocketAddr,
+        /// Allow a non-loopback --listen address (plain HTTP: put it behind
+        /// TLS or an SSH tunnel).
+        #[arg(long)]
+        allow_remote: bool,
+        /// Environment variable with an access token (at least 16
+        /// characters). Required with --allow-remote; optional otherwise.
+        #[arg(long, value_name = "ENV_VAR")]
+        token_env: Option<String>,
+    },
     /// Manage detector templates.
     Templates {
         #[command(subcommand)]
@@ -178,6 +275,20 @@ enum Command {
     Hook {
         #[command(subcommand)]
         cmd: HookCmd,
+    },
+    /// Update kubera to the latest GitHub release. Contacts GitHub only when
+    /// you run it; the download is SHA-256 verified before anything changes.
+    Update {
+        /// Only report whether a newer release exists.
+        #[arg(long)]
+        check: bool,
+        /// Install this release (e.g. v0.3.0) instead of the latest; may
+        /// downgrade.
+        #[arg(long, value_name = "TAG")]
+        version: Option<String>,
+        /// Skip the confirmation prompt (required when stdin is not a TTY).
+        #[arg(short = 'y', long)]
+        yes: bool,
     },
 }
 
@@ -510,6 +621,15 @@ struct ScanArgs {
     /// Browse the results in the interactive TUI instead of printing them.
     #[arg(short = 'i', long)]
     interactive: bool,
+    /// Record this scan in the findings database for `kubera serve`
+    /// (redacted values and fingerprints only) [default PATH: <user data
+    /// dir>/kubera/findings.jsonl]. Also `db:` in .kubera.yaml. Put it
+    /// after the paths, or write `--db=PATH`.
+    #[arg(long, value_name = "PATH", num_args = 0..=1, default_missing_value = "")]
+    db: Option<PathBuf>,
+    /// Do not record this scan, even if .kubera.yaml enables `db:`.
+    #[arg(long, conflicts_with = "db")]
+    no_db: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -707,6 +827,10 @@ async fn run(cli: Cli) -> Result<u8> {
             force,
             set,
             output_file,
+            store,
+            store_token_env,
+            store_github_api,
+            store_region,
             format,
         } => {
             let ctx = context(&cli.global)?;
@@ -729,12 +853,156 @@ async fn run(cli: Cli) -> Result<u8> {
                     force,
                     stdin_used: secret.secret_stdin,
                     output_file,
+                    stores: store,
+                    store_config: kubera::store::Config::from_env(
+                        store_token_env.as_deref(),
+                        store_github_api.as_deref(),
+                        store_region.as_deref(),
+                        cli.global.allow_http,
+                    ),
                     format,
                 },
             )
             .await
         }
+        Command::Remediate {
+            findings,
+            issues,
+            token_env,
+            api_url,
+            labels,
+            all,
+            mention_committer,
+            allow_public_repo,
+            execute,
+            format,
+        } => {
+            let (owner, repo) = kubera::remediate::parse_github(&issues)?;
+            let list = kubera::remediate::load_findings(&findings)?;
+            let total = list.len();
+            let valid: Vec<Finding> = list
+                .into_iter()
+                .filter(|f| kubera::remediate::valid_fingerprint(&f.fingerprint))
+                .collect();
+            // One issue per secret; it is live if any sighting verified.
+            let mut groups = kubera::remediate::group(&valid);
+            groups.retain(|g| all || g[0].status() == Some(Status::Verified));
+            let token = match &token_env {
+                Some(var) => Some(std::env::var(var).with_context(|| {
+                    format!("environment variable `{var}` (from --token-env) is not set")
+                })?),
+                None => None,
+            };
+            let st = Style {
+                color: report::use_color(),
+            };
+            if groups.is_empty() {
+                eprintln!(
+                    "nothing to do: {total} finding(s), none {}",
+                    if all {
+                        "with a valid fingerprint"
+                    } else {
+                        "verified as live (scan with --verify, or pass --all)"
+                    }
+                );
+                return Ok(0);
+            }
+            let client = match token {
+                Some(t) => {
+                    let mut c = kubera::forge::Client::new(
+                        Some(t),
+                        None,
+                        std::time::Duration::from_secs(900),
+                    )?;
+                    c.allow_http = cli.global.allow_http;
+                    Some(c)
+                }
+                None => None,
+            };
+            let o = kubera::remediate::IssueOptions {
+                owner,
+                repo,
+                api: api_url.trim_end_matches('/').to_string(),
+                labels: if labels.is_empty() {
+                    vec!["kubera".into(), "leaked-secret".into()]
+                } else {
+                    labels
+                },
+                mention_committer,
+                allow_public: allow_public_repo,
+                execute,
+                max_existing: 5000,
+            };
+            let rep = kubera::remediate::issues(client.as_ref(), &o, &groups).await?;
+            match format {
+                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&rep)?),
+                OutFormat::Pretty => print_issues(&rep, &st),
+            }
+            Ok(if rep.results.iter().any(|r| r.action == "failed") {
+                1
+            } else {
+                0
+            })
+        }
+        Command::Purge {
+            findings,
+            repo,
+            output,
+            replacement,
+            format,
+        } => cmd_purge(&cli.global, findings, repo, output, replacement, format),
+        Command::Serve {
+            db,
+            listen,
+            allow_remote,
+            token_env,
+        } => {
+            let cfg = Config::load(cli.global.config.as_deref())?;
+            let path = match db {
+                Some(p) => p,
+                None => cfg
+                    .db_path(None, false)?
+                    .map(Ok)
+                    .unwrap_or_else(kubera::db::default_path)?,
+            };
+            let token = match &token_env {
+                Some(var) => Some(std::env::var(var).with_context(|| {
+                    format!("environment variable `{var}` (from --token-env) is not set")
+                })?),
+                None => None,
+            };
+            if !path.exists() {
+                eprintln!(
+                    "warning: {} does not exist yet; record scans with `kubera scan ... --db`",
+                    path.display()
+                );
+            }
+            let has_token = token.is_some();
+            let shown = path.display().to_string();
+            kubera::serve::serve(
+                kubera::serve::Options {
+                    db: path,
+                    listen,
+                    allow_remote,
+                    token,
+                },
+                move |addr| {
+                    eprintln!("kubera dashboard: http://{addr}/ (database {shown})");
+                    if has_token {
+                        eprintln!("open http://{addr}/?token=<token> once to sign in");
+                    }
+                    eprintln!("press Ctrl-C to stop");
+                },
+            )
+            .await?;
+            Ok(0)
+        }
         Command::Templates { cmd } => cmd_templates(&cli.global, cmd),
+        Command::Update {
+            check,
+            version,
+            yes,
+        } => cmd_update(check, version.as_deref(), yes).await,
         Command::Hook { cmd } => {
             let st = Style {
                 color: report::use_color(),
@@ -1181,6 +1449,30 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         ),
     };
     let mut notify_failed = false;
+    if let Some(path) = ctx.cfg.db_path(opts.db.as_deref(), opts.no_db)? {
+        let (target, kind, incremental) = db_target(&source, &label);
+        let rec = kubera::db::ScanRecord::new(
+            &target,
+            kind,
+            // Filtered results (--only-verified, --results) are partial too.
+            incremental || !kinds.is_empty(),
+            do_verify,
+            &findings,
+            baseline.as_ref(),
+        );
+        match kubera::db::append(&path, &rec) {
+            Ok(()) => {
+                if show_progress {
+                    eprintln!("{} recorded in {}", ctx.style.dim("›"), path.display());
+                }
+            }
+            Err(e) => {
+                // A scheduled scan whose record was lost must not look clean.
+                notify_failed = true;
+                eprintln!("warning: findings database: {e:#}");
+            }
+        }
+    }
     if !notify_targets.is_empty() {
         let alert: Vec<Finding> = findings
             .iter()
@@ -1316,6 +1608,75 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
     } else {
         0
     })
+}
+
+/// Database identity of a scan: a stable target key, the kind, and whether
+/// it read only part of the target.
+fn db_target(source: &ScanSource, label: &str) -> (String, &'static str, bool) {
+    match source {
+        ScanSource::Fs { paths, .. } => (
+            paths
+                .iter()
+                .map(|p| {
+                    std::fs::canonicalize(p)
+                        .unwrap_or_else(|_| p.clone())
+                        .display()
+                        .to_string()
+                })
+                .collect::<Vec<_>>()
+                .join(", "),
+            "fs",
+            false,
+        ),
+        ScanSource::Git {
+            repo,
+            branch,
+            since_commit,
+            max_depth,
+            state,
+            ..
+        } => (
+            kubera::state::repo_key(repo),
+            "git",
+            state.is_some() || since_commit.is_some() || max_depth.is_some() || branch.is_some(),
+        ),
+        ScanSource::Repos {
+            repos,
+            github_org,
+            github_user,
+            gitlab_group,
+            bitbucket_workspace,
+            repo_list,
+            state,
+            limit,
+            ..
+        } => {
+            let mut parts: Vec<String> = Vec::new();
+            parts.extend(github_org.iter().map(|o| format!("github-org:{o}")));
+            parts.extend(github_user.iter().map(|o| format!("github-user:{o}")));
+            parts.extend(gitlab_group.iter().map(|o| format!("gitlab-group:{o}")));
+            parts.extend(bitbucket_workspace.iter().map(|o| format!("bitbucket:{o}")));
+            parts.extend(repo_list.iter().map(|p| format!("list:{}", p.display())));
+            parts.extend(repos.iter().cloned());
+            (
+                format!("repos {}", parts.join(", ")),
+                "repos",
+                state.is_some() || limit.is_some(),
+            )
+        }
+        ScanSource::Image { .. } => (label.to_string(), "image", false),
+        ScanSource::Stdin { .. } => ("stdin".into(), "stdin", true),
+        ScanSource::Staged { .. } => (label.to_string(), "staged", true),
+        ScanSource::Github { what, .. } => (format!("github {label}"), "github", !what.is_empty()),
+        ScanSource::Bucket { url, .. } => (url.clone(), "bucket", false),
+        ScanSource::K8s {
+            namespaces, what, ..
+        } => (
+            label.to_string(),
+            "k8s",
+            !namespaces.is_empty() || !what.is_empty(),
+        ),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1860,12 +2221,145 @@ fn print_analysis(rep: &analyze::Report, st: &Style) {
     }
 }
 
+/// `kubera update`: see `kubera::update` for the security properties.
+async fn cmd_update(check: bool, version: Option<&str>, yes: bool) -> Result<u8> {
+    use kubera::update::{self, Updater};
+
+    let st = Style {
+        color: report::use_color(),
+    };
+    let current = update::current_version();
+    let exe = std::env::current_exe().context("locating the running executable")?;
+    // Replace the real file, not a symlink pointing at it.
+    let real = exe.canonicalize().unwrap_or_else(|_| exe.clone());
+    let cargo_home = std::env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .or_else(|| std::env::var_os("USERPROFILE"))
+                .map(|h| PathBuf::from(h).join(".cargo"))
+        });
+    let manager = update::managed_by(&exe, cargo_home.as_deref())
+        .or_else(|| update::managed_by(&real, cargo_home.as_deref()));
+    let target = update::platform_target();
+    if let Some(tag) = version {
+        update::normalize_tag(tag)?;
+    }
+    // Refuse before any network call when there is nothing we may do.
+    if !check {
+        if let Some(m) = manager {
+            bail!(
+                "{} is managed by {}; update it with: {}",
+                real.display(),
+                m.name(),
+                m.upgrade_command()
+            );
+        }
+        if target.is_none() {
+            bail!(
+                "no prebuilt release exists for {}; update from source: cargo install kubera-cli --locked",
+                update::BUILD_TARGET
+            );
+        }
+        update::check_writable(&real)?;
+        if !yes && !std::io::stdin().is_terminal() {
+            bail!("stdin is not interactive; pass --yes to update");
+        }
+    }
+
+    let updater = Updater::new(update::Source::default())?;
+    let release = updater.release(version).await?;
+    let newer = release.version > current;
+
+    if check {
+        if release.version == current {
+            println!("kubera {current} is up to date");
+        } else if newer {
+            println!(
+                "{} kubera {} is available (running {current}): {}",
+                st.yellow("!"),
+                release.version,
+                format_args!(
+                    "https://github.com/{}/releases/tag/{}",
+                    update::REPO,
+                    release.tag
+                )
+            );
+        } else {
+            println!("kubera {current} is newer than release {}", release.version);
+        }
+        match (manager, target) {
+            (Some(m), _) => println!(
+                "installed with {}; update with: {}",
+                m.name(),
+                m.upgrade_command()
+            ),
+            (None, None) => println!(
+                "no prebuilt release exists for {}; update from source: cargo install kubera-cli --locked",
+                update::BUILD_TARGET
+            ),
+            (None, Some(_)) if newer => println!("run `kubera update` to install it"),
+            _ => {}
+        }
+        return Ok(0);
+    }
+    let target = target.expect("checked above");
+
+    if release.version == current {
+        println!("kubera {current} is up to date");
+        return Ok(0);
+    }
+    if !newer && version.is_none() {
+        println!(
+            "kubera {current} is newer than the latest release ({})",
+            release.version
+        );
+        return Ok(0);
+    }
+
+    if !yes {
+        eprint!(
+            "Replace {} (kubera {current}) with kubera {}{}? [y/N] ",
+            real.display(),
+            release.version,
+            if newer { "" } else { ", a downgrade" }
+        );
+        std::io::stderr().flush()?;
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+            eprintln!("aborted");
+            return Ok(1);
+        }
+    }
+
+    let asset = update::asset_name(target);
+    eprintln!("downloading {asset} ({})", release.tag);
+    let archive = updater.download(&release, target).await?;
+    eprintln!("{} SHA-256 verified", st.green("✓"));
+    if std::env::var("KUBERA_VERIFY_ATTESTATION").as_deref() == Ok("1") {
+        update::verify_attestation(&archive, &asset)?;
+        eprintln!("{} build provenance attestation verified", st.green("✓"));
+    }
+    let binary = update::extract_binary(&archive, target)?;
+    update::replace_exe(&real, &binary, &release.version)?;
+    println!(
+        "{} updated {} from {current} to {}",
+        st.green("✓"),
+        real.display(),
+        release.version
+    );
+    Ok(0)
+}
+
 struct RotateFlags {
     execute: bool,
     yes: bool,
     force: bool,
     stdin_used: bool,
     output_file: Option<PathBuf>,
+    stores: Vec<String>,
+    store_config: kubera::store::Config,
     format: OutFormat,
 }
 
@@ -1893,6 +2387,33 @@ async fn cmd_rotate(
         bail!("{} already exists; refusing to overwrite", p.display());
     }
 
+    // Secret stores are parsed and checked before anything is sent, so a
+    // typo never surfaces after the old credential is gone.
+    use kubera::store;
+    if !f.stores.is_empty() && r.steps.is_empty() {
+        bail!(
+            "`{}` has no automated rotation, so there is no new credential to --store",
+            t.id
+        );
+    }
+    let (outs, default_out) = store::outputs_of(t);
+    let specs = f
+        .stores
+        .iter()
+        .map(|s| store::parse(s, &outs, default_out.as_deref()))
+        .collect::<Result<Vec<_>>>()?;
+    let groups = store::group(&specs)?;
+    let problems = f.store_config.problems(&groups);
+    if f.execute && !problems.is_empty() {
+        bail!(
+            "cannot update the secret stores (nothing was rotated):\n  {}",
+            problems.join("\n  ")
+        );
+    }
+    for p in &problems {
+        eprintln!("warning: {p}");
+    }
+
     let mut opts = rotate::Options {
         execute: false,
         force: f.force,
@@ -1903,7 +2424,8 @@ async fn cmd_rotate(
         if f.stdin_used || !std::io::stdin().is_terminal() {
             bail!("stdin is not interactive; pass --yes to confirm the rotation");
         }
-        let plan = rotate::rotate(&ctx.http, t, parts, &opts).await?;
+        let mut plan = rotate::rotate(&ctx.http, t, parts, &opts).await?;
+        plan.stores = store::plan(&f.store_config, &groups);
         print_rotation(&plan, st);
         eprint!(
             "\n{} This will call {}'s API and may revoke the current credential.\n\
@@ -1925,17 +2447,73 @@ async fn cmd_rotate(
         }
     }
 
+    // Read what the stores need (GitHub public keys) before rotating: a bad
+    // token fails here, while the old credential still works.
+    let keys = if f.execute && !groups.is_empty() {
+        store::preflight(&ctx.http, &f.store_config, &groups)
+            .await
+            .context("secret store check failed; nothing was rotated")?
+    } else {
+        Default::default()
+    };
+
     opts.execute = f.execute;
     let mut rep = rotate::rotate(&ctx.http, t, parts, &opts).await?;
+    let new_outputs = rep.outputs.clone();
+    // Outputs that are safe somewhere and need not be printed.
+    let mut secured: std::collections::BTreeSet<String> = Default::default();
 
-    // Persist the new credential before printing anything else.
+    // Persist the new credential before anything else can fail.
     if let Some(path) = &f.output_file
         && !rep.outputs.is_empty()
     {
         write_private(path, &serde_json::to_vec_pretty(&rep.outputs)?)?;
         eprintln!("new credential written to {}", path.display());
-        rep.outputs.clear();
+        secured.extend(rep.outputs.keys().cloned());
     }
+
+    let mut store_failed = false;
+    if !rep.executed {
+        rep.stores = store::plan(&f.store_config, &groups);
+    } else if !groups.is_empty() {
+        if rep.completed && !new_outputs.is_empty() {
+            rep.stores = store::write_all(
+                &ctx.http,
+                &f.store_config,
+                &groups,
+                &keys,
+                &new_outputs,
+                parts,
+            )
+            .await;
+            // An output counts as secured only if every store that wanted
+            // it got it: a failed store needs the value to be fixed by hand.
+            let mut stored = std::collections::BTreeSet::new();
+            let mut missing = std::collections::BTreeSet::new();
+            for (g, res) in groups.iter().zip(&rep.stores) {
+                let outs = g.entries.iter().map(|(_, o)| o.clone());
+                if res.ok {
+                    stored.extend(outs);
+                } else {
+                    store_failed = true;
+                    missing.extend(outs);
+                }
+            }
+            secured.extend(stored.difference(&missing).cloned());
+        } else {
+            store_failed = true;
+            rep.stores = store::plan(&f.store_config, &groups)
+                .into_iter()
+                .map(|mut s| {
+                    s.error = Some("skipped: the rotation did not complete".into());
+                    s
+                })
+                .collect();
+        }
+    }
+    // A credential that did not reach a store or the output file is
+    // printed (once), so it is never lost.
+    rep.outputs.retain(|k, _| !secured.contains(k));
 
     let mut shown = rep.clone();
     shown.steps = shown.steps.iter().map(|s| s.redacted()).collect();
@@ -1943,7 +2521,13 @@ async fn cmd_rotate(
         OutFormat::Json => println!("{}", serde_json::to_string_pretty(&shown)?),
         OutFormat::Pretty => print_rotation(&shown, st),
     }
-    Ok(if rep.executed && !rep.completed { 2 } else { 0 })
+    Ok(if rep.executed && !rep.completed {
+        2
+    } else if store_failed {
+        4
+    } else {
+        0
+    })
 }
 
 fn print_rotation(rep: &rotate::Report, st: &Style) {
@@ -1999,6 +2583,43 @@ fn print_rotation(rep: &rotate::Report, st: &Style) {
             );
         }
     }
+    if !rep.stores.is_empty() {
+        if rep.executed {
+            println!("\n{}", st.bold("Secret stores"));
+        } else {
+            println!(
+                "\n{} {}",
+                st.bold("Secret store updates"),
+                st.dim("(after a successful rotation, with --execute)")
+            );
+        }
+        for s in &rep.stores {
+            let mark = match (s.executed, s.ok) {
+                (false, _) if s.error.is_none() => st.dim("·"),
+                (_, true) => st.green("✔"),
+                _ => st.red("✘"),
+            };
+            println!(
+                "  {mark} {} {}",
+                st.bold(&s.target),
+                st.dim(&format!("({})", s.values.join(", ")))
+            );
+            if !s.executed {
+                for l in s.plan.lines() {
+                    println!("     {l}");
+                }
+            }
+            if let Some(e) = &s.error {
+                println!("      {e}");
+            }
+        }
+        if rep.stores.iter().any(|s| s.executed && !s.ok) {
+            println!(
+                "\n{}",
+                st.red("A secret store was NOT updated - the new credential is below (or in --output-file); store it by hand.")
+            );
+        }
+    }
     if !rep.outputs.is_empty() {
         println!(
             "\n{} {}",
@@ -2026,6 +2647,179 @@ fn write_private(path: &std::path::Path, data: &[u8]) -> Result<()> {
     file.write_all(data)?;
     file.sync_all()?;
     Ok(())
+}
+
+fn print_issues(rep: &kubera::remediate::IssuesReport, st: &Style) {
+    println!(
+        "{} {}  {}",
+        st.bold("remediate"),
+        rep.repository,
+        if rep.executed {
+            String::new()
+        } else {
+            st.dim("(dry run - pass --execute to open the issues)")
+        }
+    );
+    for w in &rep.warnings {
+        println!("  {} {w}", st.yellow("!"));
+    }
+    for r in &rep.results {
+        let (mark, what) = match r.action.as_str() {
+            "opened" => (st.green("✔"), format!("opened #{}", r.issue.unwrap_or(0))),
+            "exists" => (
+                st.dim("="),
+                format!("already open #{}", r.issue.unwrap_or(0)),
+            ),
+            "failed" => (st.red("✘"), "failed".to_string()),
+            _ => (st.dim("·"), "would open".to_string()),
+        };
+        println!(
+            "  {mark} {:<16} {} {}",
+            what,
+            st.bold(&r.title),
+            st.dim(&format!(
+                "[{}, {} location(s){}]",
+                r.status,
+                r.locations,
+                r.mention
+                    .as_ref()
+                    .map(|m| format!(", @{m}"))
+                    .unwrap_or_default()
+            ))
+        );
+        if let Some(u) = &r.url {
+            println!("      {}", st.dim(u));
+        }
+        if let Some(e) = &r.error {
+            println!("      {}", st.red(e));
+        }
+    }
+    let n = |a: &str| rep.results.iter().filter(|r| r.action == a).count();
+    println!(
+        "\n{} to open, {} opened, {} already open, {} failed",
+        n("would_open"),
+        n("opened"),
+        n("exists"),
+        n("failed")
+    );
+}
+
+fn cmd_purge(
+    g: &GlobalArgs,
+    findings: PathBuf,
+    repo: PathBuf,
+    output: Option<PathBuf>,
+    replacement: String,
+    format: OutFormat,
+) -> Result<u8> {
+    use kubera::remediate;
+    let ctx = context(g)?;
+    let wanted: Vec<Finding> = remediate::load_findings(&findings)?
+        .into_iter()
+        .filter(|f| remediate::valid_fingerprint(&f.fingerprint))
+        .collect();
+    if wanted.is_empty() {
+        bail!("{} holds no findings", findings.display());
+    }
+    let top = remediate::toplevel(&repo)?;
+    let output = output.unwrap_or_else(|| {
+        let name = top
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "repo".into());
+        top.parent()
+            .unwrap_or(std::path::Path::new("."))
+            .join(format!("{name}-kubera-purge.txt"))
+    });
+    let fps: std::collections::BTreeSet<&str> =
+        wanted.iter().map(|f| f.fingerprint.as_str()).collect();
+    // Raw values: from a --show-secrets file (checked against the
+    // fingerprint), otherwise from a fresh scan of the history.
+    let mut found: Vec<Finding> = Vec::new();
+    for f in wanted.iter().filter(|f| !f.redacted) {
+        if let Ok(t) = template::find(&ctx.templates, &f.detector) {
+            let raw = Finding::new(t, f.secret.clone(), f.location.clone());
+            if raw.fingerprint == f.fingerprint {
+                found.push(raw);
+            }
+        }
+    }
+    let missing: Vec<&str> = fps
+        .iter()
+        .copied()
+        .filter(|fp| !found.iter().any(|f| f.fingerprint == *fp))
+        .collect();
+    if !missing.is_empty() {
+        eprintln!(
+            "{} scanning the history of {} for {} redacted finding(s)",
+            ctx.style.dim("›"),
+            top.display(),
+            missing.len()
+        );
+        let engine = Engine::new(ctx.templates.iter().map(|l| l.template.clone()).collect())?;
+        // No excludes, allowlist or baseline: every copy must be found.
+        let filter = Filter::new(&[], &Default::default())?;
+        let target = scan::Target::Git {
+            repo: top.display().to_string(),
+            options: git::GitOptions::default(),
+            auth: Default::default(),
+            baseline: None,
+            mirror: None,
+        };
+        let out = scan::run_detailed(&engine, &filter, &target, u64::MAX / 2, &|_| {})?;
+        found.extend(
+            out.findings
+                .into_iter()
+                .filter(|f| missing.contains(&f.fingerprint.as_str())),
+        );
+    }
+    let rep = remediate::purge(
+        &remediate::PurgeOptions {
+            repo: top,
+            output,
+            replacement,
+        },
+        &wanted,
+        &found,
+    )?;
+    let st = &ctx.style;
+    match format {
+        OutFormat::Json => println!("{}", serde_json::to_string_pretty(&rep)?),
+        OutFormat::Pretty => {
+            println!(
+                "{} wrote {} expression(s) for {} secret(s) to {} {}",
+                st.green("✓"),
+                rep.values,
+                rep.resolved.len(),
+                st.bold(&rep.expressions_file),
+                st.dim("(mode 0600: it holds the raw secrets)")
+            );
+            if !rep.not_found.is_empty() {
+                println!(
+                    "{} {} finding(s) not found in the history (uncommitted, another repository, or already removed): {}",
+                    st.yellow("!"),
+                    rep.not_found.len(),
+                    rep.not_found.join(", ")
+                );
+            }
+            for w in &rep.warnings {
+                println!("{} {w}", st.yellow("!"));
+            }
+            println!(
+                "\n{}\n  - Rotate first: a rewrite never un-leaks a live secret; anyone may already have a copy.\n  - Every commit hash after the first leak changes, and the push must be forced.\n  - Collaborators must re-clone (a pull or merge brings the old history back); open pull requests need rebasing.\n  - Forks, other clones, CI caches and the forge's pull request refs keep the old commits (GitHub Support can purge cached views).\n  - Kubera changed nothing: review the commands and run them yourself.",
+                st.red("Before you run this")
+            );
+            println!("\n{}", st.bold("Commands (need git-filter-repo)"));
+            for c in &rep.commands {
+                if c.starts_with('#') {
+                    println!("  {}", st.dim(c));
+                } else {
+                    println!("  {c}");
+                }
+            }
+        }
+    }
+    Ok(0)
 }
 
 fn cmd_templates(g: &GlobalArgs, cmd: TemplatesCmd) -> Result<u8> {

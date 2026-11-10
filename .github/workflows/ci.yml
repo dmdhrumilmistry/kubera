@@ -101,3 +101,60 @@ jobs:
         with:
           tool: cargo-audit
       - run: cargo audit
+
+  nix:
+    name: Nix flake
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@v31
+      # Evaluates every system, then builds and tests (checkPhase) for Linux.
+      - run: nix flake check -L
+      - run: nix run . -- --version
+
+  installers:
+    name: Installers (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # Install the latest release into a scratch directory with each
+      # installer (checksum verified), then run it.
+      - name: install.sh
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh -n install.sh
+          KUBERA_INSTALL_DIR="$RUNNER_TEMP/kubera-bin" sh install.sh
+          "$RUNNER_TEMP/kubera-bin/kubera" --version
+      - name: install.ps1
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $tokens = $null; $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile("$PWD\install.ps1", [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors) { $errors | ForEach-Object { Write-Error $_.ToString() }; exit 1 }
+          $env:KUBERA_INSTALL_DIR = "$env:RUNNER_TEMP\kubera-bin"
+          $env:KUBERA_NO_MODIFY_PATH = '1'
+          Get-Content -Raw install.ps1 | Invoke-Expression
+          & "$env:RUNNER_TEMP\kubera-bin\kubera.exe" --version
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          # Re-running upgrades in place.
+          Get-Content -Raw install.ps1 | Invoke-Expression
+      - name: install.ps1 (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $env:KUBERA_INSTALL_DIR = "$env:RUNNER_TEMP\kubera-bin-51"
+          $env:KUBERA_NO_MODIFY_PATH = '1'
+          Get-Content -Raw install.ps1 | Invoke-Expression
+          & "$env:RUNNER_TEMP\kubera-bin-51\kubera.exe" --version
+          if ($LASTEXITCODE -ne 0) { exit 1 }

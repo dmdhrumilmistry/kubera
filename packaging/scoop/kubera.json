@@ -1,0 +1,33 @@
+{
+    "version": "0.2.0",
+    "description": "Template driven secret detection, verification, analysis and rotation",
+    "homepage": "https://dmdhrumilmistry.github.io/kubera/",
+    "license": "MIT",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/dmdhrumilmistry/kubera/releases/download/v0.2.0/kubera-x86_64-pc-windows-msvc.zip",
+            "hash": "fce3a9c125fc6b8475c6b28a8e12085dadba4b865770ece2a4361b2898950214"
+        },
+        "arm64": {
+            "url": "https://github.com/dmdhrumilmistry/kubera/releases/download/v0.2.0/kubera-aarch64-pc-windows-msvc.zip",
+            "hash": "a1b5e35a775b6b50485641a268121bb863fc17358aeb8e1bf9c4e0feab5ee884"
+        }
+    },
+    "bin": "kubera.exe",
+    "checkver": {
+        "github": "https://github.com/dmdhrumilmistry/kubera"
+    },
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/dmdhrumilmistry/kubera/releases/download/v$version/kubera-x86_64-pc-windows-msvc.zip"
+            },
+            "arm64": {
+                "url": "https://github.com/dmdhrumilmistry/kubera/releases/download/v$version/kubera-aarch64-pc-windows-msvc.zip"
+            }
+        },
+        "hash": {
+            "url": "$url.sha256"
+        }
+    }
+}

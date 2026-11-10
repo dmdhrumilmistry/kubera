@@ -138,6 +138,12 @@ The same for a single-part secret, read from an environment variable:
 kubera rotate gitlab-pat --secret-env LEAKED_TOKEN --execute -o new-gitlab-token.json
 ```
 
+Rotate it and put the new token straight into a GitHub Actions secret (and Vault), without printing it:
+
+```bash
+kubera rotate gitlab-pat --secret-env LEAKED_TOKEN --execute --store github:acme/payments:GITLAB_TOKEN --store-token-env GH_ADMIN_TOKEN --store 'vault:secret/ci/gitlab#token'
+```
+
 Confirm the old credential is dead (exit code `2` = invalid):
 
 ```bash
@@ -174,6 +180,32 @@ kubera scan git . --no-baseline
 
 To silence one line in the code, add a `kubera:ignore` comment to it. See [Baselines and triage](triage.md) and [Configuration](configuration.md).
 
+## Follow up: issues and history cleanup
+
+Save the findings first (redacted):
+
+```bash
+kubera scan git . --verify -f json > findings.json
+```
+
+Plan one GitHub issue per live secret, in a private repository (dry run):
+
+```bash
+kubera remediate --findings findings.json --issues github:acme/security --token-env GH_TOKEN
+```
+
+Open them, mentioning the author of each leaking commit:
+
+```bash
+kubera remediate --findings findings.json --issues github:acme/security --token-env GH_TOKEN --mention-committer --execute
+```
+
+Prepare a history rewrite of the leaked values (writes a `git filter-repo` file and prints the commands, changes nothing):
+
+```bash
+kubera purge --findings findings.json --repo .
+```
+
 ## Reports
 
 A self-contained HTML report:
@@ -192,6 +224,26 @@ SARIF for GitHub code scanning:
 
 ```bash
 kubera scan git . -f sarif > kubera.sarif
+```
+
+## Track findings over time: the dashboard
+
+Record a scan in the local findings database (redacted, mode `0600`):
+
+```bash
+kubera scan git . --verify --db
+```
+
+Open the dashboard on `http://127.0.0.1:8484/`:
+
+```bash
+kubera serve
+```
+
+Open live findings, as JSON, from the API:
+
+```bash
+curl -s 'http://127.0.0.1:8484/api/findings?state=open&status=live'
 ```
 
 ## Prevent new leaks: pre-commit, CI and alerts
@@ -256,4 +308,19 @@ Scan with your own templates as well as the builtin ones:
 
 ```bash
 kubera -t templates.d scan fs .
+```
+
+## Keep kubera up to date
+
+Check for a newer release, then install it (SHA-256 verified, atomic; see [Updating](installation.md#updating)):
+
+```bash
+kubera update --check
+kubera update
+```
+
+In scripts, skip the prompt:
+
+```bash
+kubera update --yes
 ```

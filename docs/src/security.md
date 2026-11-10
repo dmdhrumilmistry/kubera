@@ -34,6 +34,17 @@ Kubera handles live credentials, so it is conservative by default.
 4. **Fail-stop, never lose a key.** Steps stop at the first failure, and any credential already created is still returned.
 5. **Private output.** `--output-file` creates a *new* file with mode `0600` and refuses to overwrite an existing one.
 6. **Reversible where possible.** Builtin templates create the replacement before revoking, and deactivate instead of deleting when the platform allows it.
+7. **Secret stores** (`--store`) are checked before the rotation starts (tokens present, HTTPS, GitHub public key readable) and written only after every step succeeded. Store credentials come from environment variables, GitHub secrets are encrypted locally with the repository's public key, and a failed store write prints the new credential rather than losing it. See [Secret stores](secret-stores.md).
+
+## Remediation
+
+- **Issues** (`kubera remediate --issues`) never contain secret values: only fingerprints, redacted previews and locations, even from a `--show-secrets` file. Values from the findings file go into code spans, so hostile paths cannot inject mentions, links or HTML; only plain `https://` links are kept. Issues go only to a **private** repository unless `--allow-public-repo`, nothing is created without `--execute`, committer mentions are off by default, and a `POST` is never retried.
+- **History purge** (`kubera purge`) must hold raw secrets in its `git filter-repo` expressions file, so the file is created with mode `0600`, never overwrites an existing file, and is refused inside the repository (where it could be committed). Kubera prints the rewrite commands and warnings but never rewrites or pushes anything.
+
+## Findings database and dashboard
+
+- The findings database (`scan --db`) stores **redacted** findings and fingerprints only, never secret values, even with `--show-secrets`. It is appended to with mode `0600` in a `0700` directory.
+- `kubera serve` listens on `127.0.0.1` by default and refuses any other address unless you pass `--allow-remote` **and** a token (`--token-env`, at least 16 characters, compared in constant time). On localhost it checks the `Host` header against DNS rebinding. It is read-only (`GET` / `HEAD`), sends `nosniff`, `no-referrer`, `no-store` and anti-framing headers, and the page has no external assets: a Content-Security-Policy allows only its own script and style (pinned by SHA-256) and same-origin requests. Values are rendered as text, never HTML. There is no TLS: use an SSH tunnel or a TLS proxy to reach it remotely. See [Findings dashboard](dashboard.md#security).
 
 ## Repository credentials
 
@@ -87,6 +98,20 @@ Filesystem scans never follow symlinks.
 ## Templates are code
 
 A template decides where a matched secret is sent. Only load templates you trust (`-t`, `templates:` in `.kubera.yaml`), and review third-party templates the way you would review code. `kubera templates show <id>` prints exactly what will run.
+
+## Release integrity
+
+- **Checksums, always.** Every release archive has a `.sha256` file, and both installers refuse an archive that does not match it.
+- **Keyless signatures.** The release workflow signs each archive, the SBOM and the manifests tarball with [Sigstore](https://www.sigstore.dev) (`cosign sign-blob`, bundles published as `<asset>.sigstore.json`) and signs the container image by digest. The certificate names the workflow (`dmdhrumilmistry/kubera/.github/workflows/release.yml`) and the ref it ran on, and is recorded in the public Rekor transparency log; there is no long-lived private key to steal.
+- **Provenance.** GitHub build provenance attestations (SLSA) link each archive and the image to the exact commit and workflow run that built them, and an SBOM attestation links each archive to its CycloneDX SBOM. Verify with `gh attestation verify`.
+- **Never re-signed.** Finishing a partial release adds missing signatures only; published assets and signatures are never replaced. Provenance is attested only for bytes the attesting run built.
+- **Package manager manifests** (Homebrew, Scoop, winget, AUR) are generated from the checksums of the published archives, which are hashed again before rendering.
+
+See [Verifying a release](installation.md#verifying-a-release) for the commands.
+
+## Self-update
+
+`kubera update` runs only when you invoke it: no background checks, no telemetry, no credentials sent. It talks HTTPS to GitHub's API and download hosts only (redirects are followed one hop at a time and must stay on them), checks the archive against the release's `.sha256` file and GitHub's asset digest before writing anything, runs the new binary once, and then swaps it in with an atomic rename, so a failure leaves the old binary untouched. It refuses to replace a binary that a package manager owns. See [Updating](installation.md#updating).
 
 ## Reporting vulnerabilities
 

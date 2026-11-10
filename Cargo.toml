@@ -5,7 +5,7 @@ edition = "2024"
 rust-version = "1.88"
 homepage = "https://dmdhrumilmistry.github.io/kubera/"
 documentation = "https://dmdhrumilmistry.github.io/kubera/"
-exclude = ["docs/book/", "docs/src/images/", "/scripts/", "/.github/", "/examples/"]
+exclude = ["docs/book/", "docs/src/images/", "/scripts/", "/.github/", "/examples/", "/packaging/", "install.ps1", "flake.nix", "flake.lock"]
 license = "MIT"
 description = "Template driven secret detection, verification, analysis and rotation"
 repository = "https://github.com/dmdhrumilmistry/kubera"
@@ -29,11 +29,17 @@ anyhow = "1.0.104"
 base64 = "0.23.1"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 clap = { version = "4.6.7", features = ["derive", "env"] }
+# Sealed boxes for GitHub Actions secrets (pure Rust, libsodium compatible).
+crypto_box = { version = "0.9.1", features = ["seal"] }
 flate2 = "1.1.11"
 futures = "0.3.34"
 globset = "0.4.21"
 hex = "0.4.3"
 hmac = "0.13.0"
+# `kubera serve`: hyper is already in the tree through reqwest.
+http-body-util = "0.1.5"
+hyper = { version = "1.12.0", features = ["server", "http1"] }
+hyper-util = { version = "0.1.21", features = ["tokio"] }
 include_dir = "0.7.4"
 owo-colors = "4.4.0"
 percent-encoding = "2.3.2"
@@ -49,7 +55,7 @@ serde_yaml = "0.9.34"
 sha2 = "0.11.1"
 tar = "0.4.46"
 tempfile = "3.27.0"
-tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "signal"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "signal", "net"] }
 walkdir = "2.5.0"
 zip = { version = "9.5.0", default-features = false, features = ["deflate-flate2"] }
 
@@ -59,6 +65,7 @@ webpki-root-certs = "1"
 
 [dev-dependencies]
 base64 = "0.23.1"
+crypto_box = { version = "0.9.1", features = ["seal"] }
 flate2 = "1.1.11"
 hex = "0.4.3"
 serde_json = "1.0.154"

@@ -58,7 +58,7 @@ pub struct Location {
     pub entry: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Status {
     /// The platform confirmed the credential is live.
@@ -83,17 +83,18 @@ impl std::fmt::Display for Status {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Verification {
     pub status: Status,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
     /// Labelled values extracted from the verification response.
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub details: BTreeMap<String, Value>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+/// Serialized by `-f json`; read back by `remediate` and `purge`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Finding {
     pub detector: String,
     pub name: String,
@@ -105,9 +106,10 @@ pub struct Finding {
     pub secret: BTreeMap<String, String>,
     #[serde(skip)]
     pub sensitive: BTreeSet<String>,
+    #[serde(default)]
     pub redacted: bool,
     pub location: Location,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification: Option<Verification>,
 }
 
