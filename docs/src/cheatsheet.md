@@ -330,7 +330,7 @@ kubera scan git . --state .kubera-state.json --fail
 The GitHub Action, as a workflow step:
 
 ```yaml
-- uses: dmdhrumilmistry/kubera@v0.2.0
+- uses: dmdhrumilmistry/kubera@v0.3.0
 ```
 
 Any other CI, with the container image:

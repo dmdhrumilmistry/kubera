@@ -31,7 +31,7 @@ jobs:
         with:
           fetch-depth: 0              # git mode needs the history
           persist-credentials: false
-      - uses: dmdhrumilmistry/kubera@v0.2.0
+      - uses: dmdhrumilmistry/kubera@v0.3.0
         id: kubera
         with:
           args: --verify
@@ -67,7 +67,7 @@ Pin the action to a release tag (or a commit SHA) rather than a branch.
 Every release publishes `ghcr.io/dmdhrumilmistry/kubera` for linux/amd64 and linux/arm64. It works on any CI that runs containers:
 
 ```bash
-docker run --rm -v "$PWD:/scan" ghcr.io/dmdhrumilmistry/kubera:0.2.0 scan git /scan --fail
+docker run --rm -v "$PWD:/scan" ghcr.io/dmdhrumilmistry/kubera:0.3.0 scan git /scan --fail
 ```
 
 GitLab CI:
@@ -75,7 +75,7 @@ GitLab CI:
 ```yaml
 secret-scan:
   image:
-    name: ghcr.io/dmdhrumilmistry/kubera:0.2.0
+    name: ghcr.io/dmdhrumilmistry/kubera:0.3.0
     entrypoint: [""]
   variables:
     GIT_DEPTH: 0
@@ -150,7 +150,7 @@ Or, with the [pre-commit framework](https://pre-commit.com):
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/dmdhrumilmistry/kubera
-    rev: v0.2.0
+    rev: v0.3.0
     hooks:
       - id: kubera          # or kubera-system to use kubera from PATH
 ```

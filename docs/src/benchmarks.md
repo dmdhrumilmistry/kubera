@@ -60,7 +60,7 @@ On cargo, only 235 of 16,548 non-merge commits consist of repeated changes alone
 | | Detection alone | Decoding | Overhead |
 |---|---:|---:|---:|
 | 0.2.0 | 2.45 s | 0.53 s | 22% |
-| After 0.2.0 | 2.45 s | **0.31 s** | **13%** |
+| 0.3.0 | 2.45 s | **0.31 s** | **13%** |
 
 The decoded output and the findings are identical, byte for byte, on every file of the corpus. What changed:
 

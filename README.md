@@ -228,7 +228,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
-      - uses: dmdhrumilmistry/kubera@v0.2.0   # SARIF to code scanning, job summary, annotations
+      - uses: dmdhrumilmistry/kubera@v0.3.0   # SARIF to code scanning, job summary, annotations
 ```
 
 ```bash
