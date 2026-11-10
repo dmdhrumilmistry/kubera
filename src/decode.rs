@@ -12,10 +12,9 @@
 //! length-limited, output must look like text, the total decoded size per
 //! chunk is capped, and nesting goes at most [`MAX_DEPTH`] levels deep.
 
-use std::sync::LazyLock;
+use std::cell::OnceCell;
 
 use base64::Engine as _;
-use regex::Regex;
 
 use crate::detect::IGNORE_MARKER;
 
@@ -28,9 +27,86 @@ const MAX_B64: usize = 64 * 1024;
 /// Cap on decoded output per chunk.
 const MAX_DECODED: usize = 4 * 1024 * 1024;
 
-static PERCENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"%[0-9A-Fa-f]{2}").unwrap());
-static ESCAPE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"\\(?:u[0-9A-Fa-f]{4}|x[0-9A-Fa-f]{2}|/)"#).unwrap());
+/// Offsets of percent-encoded bytes (`%` and two hex digits).
+fn percent_at(bytes: &[u8]) -> impl Iterator<Item = usize> + '_ {
+    memchr::memchr_iter(b'%', bytes).filter(|&i| hex_follows(bytes, i + 1, 2))
+}
+
+/// Offsets of the escapes [`unescape`] resolves: `\uXXXX`, `\xNN`, `\/`.
+fn escapes_at(bytes: &[u8]) -> impl Iterator<Item = usize> + '_ {
+    memchr::memchr_iter(b'\\', bytes).filter(|&i| escape_at(bytes, i))
+}
+
+/// `bytes[i]` is a backslash: does an escape [`unescape`] resolves start?
+fn escape_at(bytes: &[u8], i: usize) -> bool {
+    match bytes.get(i + 1) {
+        Some(b'u') => hex_follows(bytes, i + 2, 4),
+        Some(b'x') => hex_follows(bytes, i + 2, 2),
+        Some(b'/') => true,
+        _ => false,
+    }
+}
+
+/// Whether `bytes` holds a percent-encoded byte / an escape, in one pass.
+fn sequences(bytes: &[u8]) -> (bool, bool) {
+    let (mut pct, mut esc) = (false, false);
+    for i in memchr::memchr2_iter(b'%', b'\\', bytes) {
+        if bytes[i] == b'%' {
+            pct = pct || hex_follows(bytes, i + 1, 2);
+        } else {
+            esc = esc || escape_at(bytes, i);
+        }
+        if pct && esc {
+            break;
+        }
+    }
+    (pct, esc)
+}
+
+fn hex_follows(bytes: &[u8], at: usize, n: usize) -> bool {
+    bytes
+        .get(at..at + n)
+        .is_some_and(|h| h.iter().all(u8::is_ascii_hexdigit))
+}
+
+/// Line starts of a text, indexed on first use: most chunks with a
+/// candidate decode nothing, and indexing every line of every such file
+/// used to cost more than finding the candidates.
+struct LineIndex<'a> {
+    text: &'a str,
+    starts: OnceCell<Vec<usize>>,
+}
+
+impl<'a> LineIndex<'a> {
+    fn new(text: &'a str) -> Self {
+        Self {
+            text,
+            starts: OnceCell::new(),
+        }
+    }
+
+    fn starts(&self) -> &[usize] {
+        self.starts.get_or_init(|| {
+            std::iter::once(0)
+                .chain(memchr::memchr_iter(b'\n', self.text.as_bytes()).map(|i| i + 1))
+                .collect()
+        })
+    }
+
+    /// 0-based line holding byte `offset`.
+    fn index(&self, offset: usize) -> usize {
+        self.starts().partition_point(|&s| s <= offset) - 1
+    }
+
+    /// End of line `i` (offset of its newline, or the text length).
+    fn end(&self, i: usize) -> usize {
+        self.starts().get(i + 1).map_or(self.text.len(), |e| e - 1)
+    }
+
+    fn line(&self, i: usize) -> &'a str {
+        &self.text[self.starts()[i]..self.end(i)]
+    }
+}
 
 /// Which decoder produced a segment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,26 +169,18 @@ fn decode_into(
     out: &mut Decoded,
     budget: &mut usize,
 ) {
-    // Fast path: one pass over the whole chunk per decoder; most chunks
-    // contain nothing encoded and stop here.
+    // Fast path: one cheap pass over the whole chunk per decoder; most
+    // chunks contain nothing encoded and stop here.
+    let bytes = text.as_bytes();
     let runs = base64_runs(text);
-    let has_b64 = !runs.is_empty();
-    let has_pct = text.contains('%') && PERCENT.is_match(text);
-    let has_esc = text.contains('\\') && ESCAPE.is_match(text);
-    if !(has_b64 || has_pct || has_esc) {
+    let (has_pct, has_esc) = sequences(bytes);
+    if runs.is_empty() && !has_pct && !has_esc {
         return;
     }
-    let starts: Vec<usize> = std::iter::once(0)
-        .chain(text.match_indices('\n').map(|(i, _)| i + 1))
-        .collect();
-    let line_idx = |offset: usize| starts.partition_point(|&s| s <= offset) - 1;
-    let line_at = |i: usize| {
-        let end = starts.get(i + 1).map_or(text.len(), |e| e - 1);
-        &text[starts[i]..end]
-    };
+    let lines = LineIndex::new(text);
     let mut next = Decoded::default();
     let mut emit = |i: usize, seg: String, dec: Decoder, next: &mut Decoded| {
-        if *budget == 0 || line_at(i).contains(IGNORE_MARKER) {
+        if *budget == 0 || lines.line(i).contains(IGNORE_MARKER) {
             return;
         }
         if seg.len() > *budget {
@@ -126,26 +194,30 @@ fn decode_into(
     };
     for (start, end) in runs {
         if let Some(s) = decode_base64(&text[start..end]) {
-            emit(line_idx(start), s, Decoder::Base64, &mut next);
+            emit(lines.index(start), s, Decoder::Base64, &mut next);
         }
     }
-    let mut lines_with =
-        |re: &Regex, f: &dyn Fn(&str) -> Option<String>, dec: Decoder, next: &mut Decoded| {
-            let mut last = usize::MAX;
-            for m in re.find_iter(text) {
-                let i = line_idx(m.start());
-                if i == last {
-                    continue;
-                }
-                last = i;
-                if let Some(s) = f(line_at(i)) {
-                    emit(i, s, dec, next);
-                }
+    // Percent and escape decoding work on whole lines: decode each line
+    // holding at least one sequence, once.
+    let mut lines_with = |at: &mut dyn Iterator<Item = usize>,
+                          f: &dyn Fn(&str) -> Option<String>,
+                          dec: Decoder,
+                          next: &mut Decoded| {
+        let mut pos = 0;
+        for o in at {
+            if o < pos {
+                continue;
             }
-        };
+            let i = lines.index(o);
+            pos = lines.end(i);
+            if let Some(s) = f(lines.line(i)) {
+                emit(i, s, dec, next);
+            }
+        }
+    };
     if has_pct {
         lines_with(
-            &PERCENT,
+            &mut percent_at(bytes),
             &|l| {
                 percent_encoding::percent_decode_str(l)
                     .decode_utf8()
@@ -158,7 +230,12 @@ fn decode_into(
         );
     }
     if has_esc {
-        lines_with(&ESCAPE, &unescape, Decoder::Escape, &mut next);
+        lines_with(
+            &mut escapes_at(bytes),
+            &unescape,
+            Decoder::Escape,
+            &mut next,
+        );
     }
     if next.is_empty() {
         return;
@@ -178,70 +255,136 @@ fn decode_into(
     }
 }
 
+const UP: u8 = 1;
+const LOW: u8 = 2;
+const DIGIT: u8 = 4;
+const OTHER: u8 = 8;
+
+/// Character class of every byte (0: outside the base64 / base64url
+/// alphabet).
+static CLASS: [u8; 256] = {
+    let mut t = [0u8; 256];
+    let mut i = 0;
+    while i < 256 {
+        let c = i as u8;
+        t[i] = if c.is_ascii_uppercase() {
+            UP
+        } else if c.is_ascii_lowercase() {
+            LOW
+        } else if c.is_ascii_digit() {
+            DIGIT
+        } else if matches!(c, b'+' | b'/' | b'_' | b'-') {
+            OTHER
+        } else {
+            0
+        };
+        i += 1;
+    }
+    t
+};
+
+/// Bit `j` set when `block[j]` (at most 64 bytes) is in the base64 /
+/// base64url alphabet. Written without tables or branches so the compiler
+/// vectorizes it: this is the only part of base64 detection that touches
+/// every byte.
+fn alphabet_mask(block: &[u8]) -> u64 {
+    let mut flags = [0u8; 64];
+    for (f, &b) in flags.iter_mut().zip(block) {
+        let letter = (b | 0x20).wrapping_sub(b'a') < 26;
+        let digit = b.wrapping_sub(b'0') < 10;
+        let other = b == b'+' || b == b'/' || b == b'_' || b == b'-';
+        *f = (letter | digit | other) as u8;
+    }
+    let mut m = 0u64;
+    for (k, c) in flags.chunks_exact(8).enumerate() {
+        let v = u64::from_le_bytes(c.try_into().expect("8 bytes"));
+        // Gathers the low bit of each byte into the top byte, in order.
+        m |= (v.wrapping_mul(0x0102_0408_1020_4080) >> 56) << (8 * k);
+    }
+    m
+}
+
 /// Byte ranges of base64 / base64url runs worth decoding: one pass, no
 /// regex. A run is kept when it is [`MIN_B64`]..=[`MAX_B64`] long (plus
 /// `=` padding) and mixes upper case, lower case and digits - base64 of
 /// text practically always does, while identifiers (snake_case, CamelCase)
 /// and most words do not.
+///
+/// The text is classified 64 bytes at a time into a bitmask. A block with
+/// no [`MIN_B64`] consecutive alphabet bytes (nearly all of them in source
+/// code) costs a few bit operations; only blocks holding a long run, or
+/// the end of one, are walked run by run.
 fn base64_runs(text: &str) -> Vec<(usize, usize)> {
-    const UP: u8 = 1;
-    const LOW: u8 = 2;
-    const DIGIT: u8 = 4;
-    const OTHER: u8 = 8;
-    static CLASS: [u8; 256] = {
-        let mut t = [0u8; 256];
-        let mut i = 0;
-        while i < 256 {
-            let c = i as u8;
-            t[i] = if c.is_ascii_uppercase() {
-                UP
-            } else if c.is_ascii_lowercase() {
-                LOW
-            } else if c.is_ascii_digit() {
-                DIGIT
-            } else if matches!(c, b'+' | b'/' | b'_' | b'-') {
-                OTHER
-            } else {
-                0
-            };
-            i += 1;
-        }
-        t
-    };
+    const _: () = assert!(MIN_B64 == 24, "the run test below checks 24 bits");
     let bytes = text.as_bytes();
-    let class = |i: usize| CLASS[bytes[i] as usize];
     let mut out = Vec::new();
-    // Invariant: `i` is 0 or follows a byte outside the alphabet. A run of
-    // MIN_B64 must cover byte `i + MIN_B64 - 1`, so probing it lets most
-    // short tokens be skipped without looking at them.
-    let mut i = 0;
-    while i + MIN_B64 <= bytes.len() {
-        let probe = i + MIN_B64 - 1;
-        if class(probe) == 0 {
-            i = probe + 1;
+    let mut emit = |start: usize, end: usize| {
+        if end - start < MIN_B64 || end - start > MAX_B64 {
+            return;
+        }
+        let seen = bytes[start..end]
+            .iter()
+            .fold(0u8, |acc, b| acc | CLASS[*b as usize]);
+        if seen & (UP | LOW | DIGIT) != UP | LOW | DIGIT {
+            return;
+        }
+        let mut stop = end;
+        while stop < bytes.len() && stop - end < 2 && bytes[stop] == b'=' {
+            stop += 1;
+        }
+        out.push((start, stop));
+    };
+    // Start of the run reaching the end of the previous block, if any.
+    let mut open: Option<usize> = None;
+    for (w, block) in bytes.chunks(64).enumerate() {
+        let base = w * 64;
+        let m = alphabet_mask(block);
+        if m == u64::MAX {
+            open.get_or_insert(base);
             continue;
         }
-        let mut start = probe;
-        while start > i && class(start - 1) != 0 {
-            start -= 1;
-        }
-        let mut end = probe + 1;
-        while end < bytes.len() && class(end) != 0 {
-            end += 1;
-        }
-        if end - start >= MIN_B64 {
-            let seen = bytes[start..end]
-                .iter()
-                .fold(0u8, |acc, b| acc | CLASS[*b as usize]);
-            let mut stop = end;
-            while stop < bytes.len() && stop - end < 2 && bytes[stop] == b'=' {
-                stop += 1;
+        // Bit j of `long`: bits j..j+24 of `m` are all set.
+        let two = m & (m >> 1);
+        let four = two & (two >> 2);
+        let eight = four & (four >> 4);
+        let sixteen = eight & (eight >> 8);
+        let long = sixteen & (eight >> 16);
+        if long == 0 {
+            // Only a run carried in from the previous block can be long.
+            if let Some(s) = open.take() {
+                emit(s, base + m.trailing_ones() as usize);
             }
-            if end - start <= MAX_B64 && seen & (UP | LOW | DIGIT) == UP | LOW | DIGIT {
-                out.push((start, stop));
+            if m >> 63 == 1 {
+                open = Some(base + 64 - m.leading_ones() as usize);
+            }
+            continue;
+        }
+        // Walk every run of this block.
+        let mut j = 0u32;
+        while j < 64 {
+            let rest = m >> j;
+            match open {
+                Some(s) => {
+                    j += rest.trailing_ones();
+                    if j >= 64 {
+                        break;
+                    }
+                    emit(s, base + j as usize);
+                    open = None;
+                }
+                None => {
+                    let zeros = rest.trailing_zeros();
+                    if zeros >= 64 - j {
+                        break;
+                    }
+                    j += zeros;
+                    open = Some(base + j as usize);
+                }
             }
         }
-        i = end + 1;
+    }
+    if let Some(s) = open {
+        emit(s, bytes.len());
     }
     out
 }
@@ -384,5 +527,96 @@ mod tests {
         assert!(decode(&line).is_empty());
         let big = format!("{}\n", b64(&"A1b2C3d4 ".repeat(5000))).repeat(200);
         assert!(decode(&big).text.len() <= MAX_DECODED);
+    }
+
+    /// The definition [`base64_runs`] implements with bitmasks: every
+    /// maximal run of alphabet bytes, filtered the same way.
+    fn runs_reference(text: &str) -> Vec<(usize, usize)> {
+        let b = text.as_bytes();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < b.len() {
+            if CLASS[b[i] as usize] == 0 {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i < b.len() && CLASS[b[i] as usize] != 0 {
+                i += 1;
+            }
+            let seen = b[start..i].iter().fold(0, |a, x| a | CLASS[*x as usize]);
+            let mut stop = i;
+            while stop < b.len() && stop - i < 2 && b[stop] == b'=' {
+                stop += 1;
+            }
+            let len = i - start;
+            if (MIN_B64..=MAX_B64).contains(&len) && seen & (UP | LOW | DIGIT) == UP | LOW | DIGIT {
+                out.push((start, stop));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn base64_runs_match_the_definition_across_block_boundaries() {
+        // Deterministic pseudo-random texts over a small alphabet, so runs
+        // of every length start and end at every offset of a 64-byte block.
+        let alphabet = b"aZ9+/_-= \n.%";
+        let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
+        for round in 0..400 {
+            let len = 1 + (round * 7) % 700;
+            // Mostly alphabet bytes, so that long runs are common.
+            let text: String = (0..len)
+                .map(|_| {
+                    x ^= x << 13;
+                    x ^= x >> 7;
+                    x ^= x << 17;
+                    let r = (x % 100) as usize;
+                    let i = if r < 92 { r % 7 } else { 7 + r % 5 };
+                    alphabet[i] as char
+                })
+                .collect();
+            assert_eq!(base64_runs(&text), runs_reference(&text), "{text:?}");
+        }
+        // Exact edges: 23 / 24 bytes, a run ending the text, one spanning
+        // two blocks, one filling whole blocks, one longer than MAX_B64.
+        let unit = "aB3";
+        for (pad, len) in [
+            (0, 23),
+            (0, 24),
+            (40, 24),
+            (63, 30),
+            (5, 64),
+            (0, 128),
+            (1, 200),
+        ] {
+            let run: String = unit.repeat(len).chars().take(len).collect();
+            for tail in ["", " x", "=", "==", "===\n"] {
+                let text = format!("{}{run}{tail}", " ".repeat(pad));
+                assert_eq!(base64_runs(&text), runs_reference(&text), "{text:?}");
+            }
+        }
+        let huge = "aB3".repeat(MAX_B64);
+        assert!(base64_runs(&huge).is_empty());
+        assert_eq!(base64_runs(&huge), runs_reference(&huge));
+    }
+
+    #[test]
+    fn sequence_edges_lines_and_end_of_text() {
+        // Truncated sequences at the end of the text are not sequences.
+        assert!(decode("a=%4").is_empty());
+        assert!(decode("a=\\u00").is_empty());
+        assert!(decode("a=\\x4").is_empty());
+        // Several sequences on a line decode the line once; a line with
+        // only invalid ones is left alone; the last line needs no newline.
+        let d = decode("x=%41%42\nplain %zz\ny=\\x41\\u0042\\/");
+        assert_eq!(d.text, "x=AB\ny=AB/\n");
+        assert_eq!(d.line_map, vec![1, 3]);
+        assert_eq!(d.decoders, vec![Decoder::Url, Decoder::Escape]);
+        // A base64 value that crosses a 64-byte block and ends the text.
+        let text = format!("{}{}", " ".repeat(50), b64("password=hunter2-but-longer"));
+        let d = decode(&text);
+        assert_eq!(d.text, "password=hunter2-but-longer\n");
+        assert_eq!(d.line_map, vec![1]);
     }
 }

@@ -98,7 +98,7 @@ kubectl get secret -n prod api-keys -o yaml | kubera scan stdin
 ╰─ github-token · bc0458ecc5e4611e9dde21f8
 ```
 
-Decoding costs about 25% on a large source tree (265 MB) and next to nothing on git history. Turn it off with `--no-decode`.
+Decoding adds about 13% to detection on a large source tree (378 MB of Rust crates, see [Benchmarks](benchmarks.md#decoding)) and next to nothing on git history. Turn it off with `--no-decode`.
 
 ## Archives
 

@@ -38,6 +38,23 @@ Kubera 0.2.0 splits the commits to scan into partitions and runs one `git log` p
 
 The speedup comes from using every CPU for git's own diff work, which dominates history scans. Excluded paths are handed to git as pathspecs, so it never diffs them.
 
+### Decoding
+
+[Decoders](scanning.md#decoders) look at every byte of every file for base64 runs, percent-encoding and escapes. Measured in memory on one thread, so that disk and scheduling noise drop out, over `~/.cargo/registry/src` (31,795 files, 378 MB):
+
+| | Detection alone | Decoding | Overhead |
+|---|---:|---:|---:|
+| 0.2.0 | 2.45 s | 0.53 s | 22% |
+| After 0.2.0 | 2.45 s | **0.31 s** | **13%** |
+
+The decoded output and the findings are identical, byte for byte, on every file of the corpus. What changed:
+
+- The line index of a file is built only when something actually decodes. Most files hold a base64-looking run (a hash, a long identifier) that turns out not to decode to text, and indexing all of their lines used to cost more than finding the runs.
+- Percent-encoding and escapes are found with one `memchr` pass instead of two regex passes.
+- base64 runs are found 64 bytes at a time: each block is classified into a bitmask with branch-free code the compiler vectorizes, and only blocks holding 24 or more consecutive base64 characters are walked run by run.
+
+Scanning the decoded text again is cheap (0.02 s here): only 1,438 files decode to anything.
+
 ### Detection on a planted corpus
 
 `bench.py` generates 17 realistic fake credentials (AWS pair, GitHub, GitLab, Slack, Stripe, npm, SendGrid, OpenAI, Anthropic, Hugging Face, DigitalOcean, PyPI, Shopify, Linear, Postman, Databricks, RSA private key) next to decoys that commonly trip scanners: AWS documentation keys, `${VAR}` / `<your-key>` placeholders, `xxxx` fillers, SHA-1/SHA-256 hashes, UUIDs, base64 blobs and npm lockfile integrity hashes.
