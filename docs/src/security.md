@@ -36,6 +36,11 @@ Kubera handles live credentials, so it is conservative by default.
 6. **Reversible where possible.** Builtin templates create the replacement before revoking, and deactivate instead of deleting when the platform allows it.
 7. **Secret stores** (`--store`) are checked before the rotation starts (tokens present, HTTPS, GitHub public key readable) and written only after every step succeeded. Store credentials come from environment variables, GitHub secrets are encrypted locally with the repository's public key, and a failed store write prints the new credential rather than losing it. See [Secret stores](secret-stores.md).
 
+## Remediation
+
+- **Issues** (`kubera remediate --issues`) never contain secret values: only fingerprints, redacted previews and locations, even from a `--show-secrets` file. Values from the findings file go into code spans, so hostile paths cannot inject mentions, links or HTML; only plain `https://` links are kept. Issues go only to a **private** repository unless `--allow-public-repo`, nothing is created without `--execute`, committer mentions are off by default, and a `POST` is never retried.
+- **History purge** (`kubera purge`) must hold raw secrets in its `git filter-repo` expressions file, so the file is created with mode `0600`, never overwrites an existing file, and is refused inside the repository (where it could be committed). Kubera prints the rewrite commands and warnings but never rewrites or pushes anything.
+
 ## Repository credentials
 
 - Tokens for private repositories (`--token-env`) reach git as an `Authorization` header in `GIT_CONFIG_*` **environment variables**, never on the command line. The header is scoped to the repository's origin, so it can't follow a redirect to another host, and it is never sent over plain `http://`.

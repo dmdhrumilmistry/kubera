@@ -187,6 +187,65 @@ enum Command {
         #[arg(long, value_name = "USER")]
         git_token_user: Option<String>,
     },
+    /// Act on a findings file (`kubera scan ... -f json > findings.json`):
+    /// open one GitHub issue per leaked secret. Dry run unless --execute.
+    Remediate {
+        /// Findings from `scan -f json` or `-f jsonl` (`-` for stdin).
+        /// Redacted files work: issues use fingerprints and locations.
+        #[arg(long, value_name = "FILE")]
+        findings: PathBuf,
+        /// Open issues in this repository: `github:<owner>/<repo>`. It must
+        /// be private unless --allow-public-repo.
+        #[arg(long, value_name = "DEST")]
+        issues: String,
+        /// Environment variable with a GitHub token (issues: write).
+        #[arg(long, value_name = "ENV_VAR")]
+        token_env: Option<String>,
+        /// GitHub API base (GitHub Enterprise: https://ghe.example.com/api/v3).
+        #[arg(long, value_name = "URL", default_value = kubera::store::GITHUB_API)]
+        api_url: String,
+        /// Label for new issues (repeatable) [default: kubera, leaked-secret].
+        #[arg(long = "label", value_name = "LABEL")]
+        labels: Vec<String>,
+        /// Open issues for every finding, not only verified (live) ones.
+        #[arg(long)]
+        all: bool,
+        /// Look up the GitHub account of the commit author and @mention it.
+        #[arg(long)]
+        mention_committer: bool,
+        /// Allow issues in a public repository (they would be visible to
+        /// everyone).
+        #[arg(long)]
+        allow_public_repo: bool,
+        /// Actually open the issues.
+        #[arg(long)]
+        execute: bool,
+        #[arg(long, value_enum, default_value_t = OutFormat::Pretty)]
+        format: OutFormat,
+    },
+    /// Prepare a git history rewrite that removes the leaked values of a
+    /// findings file: writes a `git filter-repo --replace-text` expressions
+    /// file and prints the commands. Never rewrites or pushes by itself.
+    Purge {
+        /// Findings from `scan -f json` (redacted is fine: the repository is
+        /// scanned again for the raw values; a --show-secrets file is used
+        /// as is).
+        #[arg(long, value_name = "FILE")]
+        findings: PathBuf,
+        /// The repository whose history holds the secrets.
+        #[arg(long, value_name = "PATH", default_value = ".")]
+        repo: PathBuf,
+        /// Expressions file to create (mode 0600, never overwritten, must be
+        /// outside the repository) [default: <repo>-kubera-purge.txt next
+        /// to the repository].
+        #[arg(short = 'o', long, value_name = "FILE")]
+        output: Option<PathBuf>,
+        /// Text that replaces each secret.
+        #[arg(long, default_value = "***REMOVED***")]
+        replacement: String,
+        #[arg(long, value_enum, default_value_t = OutFormat::Pretty)]
+        format: OutFormat,
+    },
     /// Manage detector templates.
     Templates {
         #[command(subcommand)]
@@ -763,6 +822,92 @@ async fn run(cli: Cli) -> Result<u8> {
             )
             .await
         }
+        Command::Remediate {
+            findings,
+            issues,
+            token_env,
+            api_url,
+            labels,
+            all,
+            mention_committer,
+            allow_public_repo,
+            execute,
+            format,
+        } => {
+            let (owner, repo) = kubera::remediate::parse_github(&issues)?;
+            let list = kubera::remediate::load_findings(&findings)?;
+            let total = list.len();
+            let valid: Vec<Finding> = list
+                .into_iter()
+                .filter(|f| kubera::remediate::valid_fingerprint(&f.fingerprint))
+                .collect();
+            // One issue per secret; it is live if any sighting verified.
+            let mut groups = kubera::remediate::group(&valid);
+            groups.retain(|g| all || g[0].status() == Some(Status::Verified));
+            let token = match &token_env {
+                Some(var) => Some(std::env::var(var).with_context(|| {
+                    format!("environment variable `{var}` (from --token-env) is not set")
+                })?),
+                None => None,
+            };
+            let st = Style {
+                color: report::use_color(),
+            };
+            if groups.is_empty() {
+                eprintln!(
+                    "nothing to do: {total} finding(s), none {}",
+                    if all {
+                        "with a valid fingerprint"
+                    } else {
+                        "verified as live (scan with --verify, or pass --all)"
+                    }
+                );
+                return Ok(0);
+            }
+            let client = match token {
+                Some(t) => {
+                    let mut c = kubera::forge::Client::new(
+                        Some(t),
+                        None,
+                        std::time::Duration::from_secs(900),
+                    )?;
+                    c.allow_http = cli.global.allow_http;
+                    Some(c)
+                }
+                None => None,
+            };
+            let o = kubera::remediate::IssueOptions {
+                owner,
+                repo,
+                api: api_url.trim_end_matches('/').to_string(),
+                labels: if labels.is_empty() {
+                    vec!["kubera".into(), "leaked-secret".into()]
+                } else {
+                    labels
+                },
+                mention_committer,
+                allow_public: allow_public_repo,
+                execute,
+                max_existing: 5000,
+            };
+            let rep = kubera::remediate::issues(client.as_ref(), &o, &groups).await?;
+            match format {
+                OutFormat::Json => println!("{}", serde_json::to_string_pretty(&rep)?),
+                OutFormat::Pretty => print_issues(&rep, &st),
+            }
+            Ok(if rep.results.iter().any(|r| r.action == "failed") {
+                1
+            } else {
+                0
+            })
+        }
+        Command::Purge {
+            findings,
+            repo,
+            output,
+            replacement,
+            format,
+        } => cmd_purge(&cli.global, findings, repo, output, replacement, format),
         Command::Templates { cmd } => cmd_templates(&cli.global, cmd),
         Command::Hook { cmd } => {
             let st = Style {
@@ -2184,6 +2329,179 @@ fn write_private(path: &std::path::Path, data: &[u8]) -> Result<()> {
     file.write_all(data)?;
     file.sync_all()?;
     Ok(())
+}
+
+fn print_issues(rep: &kubera::remediate::IssuesReport, st: &Style) {
+    println!(
+        "{} {}  {}",
+        st.bold("remediate"),
+        rep.repository,
+        if rep.executed {
+            String::new()
+        } else {
+            st.dim("(dry run - pass --execute to open the issues)")
+        }
+    );
+    for w in &rep.warnings {
+        println!("  {} {w}", st.yellow("!"));
+    }
+    for r in &rep.results {
+        let (mark, what) = match r.action.as_str() {
+            "opened" => (st.green("✔"), format!("opened #{}", r.issue.unwrap_or(0))),
+            "exists" => (
+                st.dim("="),
+                format!("already open #{}", r.issue.unwrap_or(0)),
+            ),
+            "failed" => (st.red("✘"), "failed".to_string()),
+            _ => (st.dim("·"), "would open".to_string()),
+        };
+        println!(
+            "  {mark} {:<16} {} {}",
+            what,
+            st.bold(&r.title),
+            st.dim(&format!(
+                "[{}, {} location(s){}]",
+                r.status,
+                r.locations,
+                r.mention
+                    .as_ref()
+                    .map(|m| format!(", @{m}"))
+                    .unwrap_or_default()
+            ))
+        );
+        if let Some(u) = &r.url {
+            println!("      {}", st.dim(u));
+        }
+        if let Some(e) = &r.error {
+            println!("      {}", st.red(e));
+        }
+    }
+    let n = |a: &str| rep.results.iter().filter(|r| r.action == a).count();
+    println!(
+        "\n{} to open, {} opened, {} already open, {} failed",
+        n("would_open"),
+        n("opened"),
+        n("exists"),
+        n("failed")
+    );
+}
+
+fn cmd_purge(
+    g: &GlobalArgs,
+    findings: PathBuf,
+    repo: PathBuf,
+    output: Option<PathBuf>,
+    replacement: String,
+    format: OutFormat,
+) -> Result<u8> {
+    use kubera::remediate;
+    let ctx = context(g)?;
+    let wanted: Vec<Finding> = remediate::load_findings(&findings)?
+        .into_iter()
+        .filter(|f| remediate::valid_fingerprint(&f.fingerprint))
+        .collect();
+    if wanted.is_empty() {
+        bail!("{} holds no findings", findings.display());
+    }
+    let top = remediate::toplevel(&repo)?;
+    let output = output.unwrap_or_else(|| {
+        let name = top
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "repo".into());
+        top.parent()
+            .unwrap_or(std::path::Path::new("."))
+            .join(format!("{name}-kubera-purge.txt"))
+    });
+    let fps: std::collections::BTreeSet<&str> =
+        wanted.iter().map(|f| f.fingerprint.as_str()).collect();
+    // Raw values: from a --show-secrets file (checked against the
+    // fingerprint), otherwise from a fresh scan of the history.
+    let mut found: Vec<Finding> = Vec::new();
+    for f in wanted.iter().filter(|f| !f.redacted) {
+        if let Ok(t) = template::find(&ctx.templates, &f.detector) {
+            let raw = Finding::new(t, f.secret.clone(), f.location.clone());
+            if raw.fingerprint == f.fingerprint {
+                found.push(raw);
+            }
+        }
+    }
+    let missing: Vec<&str> = fps
+        .iter()
+        .copied()
+        .filter(|fp| !found.iter().any(|f| f.fingerprint == *fp))
+        .collect();
+    if !missing.is_empty() {
+        eprintln!(
+            "{} scanning the history of {} for {} redacted finding(s)",
+            ctx.style.dim("›"),
+            top.display(),
+            missing.len()
+        );
+        let engine = Engine::new(ctx.templates.iter().map(|l| l.template.clone()).collect())?;
+        // No excludes, allowlist or baseline: every copy must be found.
+        let filter = Filter::new(&[], &Default::default())?;
+        let target = scan::Target::Git {
+            repo: top.display().to_string(),
+            options: git::GitOptions::default(),
+            auth: Default::default(),
+            baseline: None,
+            mirror: None,
+        };
+        let out = scan::run_detailed(&engine, &filter, &target, u64::MAX / 2, &|_| {})?;
+        found.extend(
+            out.findings
+                .into_iter()
+                .filter(|f| missing.contains(&f.fingerprint.as_str())),
+        );
+    }
+    let rep = remediate::purge(
+        &remediate::PurgeOptions {
+            repo: top,
+            output,
+            replacement,
+        },
+        &wanted,
+        &found,
+    )?;
+    let st = &ctx.style;
+    match format {
+        OutFormat::Json => println!("{}", serde_json::to_string_pretty(&rep)?),
+        OutFormat::Pretty => {
+            println!(
+                "{} wrote {} expression(s) for {} secret(s) to {} {}",
+                st.green("✓"),
+                rep.values,
+                rep.resolved.len(),
+                st.bold(&rep.expressions_file),
+                st.dim("(mode 0600: it holds the raw secrets)")
+            );
+            if !rep.not_found.is_empty() {
+                println!(
+                    "{} {} finding(s) not found in the history (uncommitted, another repository, or already removed): {}",
+                    st.yellow("!"),
+                    rep.not_found.len(),
+                    rep.not_found.join(", ")
+                );
+            }
+            for w in &rep.warnings {
+                println!("{} {w}", st.yellow("!"));
+            }
+            println!(
+                "\n{}\n  - Rotate first: a rewrite never un-leaks a live secret; anyone may already have a copy.\n  - Every commit hash after the first leak changes, and the push must be forced.\n  - Collaborators must re-clone (a pull or merge brings the old history back); open pull requests need rebasing.\n  - Forks, other clones, CI caches and the forge's pull request refs keep the old commits (GitHub Support can purge cached views).\n  - Kubera changed nothing: review the commands and run them yourself.",
+                st.red("Before you run this")
+            );
+            println!("\n{}", st.bold("Commands (need git-filter-repo)"));
+            for c in &rep.commands {
+                if c.starts_with('#') {
+                    println!("  {}", st.dim(c));
+                } else {
+                    println!("  {c}");
+                }
+            }
+        }
+    }
+    Ok(0)
 }
 
 fn cmd_templates(g: &GlobalArgs, cmd: TemplatesCmd) -> Result<u8> {

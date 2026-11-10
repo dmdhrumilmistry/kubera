@@ -34,6 +34,7 @@ pub mod http;
 pub mod mass;
 pub mod mcp;
 pub mod notify;
+pub mod remediate;
 pub mod render;
 pub mod report;
 pub mod report_html;

@@ -14,6 +14,7 @@
 - [Interactive TUI](tui.md)
 - [Verify, analyze and rotate](lifecycle.md)
 - [Baselines and triage](triage.md)
+- [Remediation: issues and history cleanup](remediation.md)
 - [Configuration](configuration.md)
 
 # Sources

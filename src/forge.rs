@@ -242,6 +242,77 @@ impl Client {
 }
 
 impl Client {
+    /// One GitHub API call (`GET`, `POST`, ...) with a JSON body. Rate
+    /// limits are waited out for every method (the request was rejected,
+    /// not processed); transport errors and 5xx are retried for `GET` only,
+    /// so a `POST` is never sent twice. Returns the status and the JSON body
+    /// (`Null` if empty or not JSON) without failing on 4xx/5xx.
+    pub async fn github_call(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        body: Option<&Value>,
+    ) -> Result<(u16, Value)> {
+        let url = reqwest::Url::parse(url).context("invalid API url")?;
+        if url.scheme() != "https" && !(self.allow_http && url.scheme() == "http") {
+            bail!("refusing non-https API url {}", host(&url));
+        }
+        let idempotent = method == reqwest::Method::GET;
+        let mut attempt = 0u32;
+        loop {
+            let mut rb = self
+                .http
+                .request(method.clone(), url.clone())
+                .header("Accept", "application/vnd.github+json")
+                .header("X-GitHub-Api-Version", "2022-11-28");
+            if let Some(b) = body {
+                rb = rb.json(b);
+            }
+            let resp = match self.authorize(Kind::GitHub, rb).send().await {
+                Ok(r) => r,
+                Err(e) if idempotent && attempt < self.retries => {
+                    attempt += 1;
+                    tokio::time::sleep(backoff(attempt)).await;
+                    let _ = e;
+                    continue;
+                }
+                Err(e) => {
+                    return Err(e.without_url()).context(format!("{method} {}", host(&url)));
+                }
+            };
+            let status = resp.status().as_u16();
+            let headers = resp.headers().clone();
+            if let Some(wait) = rate_limit_wait(status, &headers) {
+                if attempt >= self.retries {
+                    bail!("{}: still rate limited after {attempt} retries", host(&url));
+                }
+                if wait > self.max_wait {
+                    bail!(
+                        "{}: rate limited for {}s (more than the {}s limit); retry later",
+                        host(&url),
+                        wait.as_secs(),
+                        self.max_wait.as_secs()
+                    );
+                }
+                attempt += 1;
+                eprintln!(
+                    "api: rate limited by {}; waiting {}s",
+                    host(&url),
+                    wait.as_secs()
+                );
+                tokio::time::sleep(wait).await;
+                continue;
+            }
+            if idempotent && (500..600).contains(&status) && attempt < self.retries {
+                attempt += 1;
+                tokio::time::sleep(backoff(attempt)).await;
+                continue;
+            }
+            let text = resp.text().await.unwrap_or_default();
+            return Ok((status, serde_json::from_str(&text).unwrap_or(Value::Null)));
+        }
+    }
+
     /// Every item of a paginated GitHub list endpoint (JSON array), up to
     /// `max` items, following `Link: rel="next"` on the same origin only.
     pub async fn github_list(&self, url: &str, max: usize) -> Result<Vec<Value>> {

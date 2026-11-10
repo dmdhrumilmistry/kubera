@@ -180,6 +180,32 @@ kubera scan git . --no-baseline
 
 To silence one line in the code, add a `kubera:ignore` comment to it. See [Baselines and triage](triage.md) and [Configuration](configuration.md).
 
+## Follow up: issues and history cleanup
+
+Save the findings first (redacted):
+
+```bash
+kubera scan git . --verify -f json > findings.json
+```
+
+Plan one GitHub issue per live secret, in a private repository (dry run):
+
+```bash
+kubera remediate --findings findings.json --issues github:acme/security --token-env GH_TOKEN
+```
+
+Open them, mentioning the author of each leaking commit:
+
+```bash
+kubera remediate --findings findings.json --issues github:acme/security --token-env GH_TOKEN --mention-committer --execute
+```
+
+Prepare a history rewrite of the leaked values (writes a `git filter-repo` file and prints the commands, changes nothing):
+
+```bash
+kubera purge --findings findings.json --repo .
+```
+
 ## Reports
 
 A self-contained HTML report:

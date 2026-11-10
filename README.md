@@ -51,6 +51,7 @@
 | 🔁 **Rotate** | Dry-run plan by default; vendor API calls only with `--execute` and confirmation. Manual runbooks for platforms with no API. |
 | 🔐 **Close the loop** | `rotate --store` writes the new credential to **GitHub Actions secrets** (sealed-box encrypted locally), **Vault** KV v2 or **AWS Secrets Manager**, checked before anything rotates and never lost if a store fails. [Details →](https://dmdhrumilmistry.github.io/kubera/secret-stores.html) |
 | 🖥️ **Interactive** | A keyboard-driven TUI, hidden secret prompts, and auto-identification of pasted secrets. |
+| 🧹 **Remediate** | `kubera remediate` opens **one GitHub issue per live secret** (deduplicated by fingerprint, optional committer mention, private repositories only); `kubera purge` prepares a **git filter-repo** history rewrite of the leaked values and prints the commands. [Details →](https://dmdhrumilmistry.github.io/kubera/remediation.html) |
 | 🗂️ **Triage** | A committed **baseline** so CI only fails on new leaks; mark false positives (`x`) or accepted risks (`m`) in the TUI. [Details →](https://dmdhrumilmistry.github.io/kubera/triage.html) |
 | 🛡️ **Prevent** | A **pre-commit hook** (`kubera hook install`, or the pre-commit framework), a **GitHub Action** with code scanning, and a **Docker image**. [CI →](https://dmdhrumilmistry.github.io/kubera/ci.html) |
 | 🧩 **Templates** | Everything per-platform lives in validated YAML, with built-in test samples. |
