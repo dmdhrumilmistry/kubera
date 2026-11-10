@@ -47,6 +47,19 @@ Each release also carries `kubera-packaging-vX.Y.Z.tar.gz` with the rendered Hom
 
 The winget manifests use the zip's `kubera.exe` as a portable command, so `kubera` is on your PATH after installing. The binary is linked against the Visual C++ runtime (`vcruntime140.dll`), which nearly every Windows install already has; if `kubera` fails to start with a missing DLL, install the [Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist).
 
+## Nix
+
+The repository is a flake that builds Kubera from source (with nixpkgs' Rust toolchain, pinned by `flake.lock`) and runs the test suite in the sandbox:
+
+```bash
+nix run github:dmdhrumilmistry/kubera -- --version          # run without installing
+nix profile install github:dmdhrumilmistry/kubera           # install
+nix run github:dmdhrumilmistry/kubera/vX.Y.Z -- --version   # a tagged release (after v0.2.0)
+nix develop                                                 # in a checkout: cargo, clippy, rustfmt, mdbook
+```
+
+In a NixOS or Home Manager configuration, add the flake as an input and use `inputs.kubera.packages.${pkgs.stdenv.hostPlatform.system}.default`. Supported systems: `x86_64-linux`, `aarch64-linux` and `aarch64-darwin` (nixpkgs no longer supports Intel Macs; use Homebrew or `install.sh` there).
+
 ## Cargo
 
 ```bash

@@ -102,6 +102,18 @@ jobs:
           tool: cargo-audit
       - run: cargo audit
 
+  nix:
+    name: Nix flake
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@v31
+      # Evaluates every system, then builds and tests (checkPhase) for Linux.
+      - run: nix flake check -L
+      - run: nix run . -- --version
+
   installers:
     name: Installers (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

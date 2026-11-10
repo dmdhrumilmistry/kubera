@@ -68,6 +68,7 @@
 curl -fsSL https://raw.githubusercontent.com/dmdhrumilmistry/kubera/main/install.sh | sh   # Linux, macOS, Termux
 cargo install kubera-cli --locked                                                        # any platform with Rust 1.88+
 brew install dmdhrumilmistry/tap/kubera                                                  # Homebrew (macOS, Linux)
+nix run github:dmdhrumilmistry/kubera -- --version                                       # Nix flake (builds from source)
 docker run --rm -v "$PWD:/scan" ghcr.io/dmdhrumilmistry/kubera scan git /scan              # container image
 ```
 
