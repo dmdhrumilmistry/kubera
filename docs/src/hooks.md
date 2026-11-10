@@ -61,7 +61,7 @@ If you manage hooks with [pre-commit](https://pre-commit.com), use the hooks thi
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/dmdhrumilmistry/kubera
-    rev: v0.2.0
+    rev: v0.3.0
     hooks:
       - id: kubera          # pre-commit builds kubera with cargo
       # - id: kubera-system # or use a kubera already on PATH

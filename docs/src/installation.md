@@ -128,7 +128,7 @@ docker run --rm ghcr.io/dmdhrumilmistry/kubera scan image alpine:3.20
 
 | Tag | Meaning |
 |---|---|
-| `0.2.0` | One release |
+| `0.3.0` | One release |
 | `0.2` | Latest patch release of 0.2 |
 | `latest` | Latest release |
 
@@ -149,7 +149,7 @@ docker run --rm -v "$PWD:/scan" kubera scan git /scan
 - uses: actions/checkout@v4
   with:
     fetch-depth: 0
-- uses: dmdhrumilmistry/kubera@v0.2.0
+- uses: dmdhrumilmistry/kubera@v0.3.0
 ```
 
 The action installs a release binary and scans the repository, with SARIF upload to code scanning. See [CI integration](ci.md#github-action) for inputs and outputs.
