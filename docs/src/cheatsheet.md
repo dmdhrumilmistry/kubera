@@ -66,6 +66,12 @@ What users install from npm, PyPI or crates.io, every published version:
 kubera scan package npm:@acme/cli pypi:acme-tool crates:acme --all-versions
 ```
 
+Every image a Docker Hub organization publishes (newest tag of each repository):
+
+```bash
+kubera scan dockerhub acme
+```
+
 GitHub issues, pull requests, comments and Actions logs of an organization:
 
 ```bash

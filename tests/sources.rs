@@ -850,3 +850,94 @@ async fn packages_npm_pypi_crates_verified_downloads() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dockerhub_org_images_are_listed_and_pulled() {
+    use sha2::{Digest, Sha256};
+    let [t1] = fake_tokens();
+    let digest = |b: &[u8]| format!("sha256:{}", hex::encode(Sha256::digest(b)));
+    let layer = tgz(&[("app/creds.env", format!("GITHUB_TOKEN={t1}\n").as_bytes())]);
+    let cfg = serde_json::to_vec(&serde_json::json!({
+        "architecture": "amd64", "os": "linux", "config": {}, "history": []
+    }))
+    .unwrap();
+    let manifest = serde_json::to_vec(&serde_json::json!({
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "config": {"mediaType": "application/vnd.oci.image.config.v1+json",
+                   "digest": digest(&cfg), "size": cfg.len()},
+        "layers": [{"mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+                    "digest": digest(&layer), "size": layer.len()}]
+    }))
+    .unwrap();
+    let server = MockServer::start().await;
+    let uri = server.uri();
+    Mock::given(method("POST"))
+        .and(path("/v2/users/login"))
+        .respond_with(json(serde_json::json!({"token": "hub-jwt"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v2/namespaces/acme/repositories"))
+        .and(header("authorization", "Bearer hub-jwt"))
+        .respond_with(json(serde_json::json!({"next": null, "results": [
+            {"name": "app", "repository_type": "image"},
+            {"name": "huge", "repository_type": "image"}
+        ]})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v2/namespaces/acme/repositories/app/tags"))
+        .and(query_param("ordering", "last_updated"))
+        .respond_with(json(serde_json::json!({"results": [
+            {"name": "1.0", "full_size": layer.len()}
+        ]})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v2/namespaces/acme/repositories/huge/tags"))
+        .respond_with(json(serde_json::json!({"results": [
+            {"name": "latest", "full_size": 99_000_000_000u64}
+        ]})))
+        .mount(&server)
+        .await;
+    for (p, body) in [
+        ("/v2/acme/app/manifests/1.0".to_string(), manifest.clone()),
+        (format!("/v2/acme/app/blobs/{}", digest(&cfg)), cfg.clone()),
+        (
+            format!("/v2/acme/app/blobs/{}", digest(&layer)),
+            layer.clone(),
+        ),
+    ] {
+        Mock::given(method("GET"))
+            .and(path(p))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(body))
+            .mount(&server)
+            .await;
+    }
+    let registry = uri.trim_start_matches("http://").to_string();
+    let found = run(
+        &[
+            "scan",
+            "dockerhub",
+            "acme",
+            "--hub-url",
+            &uri,
+            "--registry",
+            &registry,
+            "--registry-user",
+            "ci",
+            "--registry-token-env",
+            "HUB_PAT",
+        ],
+        &[("HUB_PAT", "hub-pat")],
+    )
+    .await;
+    assert_eq!(paths(&found, "container"), vec!["/app/creds.env"]);
+    assert_eq!(
+        found[0]["location"]["repository"],
+        format!("{registry}/acme/app:1.0")
+    );
+    let reqs = server.received_requests().await.unwrap();
+    assert!(!reqs.iter().any(|r| r.url.path().contains("/v2/acme/huge/")));
+}

@@ -4,6 +4,7 @@ pub mod archive;
 pub mod bitbucket;
 pub mod bucket;
 pub mod confluence;
+pub mod dockerhub;
 pub mod fs;
 pub mod git;
 pub mod github;

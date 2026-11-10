@@ -688,6 +688,48 @@ enum ScanSource {
         #[command(flatten)]
         opts: ScanArgs,
     },
+    /// Scan the images of Docker Hub organizations: repositories and their
+    /// most recent tags are listed through the Hub API, then each image is
+    /// pulled and scanned like `scan image` (every layer, ENV, history).
+    Dockerhub {
+        /// Organizations or users (repeatable).
+        #[arg(required = true, value_name = "ORG")]
+        orgs: Vec<String>,
+        /// Repositories scanned per organization.
+        #[arg(long, default_value_t = 100, value_name = "N")]
+        limit: usize,
+        /// Most recently pushed tags scanned per repository.
+        #[arg(long, default_value_t = 1, value_name = "N")]
+        tags: usize,
+        /// Platform to pick from multi-arch images.
+        #[arg(long, default_value = "linux/amd64", value_name = "OS/ARCH")]
+        platform: String,
+        /// Docker Hub user (with --registry-token-env: private repositories).
+        #[arg(long, value_name = "USER", requires = "registry_token_env")]
+        registry_user: Option<String>,
+        /// Environment variable with a Docker Hub personal access token.
+        #[arg(long, value_name = "ENV_VAR")]
+        registry_token_env: Option<String>,
+        /// Refuse layers larger than this many bytes.
+        #[arg(long, value_name = "BYTES", default_value_t = kubera::sources::image::DEFAULT_MAX_LAYER_SIZE)]
+        max_layer_size: u64,
+        /// Skip tags whose compressed size (as the Hub reports it) is larger.
+        #[arg(long, value_name = "BYTES", default_value_t = 4 * 1024 * 1024 * 1024)]
+        max_image_size: u64,
+        /// Hub API base (tests).
+        #[arg(
+            long,
+            value_name = "URL",
+            default_value = "https://hub.docker.com",
+            hide = true
+        )]
+        hub_url: String,
+        /// Registry the images are pulled from (tests, mirrors).
+        #[arg(long, value_name = "HOST", default_value = "docker.io", hide = true)]
+        registry: String,
+        #[command(flatten)]
+        opts: ScanArgs,
+    },
     /// Scan a cloud storage bucket: s3://bucket[/prefix] (also MinIO, R2
     /// and other S3-compatible stores with --endpoint-url) or
     /// gs://bucket[/prefix]. Archives inside are opened too.
@@ -1286,6 +1328,7 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         | ScanSource::Jira { opts, .. }
         | ScanSource::Confluence { opts, .. }
         | ScanSource::Package { opts, .. }
+        | ScanSource::Dockerhub { opts, .. }
         | ScanSource::Bucket { opts, .. }
         | ScanSource::K8s { opts, .. }
         | ScanSource::Stdin { opts } => opts,
@@ -1416,7 +1459,8 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         | ScanSource::Slack { .. }
         | ScanSource::Jira { .. }
         | ScanSource::Confluence { .. }
-        | ScanSource::Package { .. } => scan::Target::Text(String::new()),
+        | ScanSource::Package { .. }
+        | ScanSource::Dockerhub { .. } => scan::Target::Text(String::new()),
         ScanSource::Image {
             image,
             platform,
@@ -1687,6 +1731,7 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         ScanSource::Jira { site, .. } => format!("Jira {site}"),
         ScanSource::Confluence { site, .. } => format!("Confluence {site}"),
         ScanSource::Package { packages, .. } => packages.join(", "),
+        ScanSource::Dockerhub { orgs, .. } => format!("Docker Hub {}", orgs.join(", ")),
         ScanSource::Image { image, .. } => image.clone(),
         ScanSource::Bucket { url, .. } => url.clone(),
         ScanSource::K8s { context, .. } => {
@@ -2250,6 +2295,78 @@ async fn cmd_scan_api(
             .await?;
             progress(format!("{n} package file(s) scanned"));
             collector.into_findings()
+        }
+        ScanSource::Dockerhub {
+            orgs,
+            limit,
+            tags,
+            platform,
+            registry_user,
+            registry_token_env,
+            max_layer_size,
+            max_image_size,
+            hub_url,
+            registry,
+            ..
+        } => {
+            use kubera::sources::{dockerhub, image};
+            let token = env_secret(registry_token_env.as_ref(), "--registry-token-env")?;
+            let jwt = match (registry_user, &token) {
+                (Some(u), Some(t)) => Some(dockerhub::login(hub_url, u, t, g.allow_http).await?),
+                _ => None,
+            };
+            let mut client =
+                kubera::forge::Client::new(jwt, None, std::time::Duration::from_secs(900))?;
+            client.allow_http = g.allow_http;
+            let o = dockerhub::Options {
+                hub: hub_url.clone(),
+                registry: registry.clone(),
+                limit: *limit,
+                tags: *tags,
+                max_image_size: *max_image_size,
+            };
+            let mut findings = Vec::new();
+            for org in orgs {
+                if org.is_empty()
+                    || !org
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "-_".contains(c))
+                {
+                    bail!("`{org}` is not a Docker Hub organization or user name");
+                }
+                progress(format!("{org}: listing repositories"));
+                let (refs, warnings) = dockerhub::images(&client, org, &o).await?;
+                for w in warnings {
+                    eprintln!("warning: {w}");
+                }
+                for r in refs {
+                    progress(format!("pulling {r} ({platform})"));
+                    let pulled = image::pull(
+                        &r,
+                        &image::PullOptions {
+                            platform: platform.clone(),
+                            user: registry_user.clone(),
+                            token: token.clone(),
+                            allow_http: g.allow_http,
+                            max_layer_size: *max_layer_size,
+                        },
+                    )
+                    .await;
+                    let img = match pulled {
+                        Ok(i) => i,
+                        Err(e) => {
+                            eprintln!("warning: {r}: {e:#}");
+                            continue;
+                        }
+                    };
+                    let target = scan::Target::Image(std::sync::Arc::new(img));
+                    match scan::run(engine, filter, &target, max_size, &|_| {}) {
+                        Ok(f) => findings.extend(f),
+                        Err(e) => eprintln!("warning: {r}: {e:#}"),
+                    }
+                }
+            }
+            findings
         }
         _ => return Ok(None),
     };
