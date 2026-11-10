@@ -33,8 +33,22 @@ fn archive(binary: &[u8]) -> Vec<u8> {
 }
 
 /// A stand-in for a new kubera: a script that prints its version.
+/// Interpreter line for the fake binaries: `/bin/sh`, or `$PREFIX/bin/sh`
+/// where there is no `/bin/sh` (Android / Termux).
+fn shebang() -> String {
+    if !std::path::Path::new("/bin/sh").exists()
+        && let Some(prefix) = std::env::var_os("PREFIX")
+    {
+        let sh = std::path::Path::new(&prefix).join("bin/sh");
+        if sh.exists() {
+            return format!("#!{}", sh.display());
+        }
+    }
+    "#!/bin/sh".into()
+}
+
 fn fake_kubera(version: &str) -> Vec<u8> {
-    format!("#!/bin/sh\necho \"kubera {version}\"\n").into_bytes()
+    format!("{}\necho \"kubera {version}\"\n", shebang()).into_bytes()
 }
 
 fn sha256(data: &[u8]) -> String {
@@ -262,7 +276,7 @@ async fn api_digest_must_agree_with_the_checksum_file() {
 async fn a_binary_that_does_not_run_is_not_installed() {
     let server = MockServer::start().await;
     // Verified bytes, but not something that runs and reports the version.
-    Fake::new("v9.9.9", b"#!/bin/sh\nexit 3\n")
+    Fake::new("v9.9.9", format!("{}\nexit 3\n", shebang()).as_bytes())
         .serve(&server, "/api/repos/owner/kubera/releases/latest")
         .await;
     let up = Updater::new(source(&server)).unwrap();
