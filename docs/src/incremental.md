@@ -15,7 +15,7 @@ kubera scan git ~/src/monorepo --checkpoint monorepo.ckpt         # resumable
 
 A single `git log -p` uses one CPU, and on a big repository git, not the detectors, is the bottleneck. Kubera lists the commits to scan with `git rev-list`, splits them into partitions, and runs one `git log` per CPU over them. Each worker parses its process's output while git is still producing it. The findings are the same as a sequential scan.
 
-`-j N` sets the number of workers (default `0`: one per CPU). It applies to every history scan: `scan git`, `scan repos`, and the wikis and gists of `scan github`. In `scan repos`, the CPUs are divided between the `--repo-concurrency` repositories scanned at the same time, so the machine is not oversubscribed.
+`-j N` sets the number of workers (default `0`: one per CPU). It applies to every history scan: `scan git`, `scan repos`, and the wikis and gists of `scan github`. In `scan repos`, the CPUs are divided between the repositories scanned at the same time (`--repo-concurrency`, or fewer when fewer repositories are listed), so the machine is neither oversubscribed nor left idle.
 
 Measured on [rust-lang/cargo](https://github.com/rust-lang/cargo) (24,445 commits) on 4 vCPUs:
 

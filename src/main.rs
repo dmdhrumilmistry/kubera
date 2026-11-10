@@ -2979,11 +2979,13 @@ async fn cmd_scan_repos(
         cache_dir: cache_dir.clone(),
         git: git::GitOptions {
             max_depth: *max_depth,
-            // Repositories already run in parallel: share the CPUs.
+            // Repositories already run in parallel: share the CPUs among
+            // those actually scanned at the same time.
             jobs: if opts.jobs > 0 {
                 opts.jobs
             } else {
-                (git::effective_jobs(0) / (*repo_concurrency).max(1)).max(1)
+                let parallel = (*repo_concurrency).clamp(1, targets.len().max(1));
+                (git::effective_jobs(0) / parallel).max(1)
             },
             ..Default::default()
         },

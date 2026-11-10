@@ -38,6 +38,8 @@ Kubera 0.2.0 splits the commits to scan into partitions and runs one `git log` p
 
 The speedup comes from using every CPU for git's own diff work, which dominates history scans. Excluded paths are handed to git as pathspecs, so it never diffs them.
 
+`scan repos` divides the CPUs between the repositories it scans at the same time. With fewer repositories than `--repo-concurrency` (default 4), it used to divide them by 4 anyway: cargo and a fork of it took 11.3 s with one `git log` each, and take **6.6 s** now that each gets half of the CPUs.
+
 ### Repeated changes
 
 History scans scan a file change that repeats in several commits (same old and new blob) only once and report it at its first commit (see [Repeated changes](incremental.md#repeated-changes)). Full history, no verification, 4 vCPUs, best of 5 interleaved runs:
