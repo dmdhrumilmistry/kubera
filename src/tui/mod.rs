@@ -93,6 +93,7 @@ mod tests {
             max_file_size: 1 << 20,
             runtime: None,
             baseline: None,
+            verify_cache: None,
         }
     }
 
@@ -117,11 +118,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        f.verification = status.map(|s| Verification {
-            status: s,
-            message: None,
-            details: BTreeMap::new(),
-        });
+        f.verification = status.map(|s| Verification::new(s, None, BTreeMap::new()));
         f
     }
 
@@ -253,6 +250,20 @@ mod tests {
         app.on_key(key(KeyCode::Enter));
         assert_eq!(app.visible.len(), 1);
         assert_eq!(app.current().unwrap().detector, "slack-token");
+    }
+
+    #[test]
+    fn cached_verification_is_marked_in_the_detail_pane() {
+        let svc = services();
+        let mut f = finding(&svc, "github-token", "a.env", Some(Status::Invalid));
+        let v = f.verification.as_mut().unwrap();
+        v.cached = true;
+        v.checked_at = Some("2026-01-02T03:04:05Z".into());
+        let mut app = App::new(svc);
+        app.set_results(vec![f], "test".into());
+        let s = render(&app, 140, 40);
+        assert!(s.contains("2026-01-02T03:04:05Z"), "{s}");
+        assert!(s.contains("no request sent"), "{s}");
     }
 
     #[test]

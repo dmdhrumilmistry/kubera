@@ -60,16 +60,70 @@ A container image, every layer, no Docker needed:
 kubera scan image ghcr.io/acme/api:1.4.2
 ```
 
+What users install from npm, PyPI or crates.io, every published version:
+
+```bash
+kubera scan package npm:@acme/cli pypi:acme-tool crates:acme --all-versions
+```
+
+Every image a Docker Hub organization publishes (newest tag of each repository):
+
+```bash
+kubera scan dockerhub acme
+```
+
+Every model, dataset and Space of a Hugging Face organization, full git history:
+
+```bash
+kubera scan huggingface acme --token-env HF_TOKEN
+```
+
 GitHub issues, pull requests, comments and Actions logs of an organization:
 
 ```bash
 kubera scan github --org acme --token-env GH_TOKEN
 ```
 
+GitLab issues, merge requests, comments and CI job logs of a group:
+
+```bash
+kubera scan gitlab --group acme --token-env GL_TOKEN
+```
+
+Bitbucket issues, pull requests, comments and Pipelines logs of a workspace:
+
+```bash
+kubera scan bitbucket --workspace acme --token-env BB_TOKEN
+```
+
+Slack channels and threads since the start of the year (bot or user token):
+
+```bash
+kubera scan slack --since 2026-01-01 --token-env SLACK_TOKEN
+```
+
+Jira issues, comments and their edit history (Atlassian email and API token):
+
+```bash
+kubera scan jira --site https://acme.atlassian.net --email-env JIRA_EMAIL --token-env JIRA_TOKEN
+```
+
+Confluence pages, blog posts, comments and the last 10 versions of each page:
+
+```bash
+kubera scan confluence --site https://acme.atlassian.net --max-versions 10 --email-env JIRA_EMAIL --token-env JIRA_TOKEN
+```
+
 An S3 bucket (credentials from `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`):
 
 ```bash
 kubera scan bucket s3://acme-backups
+```
+
+An Azure Blob container (key from `AZURE_STORAGE_KEY`, or a SAS token with `--sas-env`):
+
+```bash
+kubera scan bucket az://acmedata/backups
 ```
 
 A live Kubernetes cluster, current kubeconfig context:
@@ -96,6 +150,13 @@ Browse the results in the TUI:
 
 ```bash
 kubera scan git . --verify -i
+```
+
+Re-run a scan without re-verifying everything: live results are reused for an hour, invalid ones for a day, and marked `cached`:
+
+```bash
+kubera scan git . --verify --verify-cache
+kubera scan git . --verify --verify-cache-ttl live=15m,invalid=7d
 ```
 
 Open the TUI home menu:

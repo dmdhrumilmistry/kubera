@@ -23,6 +23,22 @@ pub enum SourceKind {
     Bucket,
     /// A live Kubernetes cluster.
     Kubernetes,
+    /// GitLab issues, merge requests, comments and CI job logs.
+    #[serde(rename = "gitlab")]
+    GitLab,
+    /// Bitbucket issues, pull requests, comments and Pipelines logs.
+    Bitbucket,
+    /// Slack messages and thread replies.
+    Slack,
+    /// Jira issues, comments and change history.
+    Jira,
+    /// Confluence pages, blog posts and comments.
+    Confluence,
+    /// Published packages (npm, PyPI, crates.io).
+    Package,
+    /// Hugging Face LFS files (repository history is `git`).
+    #[serde(rename = "huggingface")]
+    HuggingFace,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -91,6 +107,26 @@ pub struct Verification {
     /// Labelled values extracted from the verification response.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub details: BTreeMap<String, Value>,
+    /// Reused from the verification cache (`--verify-cache`): no request
+    /// was sent for it in this run.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cached: bool,
+    /// Cached results: when the platform was asked (RFC 3339, UTC).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked_at: Option<String>,
+}
+
+impl Verification {
+    /// A result just obtained from the platform.
+    pub fn new(status: Status, message: Option<String>, details: BTreeMap<String, Value>) -> Self {
+        Self {
+            status,
+            message,
+            details,
+            cached: false,
+            checked_at: None,
+        }
+    }
 }
 
 /// Serialized by `-f json`; read back by `remediate` and `purge`.

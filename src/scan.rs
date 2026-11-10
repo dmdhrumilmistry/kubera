@@ -278,8 +278,19 @@ pub fn run_detailed(
                 options.include = include;
                 options.exclude = exclude;
             }
-            let mut commits = git::rev_list(&path, &options)?;
+            let all_commits = git::rev_list(&path, &options)?;
+            let commits = &all_commits;
             let total_commits = commits.len();
+            let by_id: std::collections::HashMap<&str, &crate::template::Template> = engine
+                .detectors
+                .iter()
+                .map(|d| (d.template.id.as_str(), d.template.as_ref()))
+                .collect();
+            let rehydrate = |s: crate::checkpoint::Saved| {
+                let t = by_id.get(s.detector.as_str())?;
+                Some(Finding::new(t, s.secret, s.location))
+            };
+            let mut resumed = Vec::new();
             let checkpoint = match &options.checkpoint {
                 Some(file) => {
                     let mut ids: Vec<&str> = engine
@@ -307,24 +318,25 @@ pub fn run_detailed(
                         &ids.join(","),
                     ]);
                     let (cp, saved) = crate::checkpoint::Checkpoint::open(file, &scope)?;
-                    let by_id: std::collections::HashMap<&str, &crate::template::Template> = engine
-                        .detectors
-                        .iter()
-                        .map(|d| (d.template.id.as_str(), d.template.as_ref()))
-                        .collect();
-                    collector.push(
-                        saved
-                            .into_iter()
-                            .filter_map(|s| {
-                                let t = by_id.get(s.detector.as_str())?;
-                                Some(Finding::new(t, s.secret, s.location))
-                            })
-                            .collect(),
-                    );
-                    commits.retain(|c| !cp.is_done(c));
+                    collector.push(saved.findings.into_iter().filter_map(rehydrate).collect());
+                    resumed = saved.changes;
                     Some(cp)
                 }
                 None => None,
+            };
+            // Repeated file changes are scanned once and reported at their
+            // first commit (see `crate::dedup`); orders come from the full
+            // commit list, so they are the same after a resume.
+            let history = crate::dedup::History::new(commits, options.shared.clone());
+            history.restore(resumed, rehydrate);
+            let commits: std::borrow::Cow<[String]> = match &checkpoint {
+                Some(cp) => commits
+                    .iter()
+                    .filter(|c| !cp.is_done(c))
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .into(),
+                None => commits.as_slice().into(),
             };
             let diffs = AtomicUsize::new(0);
             let commits_done = AtomicUsize::new(total_commits - commits.len());
@@ -354,7 +366,7 @@ pub fn run_detailed(
                     .as_deref()
                     .is_some_and(|p| filter.path_excluded(std::path::Path::new(p)));
                 if !excluded {
-                    collector.push(scan_chunk(engine, filter, &c));
+                    collector.push(history.scan(&c, |c| scan_chunk(engine, filter, c)));
                 }
                 let n = diffs.fetch_add(1, Ordering::Relaxed) + 1;
                 if n.is_multiple_of(256) {
@@ -362,6 +374,10 @@ pub fn run_detailed(
                 }
             };
             let cp_error: std::sync::Mutex<Option<anyhow::Error>> = Default::default();
+            let snapshot = || crate::checkpoint::Snapshot {
+                findings: collector.snapshot(),
+                changes: history.snapshot(),
+            };
             let done = |part: &[String]| {
                 let n = commits_done.fetch_add(part.len(), Ordering::Relaxed) + part.len();
                 progress(Progress::Commits {
@@ -369,7 +385,7 @@ pub fn run_detailed(
                     total: total_commits,
                 });
                 if let Some(cp) = &checkpoint
-                    && let Err(e) = cp.mark(part, || collector.snapshot())
+                    && let Err(e) = cp.mark(part, snapshot)
                 {
                     cp_error.lock().unwrap().get_or_insert(e);
                 }
@@ -378,7 +394,7 @@ pub fn run_detailed(
             if let Err(e) = scanned {
                 if let (Some(cp), Some(file)) = (&checkpoint, &options.checkpoint) {
                     // Keep what finished so a rerun resumes from here.
-                    cp.write(collector.snapshot())?;
+                    cp.write(snapshot())?;
                     return Err(e.context(format!(
                         "scan stopped after {} of {total_commits} commits; progress saved to {} \
                          - run the same command again to resume",
@@ -396,6 +412,7 @@ pub fn run_detailed(
                 cp.finish()?;
             }
             let commits = total_commits;
+            collector.push(history.into_findings());
             let mut findings = collector.into_findings();
             if let Some(r) = web {
                 for f in &mut findings {
@@ -460,6 +477,7 @@ pub fn run_detailed(
                     ..Default::default()
                 },
                 line_map: None,
+                content_id: None,
             };
             collector.push(scan_chunk(engine, filter, &chunk));
         }

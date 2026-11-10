@@ -17,7 +17,8 @@ use sha2::{Digest, Sha256};
 
 use crate::finding::{Finding, Location};
 
-const VERSION: u32 = 1;
+/// Version 2 adds [`SavedChange`]s; version 1 files are still resumed.
+const VERSION: u32 = 2;
 
 static INTERRUPTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -51,12 +52,35 @@ impl From<&Finding> for Saved {
     }
 }
 
+/// A file change seen in several commits (see [`crate::dedup`]): its
+/// first occurrence so far and, once scanned, its findings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedChange {
+    /// Old and new blob id prefixes (hex).
+    pub id: String,
+    /// Index of the occurrence's commit in rev-list order.
+    pub order: usize,
+    pub location: Location,
+    /// `None`: its scan was still in flight.
+    #[serde(default)]
+    pub findings: Option<Vec<Saved>>,
+}
+
+/// What a checkpoint holds besides the finished commits.
+#[derive(Debug, Default)]
+pub struct Snapshot {
+    pub findings: Vec<Saved>,
+    pub changes: Vec<SavedChange>,
+}
+
 #[derive(Serialize, Deserialize)]
 struct FileData {
     version: u32,
     scope: String,
     done: Vec<String>,
     findings: Vec<Saved>,
+    #[serde(default)]
+    changes: Vec<SavedChange>,
 }
 
 /// Identity of a scan: a checkpoint is only resumed by the same scan.
@@ -78,22 +102,30 @@ pub struct Checkpoint {
 
 impl Checkpoint {
     /// Open `path`, resuming it when it belongs to the same scan. Returns
-    /// the checkpoint and the findings saved by the interrupted run.
-    pub fn open(path: &Path, scope: &str) -> Result<(Self, Vec<Saved>)> {
-        let (done, findings) = match std::fs::read(path) {
+    /// the checkpoint and what the interrupted run saved.
+    pub fn open(path: &Path, scope: &str) -> Result<(Self, Snapshot)> {
+        let (done, saved) = match std::fs::read(path) {
             Ok(bytes) => {
                 let f: FileData = serde_json::from_slice(&bytes)
                     .with_context(|| format!("reading checkpoint {}", path.display()))?;
-                if f.version != VERSION || f.scope != scope {
+                if !(1..=VERSION).contains(&f.version) || f.scope != scope {
                     bail!(
                         "checkpoint {} belongs to a different scan (other repository, \
                          revisions or detectors); delete it to start over",
                         path.display()
                     );
                 }
-                (f.done.into_iter().collect(), f.findings)
+                (
+                    f.done.into_iter().collect(),
+                    Snapshot {
+                        findings: f.findings,
+                        changes: f.changes,
+                    },
+                )
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (HashSet::new(), Vec::new()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                (HashSet::new(), Snapshot::default())
+            }
             Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
         };
         Ok((
@@ -103,7 +135,7 @@ impl Checkpoint {
                 done: Mutex::new(done),
                 last_save: Mutex::new(Instant::now()),
             },
-            findings,
+            saved,
         ))
     }
 
@@ -116,26 +148,27 @@ impl Checkpoint {
     }
 
     /// Record finished commits; writes the file at most every
-    /// [`SAVE_EVERY`] (`findings` is only called when writing).
-    pub fn mark(&self, commits: &[String], findings: impl FnOnce() -> Vec<Saved>) -> Result<()> {
+    /// [`SAVE_EVERY`] (`snapshot` is only called when writing).
+    pub fn mark(&self, commits: &[String], snapshot: impl FnOnce() -> Snapshot) -> Result<()> {
         self.done.lock().unwrap().extend(commits.iter().cloned());
         let mut last = self.last_save.lock().unwrap();
         if last.elapsed() >= SAVE_EVERY {
-            self.write(findings())?;
+            self.write(snapshot())?;
             *last = Instant::now();
         }
         Ok(())
     }
 
     /// Write the checkpoint now.
-    pub fn write(&self, findings: Vec<Saved>) -> Result<()> {
+    pub fn write(&self, snapshot: Snapshot) -> Result<()> {
         let mut done: Vec<String> = self.done.lock().unwrap().iter().cloned().collect();
         done.sort();
         let data = serde_json::to_vec(&FileData {
             version: VERSION,
             scope: self.scope.clone(),
             done,
-            findings,
+            findings: snapshot.findings,
+            changes: snapshot.changes,
         })?;
         crate::state::write_private(&self.path, &data)
     }
@@ -160,17 +193,37 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("cp.json");
         let (cp, saved) = Checkpoint::open(&p, "a").unwrap();
-        assert!(saved.is_empty());
-        cp.mark(&["c1".into(), "c2".into()], Vec::new).unwrap();
-        cp.write(vec![Saved {
+        assert!(saved.findings.is_empty());
+        cp.mark(&["c1".into(), "c2".into()], Snapshot::default)
+            .unwrap();
+        let finding = Saved {
             detector: "d".into(),
             secret: BTreeMap::new(),
             location: Location::default(),
-        }])
+        };
+        cp.write(Snapshot {
+            findings: vec![finding.clone()],
+            changes: vec![SavedChange {
+                id: "ab".into(),
+                order: 3,
+                location: Location::default(),
+                findings: Some(vec![finding]),
+            }],
+        })
         .unwrap();
         let (cp2, saved) = Checkpoint::open(&p, "a").unwrap();
         assert!(cp2.is_done("c1") && cp2.is_done("c2") && !cp2.is_done("c3"));
-        assert_eq!(saved.len(), 1);
+        assert_eq!(saved.findings.len(), 1);
+        assert_eq!(saved.changes[0].order, 3);
+        // Version 1 files (no changes) still resume.
+        std::fs::write(
+            &p,
+            r#"{"version":1,"scope":"a","done":["c1"],"findings":[]}"#,
+        )
+        .unwrap();
+        let (cp3, saved) = Checkpoint::open(&p, "a").unwrap();
+        assert!(cp3.is_done("c1") && saved.changes.is_empty());
+        cp3.write(Snapshot::default()).unwrap();
         assert!(Checkpoint::open(&p, "b").is_err());
         #[cfg(unix)]
         {

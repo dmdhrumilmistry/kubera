@@ -84,7 +84,7 @@ function details(f){
   if(l.link&&/^https:\/\//.test(l.link)){const a=el('a','',l.link);a.href=l.link;a.rel='noopener noreferrer';a.target='_blank';add('Link',a);}
   for(const [k,v] of Object.entries(f.secret||{}))add('Secret '+k,el('code','',v));
   const v=f.verification;
-  if(v){add('Verification',v.status);add('Message',v.message);for(const [k,x] of Object.entries(v.details||{}))add(k,x);}
+  if(v){add('Verification',v.status);add('Message',v.message);if(v.cached)add('Cached','result from '+(v.checked_at||'an earlier run')+', no request sent');for(const [k,x] of Object.entries(v.details||{}))add(k,x);}
   return dl;
 }
 function render(){

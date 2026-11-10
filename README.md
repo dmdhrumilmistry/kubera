@@ -14,7 +14,8 @@
 <p align="center">
   <b>Kubera</b> is a fast, template-driven secret scanner written in Rust.<br>
   It finds leaked credentials in code, git history, whole GitHub/GitLab/Bitbucket orgs, container images,<br>
-  GitHub issues and Actions logs, S3/GCS buckets and live Kubernetes clusters,<br>
+  issues and CI logs on GitHub, GitLab and Bitbucket, Slack, Jira and Confluence, published packages,<br>
+  Hugging Face repositories, S3/GCS/Azure buckets and live Kubernetes clusters,<br>
   checks whether they are <b>live</b>, shows what they can <b>access</b>, and <b>rotates or revokes</b> them.<br>
   89 detectors; adding a platform takes one YAML file, not new code.
 </p>
@@ -43,10 +44,10 @@
 
 |  |  |
 |---|---|
-| 🔍 **Detect** | Files, full git history (local, HTTPS, SSH or `github.com/org/repo`), **container images** and stdin, including secrets committed and later deleted, or deleted in a later image layer. Opens **archives** (jar, zip, whl, tar.gz, nested) and **decodes** base64, URL-encoded and escaped values. 89 detectors. |
-| 🌐 **Beyond code** | **GitHub** issues, PRs, review comments, **Actions logs**, wikis and gists; **S3 / GCS buckets** (and MinIO, R2); **live Kubernetes** Secrets, ConfigMaps and workload env. [GitHub →](https://dmdhrumilmistry.github.io/kubera/github.html) · [Buckets →](https://dmdhrumilmistry.github.io/kubera/buckets.html) · [Kubernetes →](https://dmdhrumilmistry.github.io/kubera/kubernetes.html) |
+| 🔍 **Detect** | Files, full git history (local, HTTPS, SSH or `github.com/org/repo`), **container images** (one, or a whole Docker Hub org), **published npm / PyPI / crates.io packages**, **Hugging Face** models, datasets and Spaces, and stdin, including secrets committed and later deleted, or deleted in a later image layer. Opens **archives** (jar, zip, whl, tar.gz, nested) and **decodes** base64, URL-encoded and escaped values. 89 detectors. |
+| 🌐 **Beyond code** | **GitHub** issues, PRs, review comments, **Actions logs**, wikis and gists; **GitLab** issues, MRs, comments, CI job logs, snippets and wikis; **Bitbucket** issues, PRs, comments and Pipelines logs; **Slack** channels and threads; **Jira** issues, comments and history; **Confluence** pages, comments and versions; **S3 / GCS / Azure Blob buckets** (and MinIO, R2); **live Kubernetes** Secrets, ConfigMaps and workload env. [GitHub →](https://dmdhrumilmistry.github.io/kubera/github.html) · [GitLab →](https://dmdhrumilmistry.github.io/kubera/gitlab.html) · [Bitbucket →](https://dmdhrumilmistry.github.io/kubera/bitbucket.html) · [Slack →](https://dmdhrumilmistry.github.io/kubera/slack.html) · [Jira and Confluence →](https://dmdhrumilmistry.github.io/kubera/jira.html) · [Buckets →](https://dmdhrumilmistry.github.io/kubera/buckets.html) · [Kubernetes →](https://dmdhrumilmistry.github.io/kubera/kubernetes.html) |
 | 🏢 **At scale** | Scan whole **GitHub / GitLab / Bitbucket orgs** with rate-limit handling and cached mirrors; **incremental** runs only read commits added since the last passing scan (47× faster re-scans); **resumable** long scans with `--checkpoint`. |
-| ✅ **Verify** | Asks each platform whether the secret is live, concurrently and de-duplicated. |
+| ✅ **Verify** | Asks each platform whether the secret is live, concurrently and de-duplicated; an opt-in [cache](https://dmdhrumilmistry.github.io/kubera/scanning.html#verification-cache) (`--verify-cache`) keeps repeated CI runs from asking again. |
 | 🧭 **Analyze** | Owner, scopes, reachable resources and permission probes. |
 | 🔁 **Rotate** | Dry-run plan by default; vendor API calls only with `--execute` and confirmation. Manual runbooks for platforms with no API. |
 | 🔐 **Close the loop** | `rotate --store` writes the new credential to **GitHub Actions secrets** (sealed-box encrypted locally), **Vault** KV v2 or **AWS Secrets Manager**, checked before anything rotates and never lost if a store fails. [Details →](https://dmdhrumilmistry.github.io/kubera/secret-stores.html) |
@@ -87,12 +88,21 @@ kubera scan fs .                         # scan a directory
 kubera scan git . --verify               # whole history, verify what's found
 kubera scan git github.com/org/repo -i   # a remote repo, results in the TUI
 kubera scan image ghcr.io/org/app:1.4     # every layer + ENV/history, no Docker needed
+kubera scan package npm:@acme/cli pypi:acme-tool crates:acme   # what users install
+kubera scan dockerhub acme --tags 3                  # every image of a Docker Hub org
+kubera scan huggingface acme --token-env HF_TOKEN    # models, datasets, Spaces: full git history
 kubera scan repos --github-org acme --token-env GH_TOKEN --cache-dir ~/.cache/kubera --state state.json
 kubera scan git . --state .kubera-state.json --fail   # CI: only new commits
 kubera scan fs . --fail -f sarif > kubera.sarif     # CI: SARIF + exit code 183
 kubera scan git . --verify -f html > report.html    # self-contained HTML report
 kubera scan github --org acme --token-env GH_TOKEN   # issues, PRs, Actions logs, wikis
+kubera scan gitlab --group acme --token-env GL_TOKEN # issues, MRs, CI job logs, snippets
+kubera scan bitbucket --workspace acme --token-env BB_TOKEN  # issues, PRs, Pipelines logs
+kubera scan slack --since 2026-01-01 --token-env SLACK_TOKEN # channel messages and threads
+kubera scan jira --site acme.atlassian.net --email-env JIRA_EMAIL --token-env JIRA_TOKEN
+kubera scan confluence --site acme.atlassian.net --email-env JIRA_EMAIL --token-env JIRA_TOKEN
 kubera scan bucket s3://acme-backups --verify        # S3 / GCS, archives opened
+kubera scan bucket az://acmedata/backups             # Azure Blob (Shared Key, SAS or anonymous)
 kubera scan k8s --verify                             # live cluster: Secrets, ConfigMaps, env
 kubera hook install                                  # block commits that add secrets
 kubera scan git . --update-baseline                  # accept today's findings; fail only on new ones

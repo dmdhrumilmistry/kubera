@@ -1,6 +1,6 @@
 //! Project configuration (`.kubera.yaml`).
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -33,6 +33,9 @@ pub struct Config {
     /// Record every scan in the findings database: `true` for the default
     /// file, or a path (relative to the config file).
     pub db: Option<DbSetting>,
+    /// Reuse verification results of earlier runs (see
+    /// [`crate::verify_cache`]): `true`, or a path and TTLs.
+    pub verify_cache: Option<VerifyCacheSetting>,
 }
 
 /// `db: true` / `db: false` / `db: path/to/findings.jsonl`.
@@ -41,6 +44,42 @@ pub struct Config {
 pub enum DbSetting {
     Enabled(bool),
     Path(PathBuf),
+}
+
+/// `verify_cache:` in the config file.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum VerifyCacheSetting {
+    /// `verify_cache: true` (default location and TTLs) or `false`.
+    Enabled(bool),
+    Settings(VerifyCacheConfig),
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct VerifyCacheConfig {
+    /// Cache file, relative to the config file (default: under the user
+    /// cache directory, see [`crate::verify_cache::default_path`]).
+    pub path: Option<PathBuf>,
+    /// Reuse per status: `live`, `invalid`, `unknown` (`1h`, `7d`, `0`).
+    pub ttl: BTreeMap<String, DurationSpec>,
+}
+
+/// A duration written as `1h` / `30m` or as a number of seconds.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum DurationSpec {
+    Seconds(u64),
+    Text(String),
+}
+
+impl std::fmt::Display for DurationSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DurationSpec::Seconds(n) => write!(f, "{n}s"),
+            DurationSpec::Text(t) => f.write_str(t),
+        }
+    }
 }
 
 /// Paths skipped unless disabled (`--no-default-excludes` or
@@ -106,6 +145,12 @@ impl Config {
             && p.is_relative()
         {
             cfg.db = Some(DbSetting::Path(base.join(p)));
+        }
+        if let Some(VerifyCacheSetting::Settings(c)) = &mut cfg.verify_cache
+            && let Some(p) = &mut c.path
+            && p.is_relative()
+        {
+            *p = base.join(&p);
         }
         Ok(cfg)
     }

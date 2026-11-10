@@ -246,6 +246,14 @@ fn pretty(out: &mut dyn Write, findings: &[Finding], st: &Style) -> Result<()> {
             if let Some(m) = &v.message {
                 writeln!(out, "{bar} {} {}", st.dim(&pad("message")), m)?;
             }
+            if v.cached {
+                writeln!(
+                    out,
+                    "{bar} {} {}",
+                    st.dim(&pad("cached")),
+                    st.dim(&cached_note(v))
+                )?;
+            }
             for (k, val) in &v.details {
                 writeln!(out, "{bar} {} {}", st.dim(&pad(k)), display_value(val))?;
             }
@@ -259,6 +267,14 @@ fn pretty(out: &mut dyn Write, findings: &[Finding], st: &Style) -> Result<()> {
         writeln!(out)?;
     }
     Ok(())
+}
+
+/// "result from <time>, no request sent" for a cached verification.
+pub fn cached_note(v: &crate::finding::Verification) -> String {
+    format!(
+        "result from {}, no request sent",
+        v.checked_at.as_deref().unwrap_or("an earlier run")
+    )
 }
 
 pub fn display_value(v: &Value) -> String {
@@ -293,6 +309,14 @@ pub fn summary(findings: &[Finding], st: &Style) -> String {
             other => st.dim(&format!("{n} {other}")),
         })
         .collect();
+    let cached = findings
+        .iter()
+        .filter(|f| f.verification.as_ref().is_some_and(|v| v.cached))
+        .count();
+    let mut parts = parts;
+    if cached > 0 {
+        parts.push(st.dim(&format!("{cached} cached")));
+    }
     let total = if findings.is_empty() {
         st.green("no secrets found")
     } else {
@@ -347,8 +371,12 @@ pub fn sarif(findings: &[Finding]) -> Value {
         .iter()
         .map(|f| {
             let status = f
-                .status()
-                .map(|s| format!(" (verification: {s})"))
+                .verification
+                .as_ref()
+                .map(|v| {
+                    let cached = if v.cached { ", cached" } else { "" };
+                    format!(" (verification: {}{cached})", v.status)
+                })
                 .unwrap_or_default();
             let mut loc = json!({
                 "physicalLocation": {

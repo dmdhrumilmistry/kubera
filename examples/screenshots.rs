@@ -42,6 +42,7 @@ fn services() -> Services {
         max_file_size: 1 << 20,
         runtime: None,
         baseline: None,
+        verify_cache: None,
     }
 }
 
@@ -89,26 +90,28 @@ fn finding(
     details: &[(&str, &str)],
 ) -> Finding {
     let mut f = placeholder_finding(svc, id, path, line, 0);
-    f.verification = status.map(|s| Verification {
-        status: s,
-        message: (s == Status::Invalid).then(|| "HTTP 401: Bad credentials".to_string()),
-        details: details
-            .iter()
-            .map(|(k, v)| (k.to_string(), json!(v)))
-            .collect(),
+    f.verification = status.map(|s| {
+        Verification::new(
+            s,
+            (s == Status::Invalid).then(|| "HTTP 401: Bad credentials".to_string()),
+            details
+                .iter()
+                .map(|(k, v)| (k.to_string(), json!(v)))
+                .collect(),
+        )
     });
     f
 }
 
 fn verification(status: Status, message: Option<String>, details: &[(&str, &str)]) -> Verification {
-    Verification {
+    Verification::new(
         status,
         message,
-        details: details
+        details
             .iter()
             .map(|(k, v)| (k.to_string(), json!(v)))
             .collect(),
-    }
+    )
 }
 
 /// A typical first run: a handful of findings, then `V` (verify all). The

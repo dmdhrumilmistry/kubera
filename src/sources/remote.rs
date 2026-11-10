@@ -36,6 +36,8 @@ pub enum Forge {
     GitHub,
     GitLab,
     Bitbucket,
+    /// Hugging Face Hub (models, `datasets/...`, `spaces/...`).
+    HuggingFace,
 }
 
 /// A parsed remote repository.
@@ -67,6 +69,7 @@ impl RemoteRepo {
             Forge::GitHub => format!("{base}/blob/{commit}/{path}#L{line}"),
             Forge::GitLab => format!("{base}/-/blob/{commit}/{path}#L{line}"),
             Forge::Bitbucket => format!("{base}/src/{commit}/{path}#lines-{line}"),
+            Forge::HuggingFace => format!("{base}/blob/{commit}/{path}#L{line}"),
         })
     }
 }
@@ -79,6 +82,8 @@ fn forge_for(host: &str) -> Option<Forge> {
         Some(Forge::GitLab)
     } else if h == "bitbucket.org" {
         Some(Forge::Bitbucket)
+    } else if h == "huggingface.co" {
+        Some(Forge::HuggingFace)
     } else {
         None
     }
@@ -318,6 +323,11 @@ mod tests {
             "https://bitbucket.org/team/repo/src/c/f#lines-3"
         );
         assert!(p("https://git.example.com/a/b.git").web.is_none());
+        let h = p("https://huggingface.co/datasets/acme/corpus");
+        assert_eq!(
+            h.link("c", "data/train.jsonl", 4).unwrap(),
+            "https://huggingface.co/datasets/acme/corpus/blob/c/data/train.jsonl#L4"
+        );
     }
 
     #[test]

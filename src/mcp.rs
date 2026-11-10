@@ -43,6 +43,8 @@ pub struct Options {
     pub git_auth: Auth,
     pub max_file_size: u64,
     pub allow_http: bool,
+    /// Verification results reused across runs (`--verify-cache`).
+    pub verify_cache: Option<crate::verify_cache::Cache>,
 }
 
 pub struct Server {
@@ -135,8 +137,9 @@ impl Server {
         if self.opts.allow_verify {
             t.push(tool(
                 "verify_finding",
-                "Check with the issuing platform whether a previously found secret is live. Takes the finding's fingerprint; the secret itself is never exposed.",
-                json!({"fingerprint": {"type": "string"}}),
+                "Check with the issuing platform whether a previously found secret is live. Takes the finding's fingerprint; the secret itself is never exposed. When the server runs with a verification cache, a recent result may be returned with cached=true (no request sent); set fresh=true to ask the platform again.",
+                json!({"fingerprint": {"type": "string"},
+                       "fresh": {"type": "boolean", "default": false}}),
                 &["fingerprint"],
             ));
             t.push(tool(
@@ -185,7 +188,9 @@ impl Server {
                 .iter()
                 .map(|d| (d.template.id.clone(), d.template.clone()))
                 .collect();
-            crate::verify::verify_findings(&self.http, &map, &mut findings, 8).await;
+            let cache = self.opts.verify_cache.as_ref();
+            crate::verify::verify_findings(&self.http, &map, &mut findings, 8, cache).await;
+            self.save_cache();
         }
         let shown: Vec<Finding> = findings.iter().map(Finding::redact).collect();
         for f in findings {
@@ -279,8 +284,13 @@ impl Server {
                 let t = self.template(&f.detector).context("detector not loaded")?;
                 match name {
                     "verify_finding" => {
-                        let out = crate::verify::verify(&self.http, &t, &f.secret).await;
-                        Ok(serde_json::to_value(out.verification)?)
+                        let fresh = args.get("fresh").and_then(Value::as_bool).unwrap_or(false);
+                        let cache = self.opts.verify_cache.as_ref();
+                        let v =
+                            crate::verify::verify_cached(&self.http, &t, &f.secret, cache, fresh)
+                                .await;
+                        self.save_cache();
+                        Ok(serde_json::to_value(v)?)
                     }
                     "analyze_finding" => {
                         let rep = crate::analyze::analyze(&self.http, &t, &f.secret, false).await;
@@ -298,6 +308,14 @@ impl Server {
                 }
             }
             other => bail!("unknown tool `{other}`"),
+        }
+    }
+
+    fn save_cache(&self) {
+        if let Some(c) = &self.opts.verify_cache
+            && let Err(e) = c.save()
+        {
+            eprintln!("warning: {e:#}");
         }
     }
 

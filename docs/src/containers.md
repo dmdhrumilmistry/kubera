@@ -42,12 +42,34 @@ kubera scan image ghcr.io/acme/app:1 --platform linux/arm64
 
 Multi-architecture images are resolved to `--platform` (default `linux/amd64`).
 
+## Docker Hub organizations
+
+`kubera scan dockerhub` lists the repositories of a Docker Hub organization (or user) and their most recently pushed tags through the Hub API, then pulls and scans each image exactly like `scan image`.
+
+```bash
+kubera scan dockerhub acme                          # the latest-pushed tag of up to 100 repositories
+kubera scan dockerhub acme --tags 5 --limit 20      # five newest tags of 20 repositories
+kubera scan dockerhub acme --registry-user ci --registry-token-env HUB_PAT   # private repositories too
+```
+
+| Flag | Meaning |
+|---|---|
+| `ORG ...` | Organizations or users (repeatable). |
+| `--limit N` | Repositories scanned per organization (default 100). |
+| `--tags N` | Most recently pushed tags scanned per repository (default 1). |
+| `--registry-user USER`, `--registry-token-env VAR` | A Docker Hub user and personal access token: used to log in to the Hub API (private repositories are listed) and for the pulls. |
+| `--max-image-size BYTES` | Skip tags whose compressed size, as the Hub reports it, is larger (default 4 GiB). Checked before anything is pulled. |
+| `--platform`, `--max-layer-size` | As for `scan image`. |
+
+Images are pulled one at a time and deleted after their scan. Docker Hub limits anonymous pulls (100 per 6 hours per IP address at the time of writing); pass a token to get your account's limit. A tag that cannot be pulled is reported as a warning and the scan goes on.
+
 ## Safety
 
 - Every blob is **sha256-verified before it is parsed**. A registry or proxy that tampers with a layer is refused, not scanned.
 - Layers larger than `--max-layer-size` (default 4 GiB) are refused.
 - Archives are **streamed, never unpacked to disk**, so path-traversal or symlink tricks inside a hostile image cannot write anywhere.
 - Registry and token-service URLs must be HTTPS (unless `--plain-http`). Credentials go only to the registry's own token service.
+- `scan dockerhub` sends the Hub token only to `hub.docker.com` and follows the Hub's pagination only on that host.
 
 ## Running Kubera from a container
 

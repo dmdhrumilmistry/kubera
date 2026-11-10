@@ -167,6 +167,8 @@ enum Command {
         /// Verify findings as soon as the scan finishes.
         #[arg(long)]
         verify: bool,
+        #[command(flatten)]
+        cache: CacheArgs,
     },
     /// Run an MCP (Model Context Protocol) server on stdio so AI
     /// assistants can scan for secrets. Findings are redacted; secrets never
@@ -186,6 +188,8 @@ enum Command {
         /// Username sent with the git token.
         #[arg(long, value_name = "USER")]
         git_token_user: Option<String>,
+        #[command(flatten)]
+        cache: CacheArgs,
     },
     /// Act on a findings file (`kubera scan ... -f json > findings.json`):
     /// open one GitHub issue per leaked secret. Dry run unless --execute.
@@ -489,13 +493,294 @@ enum ScanSource {
         #[command(flatten)]
         opts: ScanArgs,
     },
+    /// Scan GitLab beyond the code: issues, merge requests and their
+    /// comments, CI job logs, snippets and wikis (gitlab.com or a
+    /// self-managed instance).
+    Gitlab {
+        /// Projects as group/project (subgroups allowed: group/sub/project).
+        projects: Vec<String>,
+        /// Every project of this group, subgroups included (repeatable).
+        #[arg(long, value_name = "GROUP")]
+        group: Vec<String>,
+        /// What to scan (comma separated) [default: all].
+        #[arg(long, value_enum, value_delimiter = ',')]
+        what: Vec<kubera::sources::gitlab::What>,
+        /// Environment variable with a GitLab token (read_api scope; needed
+        /// for private projects, raises rate limits).
+        #[arg(long, value_name = "ENV_VAR")]
+        token_env: Option<String>,
+        /// Self-managed GitLab API base, e.g. https://gitlab.example.com/api/v4.
+        #[arg(long, value_name = "URL", default_value = "https://gitlab.com/api/v4")]
+        api_url: String,
+        /// Issues / merge requests / comments read per project and kind
+        /// (newest first).
+        #[arg(long, default_value_t = 2000, value_name = "N")]
+        max_items: usize,
+        /// CI jobs whose logs are read per project (newest first).
+        #[arg(long, default_value_t = 50, value_name = "N")]
+        max_jobs: usize,
+        /// Longest rate-limit wait (seconds) before giving up.
+        #[arg(long, default_value_t = 900, value_name = "SECS")]
+        max_rate_wait: u64,
+        #[command(flatten)]
+        opts: ScanArgs,
+    },
+    /// Scan Bitbucket Cloud beyond the code: issues, pull requests and
+    /// their comments, Pipelines step logs and workspace snippets.
+    Bitbucket {
+        /// Repositories as workspace/repo.
+        repos: Vec<String>,
+        /// Every repository and snippet of this workspace (repeatable).
+        #[arg(long, value_name = "WORKSPACE")]
+        workspace: Vec<String>,
+        /// What to scan (comma separated) [default: all].
+        #[arg(long, value_enum, value_delimiter = ',')]
+        what: Vec<kubera::sources::bitbucket::What>,
+        /// Environment variable with a Bitbucket access token (bearer), or
+        /// an app password / API token used with --token-user.
+        #[arg(long, value_name = "ENV_VAR")]
+        token_env: Option<String>,
+        /// User for app passwords and API tokens (your Bitbucket username,
+        /// or your Atlassian email for API tokens).
+        #[arg(long, value_name = "USER", requires = "token_env")]
+        token_user: Option<String>,
+        /// API base (tests and proxies).
+        #[arg(
+            long,
+            value_name = "URL",
+            default_value = "https://api.bitbucket.org/2.0"
+        )]
+        api_url: String,
+        /// Issues / pull requests / comments read per repository and kind.
+        #[arg(long, default_value_t = 2000, value_name = "N")]
+        max_items: usize,
+        /// Pipelines whose step logs are read per repository (newest first).
+        #[arg(long, default_value_t = 20, value_name = "N")]
+        max_runs: usize,
+        /// Longest rate-limit wait (seconds) before giving up.
+        #[arg(long, default_value_t = 900, value_name = "SECS")]
+        max_rate_wait: u64,
+        #[command(flatten)]
+        opts: ScanArgs,
+    },
+    /// Scan Slack: channel messages and thread replies, with a bot (xoxb-)
+    /// or user (xoxp-) token. Read-only; rate limits are honoured.
+    Slack {
+        /// Channel name or id (repeatable) [default: every channel the
+        /// token can see].
+        #[arg(long, value_name = "CHANNEL")]
+        channel: Vec<String>,
+        /// Only messages after this date (YYYY-MM-DD, RFC 3339 or Unix
+        /// seconds).
+        #[arg(long, value_name = "DATE")]
+        since: Option<String>,
+        /// Environment variable with the Slack token (scopes
+        /// channels:history, channels:read, groups:history, groups:read).
+        #[arg(long, value_name = "ENV_VAR")]
+        token_env: String,
+        /// Also read direct and group messages (user tokens; im:history,
+        /// mpim:history).
+        #[arg(long)]
+        include_dms: bool,
+        /// Also read archived channels.
+        #[arg(long)]
+        include_archived: bool,
+        /// Messages read per channel, thread replies included (newest
+        /// first).
+        #[arg(long, default_value_t = 10_000, value_name = "N")]
+        max_messages: usize,
+        /// Web API base (tests).
+        #[arg(
+            long,
+            value_name = "URL",
+            default_value = "https://slack.com/api",
+            hide = true
+        )]
+        api_url: String,
+        /// Longest rate-limit wait (seconds) before giving up.
+        #[arg(long, default_value_t = 900, value_name = "SECS")]
+        max_rate_wait: u64,
+        #[command(flatten)]
+        opts: ScanArgs,
+    },
+    /// Scan Jira Cloud: issue summaries, descriptions, environments,
+    /// comments and earlier values from the change history.
+    Jira {
+        /// The site, e.g. https://acme.atlassian.net.
+        #[arg(long, value_name = "URL")]
+        site: String,
+        /// JQL selecting the issues [default: every issue, newest first].
+        #[arg(long, value_name = "QUERY", conflicts_with = "project")]
+        jql: Option<String>,
+        /// Only these projects (repeatable).
+        #[arg(long, value_name = "KEY")]
+        project: Vec<String>,
+        /// Environment variable with the Atlassian account email (basic
+        /// auth with --token-env).
+        #[arg(long, value_name = "ENV_VAR", requires = "token_env")]
+        email_env: Option<String>,
+        /// Environment variable with an API token (with --email-env), or a
+        /// bearer token without it. Omit both for public sites.
+        #[arg(long, value_name = "ENV_VAR")]
+        token_env: Option<String>,
+        /// Issues read (in JQL order).
+        #[arg(long, default_value_t = 10_000, value_name = "N")]
+        max_issues: usize,
+        /// Skip the change history (earlier summaries and descriptions).
+        #[arg(long)]
+        no_history: bool,
+        /// Longest rate-limit wait (seconds) before giving up.
+        #[arg(long, default_value_t = 900, value_name = "SECS")]
+        max_rate_wait: u64,
+        #[command(flatten)]
+        opts: ScanArgs,
+    },
+    /// Scan Confluence Cloud: page and blog post bodies, their comments,
+    /// and optionally earlier page versions.
+    Confluence {
+        /// The site, e.g. https://acme.atlassian.net.
+        #[arg(long, value_name = "URL")]
+        site: String,
+        /// Only these space keys (repeatable) [default: every space].
+        #[arg(long, value_name = "KEY")]
+        space: Vec<String>,
+        /// What to scan (comma separated) [default: all].
+        #[arg(long, value_enum, value_delimiter = ',')]
+        what: Vec<kubera::sources::confluence::What>,
+        /// Environment variable with the Atlassian account email (basic
+        /// auth with --token-env).
+        #[arg(long, value_name = "ENV_VAR", requires = "token_env")]
+        email_env: Option<String>,
+        /// Environment variable with an API token (with --email-env), or a
+        /// bearer token without it. Omit both for public sites.
+        #[arg(long, value_name = "ENV_VAR")]
+        token_env: Option<String>,
+        /// Pages (and blog posts) read per space.
+        #[arg(long, default_value_t = 10_000, value_name = "N")]
+        max_pages: usize,
+        /// Earlier versions read per page, newest first (secrets edited
+        /// out stay in the history). One request per version.
+        #[arg(long, default_value_t = 0, value_name = "N")]
+        max_versions: usize,
+        /// Longest rate-limit wait (seconds) before giving up.
+        #[arg(long, default_value_t = 900, value_name = "SECS")]
+        max_rate_wait: u64,
+        #[command(flatten)]
+        opts: ScanArgs,
+    },
+    /// Scan published packages: npm:<name>[@version], pypi:<name>[==version]
+    /// or crates:<name>[@version]. The tarball / sdist / wheel / .crate is
+    /// downloaded from the official registry, checked against the
+    /// registry's digest, and scanned like an archive on disk.
+    Package {
+        /// Package specs (latest version unless one is given).
+        #[arg(required = true, value_name = "SPEC")]
+        packages: Vec<String>,
+        /// Scan every published version (newest first, see --max-versions).
+        #[arg(long)]
+        all_versions: bool,
+        /// With --all-versions: at most N versions per package.
+        #[arg(long, default_value_t = 20, value_name = "N")]
+        max_versions: usize,
+        /// Largest package file downloaded.
+        #[arg(long, value_name = "BYTES", default_value_t = kubera::sources::archive::DEFAULT_MAX_ARCHIVE_SIZE)]
+        max_package_size: u64,
+        /// Registry base replacing the official registries and file hosts
+        /// (tests, mirrors).
+        #[arg(long, value_name = "URL", hide = true)]
+        registry_url: Option<String>,
+        #[command(flatten)]
+        opts: ScanArgs,
+    },
+    /// Scan the images of Docker Hub organizations: repositories and their
+    /// most recent tags are listed through the Hub API, then each image is
+    /// pulled and scanned like `scan image` (every layer, ENV, history).
+    Dockerhub {
+        /// Organizations or users (repeatable).
+        #[arg(required = true, value_name = "ORG")]
+        orgs: Vec<String>,
+        /// Repositories scanned per organization.
+        #[arg(long, default_value_t = 100, value_name = "N")]
+        limit: usize,
+        /// Most recently pushed tags scanned per repository.
+        #[arg(long, default_value_t = 1, value_name = "N")]
+        tags: usize,
+        /// Platform to pick from multi-arch images.
+        #[arg(long, default_value = "linux/amd64", value_name = "OS/ARCH")]
+        platform: String,
+        /// Docker Hub user (with --registry-token-env: private repositories).
+        #[arg(long, value_name = "USER", requires = "registry_token_env")]
+        registry_user: Option<String>,
+        /// Environment variable with a Docker Hub personal access token.
+        #[arg(long, value_name = "ENV_VAR")]
+        registry_token_env: Option<String>,
+        /// Refuse layers larger than this many bytes.
+        #[arg(long, value_name = "BYTES", default_value_t = kubera::sources::image::DEFAULT_MAX_LAYER_SIZE)]
+        max_layer_size: u64,
+        /// Skip tags whose compressed size (as the Hub reports it) is larger.
+        #[arg(long, value_name = "BYTES", default_value_t = 4 * 1024 * 1024 * 1024)]
+        max_image_size: u64,
+        /// Hub API base (tests).
+        #[arg(
+            long,
+            value_name = "URL",
+            default_value = "https://hub.docker.com",
+            hide = true
+        )]
+        hub_url: String,
+        /// Registry the images are pulled from (tests, mirrors).
+        #[arg(long, value_name = "HOST", default_value = "docker.io", hide = true)]
+        registry: String,
+        #[command(flatten)]
+        opts: ScanArgs,
+    },
+    /// Scan Hugging Face Hub repositories (models, datasets, Spaces): the
+    /// full git history of each, LFS files optionally.
+    #[command(alias = "hf")]
+    Huggingface {
+        /// owner (every repository of a user or organization) or
+        /// owner/name.
+        #[arg(required = true, value_name = "OWNER[/REPO]")]
+        targets: Vec<String>,
+        /// Repository type (comma separated) [default: model for
+        /// owner/name, every type for an owner].
+        #[arg(long = "type", value_enum, value_delimiter = ',')]
+        kind: Vec<kubera::sources::huggingface::RepoType>,
+        /// Environment variable with a Hugging Face token (private and
+        /// gated repositories).
+        #[arg(long, value_name = "ENV_VAR")]
+        token_env: Option<String>,
+        /// Also download and scan Git LFS files of the main branch (up to
+        /// --max-lfs-size each). Off by default: LFS mostly holds weights.
+        #[arg(long)]
+        include_lfs: bool,
+        /// With --include-lfs: largest LFS file downloaded.
+        #[arg(long, value_name = "BYTES", default_value_t = 64 * 1024 * 1024)]
+        max_lfs_size: u64,
+        /// Repositories listed per owner and type.
+        #[arg(long, default_value_t = 100, value_name = "N")]
+        limit: usize,
+        /// Hub base (tests, mirrors).
+        #[arg(
+            long,
+            value_name = "URL",
+            default_value = "https://huggingface.co",
+            hide = true
+        )]
+        hub_url: String,
+        #[command(flatten)]
+        opts: ScanArgs,
+    },
     /// Scan a cloud storage bucket: s3://bucket[/prefix] (also MinIO, R2
-    /// and other S3-compatible stores with --endpoint-url) or
-    /// gs://bucket[/prefix]. Archives inside are opened too.
+    /// and other S3-compatible stores with --endpoint-url),
+    /// gs://bucket[/prefix] or az://account/container[/prefix]. Archives
+    /// inside are opened too.
     ///
     /// S3 uses AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN
     /// (public buckets: --anonymous). GCS uses --token-env (an OAuth access
-    /// token, e.g. from `gcloud auth print-access-token`).
+    /// token, e.g. from `gcloud auth print-access-token`). Azure
+    /// (az://account/container[/prefix]) uses AZURE_STORAGE_KEY (Shared
+    /// Key), a SAS token with --sas-env, or --anonymous.
     Bucket {
         url: String,
         /// S3 region (default: detected from the bucket).
@@ -510,6 +795,9 @@ enum ScanSource {
         /// Environment variable with a GCS OAuth access token.
         #[arg(long, value_name = "ENV_VAR")]
         token_env: Option<String>,
+        /// Environment variable with an Azure SAS token (sv=...&sig=...).
+        #[arg(long, value_name = "ENV_VAR", conflicts_with = "anonymous")]
+        sas_env: Option<String>,
         /// List at most N objects.
         #[arg(long, default_value_t = 100_000, value_name = "N")]
         max_objects: usize,
@@ -618,6 +906,8 @@ struct ScanArgs {
     /// Concurrent verification requests.
     #[arg(long, default_value_t = 8)]
     concurrency: usize,
+    #[command(flatten)]
+    cache: CacheArgs,
     /// Browse the results in the interactive TUI instead of printing them.
     #[arg(short = 'i', long)]
     interactive: bool,
@@ -630,6 +920,53 @@ struct ScanArgs {
     /// Do not record this scan, even if .kubera.yaml enables `db:`.
     #[arg(long, conflicts_with = "db")]
     no_db: bool,
+}
+
+/// Verification cache flags (scan, tui, mcp).
+#[derive(Args, Clone, Default)]
+struct CacheArgs {
+    /// Reuse verification results of earlier runs instead of asking the
+    /// platform again: live results for 1h, invalid ones for 24h, unknown
+    /// ones never (see --verify-cache-ttl). FILE defaults to
+    /// ~/.cache/kubera/verify.json ($XDG_CACHE_HOME, %LOCALAPPDATA%). It
+    /// holds fingerprints and verification details, no secrets (mode 0600).
+    #[arg(
+        long,
+        value_name = "FILE",
+        num_args = 0..=1,
+        require_equals = true,
+        conflicts_with = "no_verify_cache"
+    )]
+    verify_cache: Option<Option<PathBuf>>,
+    /// How long cached results are reused, per status:
+    /// live=1h,invalid=24h,unknown=0 (any subset; a bare duration such as
+    /// 6h sets live and invalid; 0 turns caching off for that status).
+    /// Implies --verify-cache.
+    #[arg(long, value_name = "TTL", conflicts_with = "no_verify_cache")]
+    verify_cache_ttl: Vec<String>,
+    /// Do not use the verification cache, even if the config file enables it.
+    #[arg(long)]
+    no_verify_cache: bool,
+}
+
+impl CacheArgs {
+    fn resolve(&self, cfg: &Config) -> Result<Option<kubera::verify_cache::Cache>> {
+        kubera::verify_cache::resolve(&kubera::verify_cache::Request {
+            config: cfg.verify_cache.as_ref(),
+            flag: self.verify_cache.clone(),
+            disabled: self.no_verify_cache,
+            ttl: self.verify_cache_ttl.clone(),
+        })
+    }
+}
+
+/// Write the cache, warning (not failing) when that is impossible.
+fn save_cache(cache: Option<&kubera::verify_cache::Cache>) {
+    if let Some(c) = cache
+        && let Err(e) = c.save()
+    {
+        eprintln!("warning: {e:#}");
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -751,7 +1088,7 @@ fn context(g: &GlobalArgs) -> Result<Ctx> {
 async fn run(cli: Cli) -> Result<u8> {
     let Some(command) = cli.command else {
         if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
-            return cmd_tui(&cli.global, None, false, false);
+            return cmd_tui(&cli.global, None, false, false, &CacheArgs::default());
         }
         use clap::CommandFactory;
         Cli::command().print_help()?;
@@ -763,7 +1100,8 @@ async fn run(cli: Cli) -> Result<u8> {
             target,
             git,
             verify,
-        } => cmd_tui(&cli.global, target, git, verify),
+            cache,
+        } => cmd_tui(&cli.global, target, git, verify, &cache),
         Command::Verify {
             detector,
             secret,
@@ -1034,8 +1372,10 @@ async fn run(cli: Cli) -> Result<u8> {
             root,
             git_token_env,
             git_token_user,
+            cache,
         } => {
             let ctx = context(&cli.global)?;
+            let verify_cache = cache.resolve(&ctx.cfg)?;
             let engine = Engine::new(ctx.templates.iter().map(|l| l.template.clone()).collect())?;
             let mut filter = Filter::new(&ctx.cfg.excludes(&[], false), &ctx.cfg.allowlist)?;
             filter.suppress(kubera::baseline::Baseline::resolve(None)?.fingerprints());
@@ -1064,6 +1404,7 @@ async fn run(cli: Cli) -> Result<u8> {
                         .max_file_size
                         .unwrap_or(sources::fs::DEFAULT_MAX_FILE_SIZE),
                     allow_http: cli.global.allow_http,
+                    verify_cache,
                 },
             );
             server.serve().await?;
@@ -1081,6 +1422,14 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         | ScanSource::Image { opts, .. }
         | ScanSource::Staged { opts, .. }
         | ScanSource::Github { opts, .. }
+        | ScanSource::Gitlab { opts, .. }
+        | ScanSource::Bitbucket { opts, .. }
+        | ScanSource::Slack { opts, .. }
+        | ScanSource::Jira { opts, .. }
+        | ScanSource::Confluence { opts, .. }
+        | ScanSource::Package { opts, .. }
+        | ScanSource::Dockerhub { opts, .. }
+        | ScanSource::Huggingface { opts, .. }
         | ScanSource::Bucket { opts, .. }
         | ScanSource::K8s { opts, .. }
         | ScanSource::Stdin { opts } => opts,
@@ -1088,6 +1437,11 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
     let engine = Engine::new(ctx.templates.iter().map(|l| l.template.clone()).collect())?;
     let mut engine = engine;
     engine.decode = !opts.no_decode;
+    let verify_cache = opts.cache.resolve(&ctx.cfg)?;
+    let cache_flag = opts.cache.verify_cache.is_some() || !opts.cache.verify_cache_ttl.is_empty();
+    if cache_flag && !(opts.verify || opts.only_verified || opts.interactive) {
+        eprintln!("warning: --verify-cache has no effect without --verify");
+    }
     let excludes = ctx
         .cfg
         .excludes(&opts.exclude_paths, opts.no_default_excludes);
@@ -1205,6 +1559,15 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         ScanSource::Github { .. } | ScanSource::Bucket { .. } | ScanSource::K8s { .. } => {
             scan::Target::Text(String::new())
         }
+        // API sources, scanned by `cmd_scan_api`.
+        ScanSource::Gitlab { .. }
+        | ScanSource::Bitbucket { .. }
+        | ScanSource::Slack { .. }
+        | ScanSource::Jira { .. }
+        | ScanSource::Confluence { .. }
+        | ScanSource::Package { .. }
+        | ScanSource::Dockerhub { .. }
+        | ScanSource::Huggingface { .. } => scan::Target::Text(String::new()),
         ScanSource::Image {
             image,
             platform,
@@ -1308,6 +1671,7 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         endpoint_url,
         anonymous,
         token_env,
+        sas_env,
         max_objects,
         downloads,
         ..
@@ -1331,9 +1695,23 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
                 "no AWS credentials in the environment; set AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY, or pass --anonymous for a public bucket"
             );
         }
+        let azure = match (&b.store, *anonymous) {
+            (bucket::Store::Azure { .. }, true) => None,
+            (bucket::Store::Azure { account }, false) => {
+                match env_secret(sas_env.as_ref(), "--sas-env")? {
+                    Some(sas) => Some(bucket::AzureAuth::Sas(sas)),
+                    None => Some(bucket::AzureAuth::shared_key_from_env(account)?.context(
+                        "no Azure credentials: set AZURE_STORAGE_KEY (Shared Key), pass --sas-env VAR \
+                         with a SAS token, or --anonymous for a public container",
+                    )?),
+                }
+            }
+            _ => None,
+        };
         let o = bucket::Options {
             aws,
             gcs_token,
+            azure,
             region: region.clone(),
             endpoint: endpoint_url.clone(),
             max_objects: *max_objects,
@@ -1362,6 +1740,18 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         )
         .await?;
         (0, Default::default(), findings)
+    } else if let Some(findings) = cmd_scan_api(
+        g,
+        &source,
+        &engine,
+        &filter,
+        max_size,
+        show_progress,
+        &ctx.style,
+    )
+    .await?
+    {
+        (0, Default::default(), findings)
     } else if let ScanSource::Repos { .. } = &source {
         let results = cmd_scan_repos(g, &source, &engine, &filter, max_size, &ctx.style).await?;
         let commits = results.iter().map(|r| r.commits_scanned).sum();
@@ -1379,7 +1769,37 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
             .iter()
             .map(|d| (d.template.id.clone(), d.template.clone()))
             .collect();
-        verify::verify_findings(&ctx.http, &map, &mut findings, opts.concurrency).await;
+        verify::verify_findings(
+            &ctx.http,
+            &map,
+            &mut findings,
+            opts.concurrency,
+            verify_cache.as_ref(),
+        )
+        .await;
+        if let Some(c) = &verify_cache {
+            save_cache(Some(c));
+            let mut reused = std::collections::BTreeSet::new();
+            let mut asked = std::collections::BTreeSet::new();
+            for f in &findings {
+                match &f.verification {
+                    Some(v) if v.cached => reused.insert(f.fingerprint.as_str()),
+                    Some(v) if v.status != Status::Unsupported => {
+                        asked.insert(f.fingerprint.as_str())
+                    }
+                    _ => false,
+                };
+            }
+            if !(reused.is_empty() && asked.is_empty()) {
+                eprintln!(
+                    "{} {} result(s) reused without a request, {} secret(s) verified ({})",
+                    ctx.style.dim("verify cache:"),
+                    reused.len(),
+                    asked.len(),
+                    c.path().display()
+                );
+            }
+        }
     }
 
     let mut kinds = opts.results.clone();
@@ -1435,6 +1855,36 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
             .cloned()
             .collect::<Vec<_>>()
             .join(", "),
+        ScanSource::Gitlab {
+            projects, group, ..
+        } => projects
+            .iter()
+            .chain(group)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", "),
+        ScanSource::Bitbucket {
+            repos, workspace, ..
+        } => repos
+            .iter()
+            .chain(workspace)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", "),
+        ScanSource::Slack { channel, .. } if !channel.is_empty() => format!(
+            "Slack {}",
+            channel
+                .iter()
+                .map(|c| format!("#{}", c.trim_start_matches('#')))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        ScanSource::Slack { .. } => "Slack".into(),
+        ScanSource::Jira { site, .. } => format!("Jira {site}"),
+        ScanSource::Confluence { site, .. } => format!("Confluence {site}"),
+        ScanSource::Package { packages, .. } => packages.join(", "),
+        ScanSource::Dockerhub { orgs, .. } => format!("Docker Hub {}", orgs.join(", ")),
+        ScanSource::Huggingface { targets, .. } => format!("Hugging Face {}", targets.join(", ")),
         ScanSource::Image { image, .. } => image.clone(),
         ScanSource::Bucket { url, .. } => url.clone(),
         ScanSource::K8s { context, .. } => {
@@ -1500,7 +1950,7 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
             bail!("--interactive needs a terminal");
         }
-        let svc = services(ctx, engine, filter, max_size);
+        let svc = services(ctx, engine, filter, max_size, verify_cache);
         tokio::task::block_in_place(|| {
             kubera::tui::run(svc, kubera::tui::Start::Results(findings, label))
         })?;
@@ -1676,6 +2126,17 @@ fn db_target(source: &ScanSource, label: &str) -> (String, &'static str, bool) {
             "k8s",
             !namespaces.is_empty() || !what.is_empty(),
         ),
+        // API sources read capped listings (item, run, version limits), so a
+        // finding missing from one scan is not proof it is gone: never let
+        // them resolve findings.
+        ScanSource::Gitlab { .. } => (format!("gitlab {label}"), "gitlab", true),
+        ScanSource::Bitbucket { .. } => (format!("bitbucket {label}"), "bitbucket", true),
+        ScanSource::Slack { .. } => (format!("slack {label}"), "slack", true),
+        ScanSource::Jira { .. } => (format!("jira {label}"), "jira", true),
+        ScanSource::Confluence { .. } => (format!("confluence {label}"), "confluence", true),
+        ScanSource::Package { .. } => (format!("package {label}"), "package", true),
+        ScanSource::Dockerhub { .. } => (format!("dockerhub {label}"), "dockerhub", true),
+        ScanSource::Huggingface { .. } => (format!("huggingface {label}"), "huggingface", true),
     }
 }
 
@@ -1762,38 +2223,555 @@ async fn cmd_scan_github(
         eprintln!("warning: {w}");
     }
     let mut findings = scan::scan_chunks(engine, filter, &collected.chunks);
-    for (url, label) in &collected.git {
+    let auth = kubera::sources::remote::Auth {
+        token: token.clone(),
+        user: None,
+        allow_http: g.allow_http,
+        interactive: false,
+    };
+    findings.extend(scan_git_repos(
+        &collected.git,
+        &auth,
+        engine,
+        filter,
+        max_size,
+        opts.jobs,
+        &progress,
+    ));
+    Ok(findings)
+}
+
+/// Scan the git repositories an API source returned (wikis, snippets,
+/// gists, model repositories) with the history scanner.
+fn scan_git_repos(
+    repos: &[(String, String)],
+    auth: &kubera::sources::remote::Auth,
+    engine: &Engine,
+    filter: &Filter,
+    max_size: u64,
+    jobs: usize,
+    progress: &dyn Fn(String),
+) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    for (url, label) in repos {
         progress(format!("{label}: history"));
         let target = scan::Target::Git {
             repo: url.clone(),
             options: git::GitOptions {
-                jobs: opts.jobs,
+                jobs,
                 ..Default::default()
             },
-            auth: kubera::sources::remote::Auth {
-                token: token.clone(),
-                user: None,
-                allow_http: g.allow_http,
-                interactive: false,
-            },
+            auth: auth.clone(),
             baseline: None,
             mirror: None,
         };
         match scan::run_detailed(engine, filter, &target, max_size, &|_| {}) {
             Ok(out) => findings.extend(out.findings),
             // Repositories without a wiki have no wiki repository.
-            Err(e) if label.ends_with("(wiki)") => {
-                let _ = e;
-                if show_progress {
-                    eprintln!(
-                        "{} {label}: skipped (no wiki, or no access)",
-                        style.dim("›")
-                    );
-                }
+            Err(_) if label.ends_with("(wiki)") => {
+                progress(format!("{label}: skipped (no wiki, or no access)"));
             }
             Err(e) => eprintln!("warning: {label}: {e:#}"),
         }
     }
+    findings
+}
+
+/// The value of the environment variable named by a `--*-env` flag.
+fn env_secret(var: Option<&String>, flag: &str) -> Result<Option<String>> {
+    match var {
+        Some(var) => Ok(Some(std::env::var(var).with_context(|| {
+            format!("environment variable `{var}` (from {flag}) is not set")
+        })?)),
+        None => Ok(None),
+    }
+}
+
+/// API sources added after `scan github`: `None` when `source` is not one.
+async fn cmd_scan_api(
+    g: &GlobalArgs,
+    source: &ScanSource,
+    engine: &Engine,
+    filter: &Filter,
+    max_size: u64,
+    show_progress: bool,
+    style: &Style,
+) -> Result<Option<Vec<Finding>>> {
+    let progress = |m: String| {
+        if show_progress {
+            eprintln!("{} {m}", style.dim("›"));
+        }
+    };
+    let findings = match source {
+        ScanSource::Gitlab { .. } => {
+            cmd_scan_gitlab(g, source, engine, filter, max_size, &progress).await?
+        }
+        ScanSource::Bitbucket { .. } => {
+            cmd_scan_bitbucket(g, source, engine, filter, max_size, &progress).await?
+        }
+        ScanSource::Slack {
+            channel,
+            since,
+            token_env,
+            api_url,
+            include_dms,
+            include_archived,
+            max_messages,
+            max_rate_wait,
+            ..
+        } => {
+            use kubera::sources::slack;
+            let token = env_secret(Some(token_env), "--token-env")?;
+            let mut client = kubera::forge::Client::new(
+                token,
+                None,
+                std::time::Duration::from_secs(*max_rate_wait),
+            )?;
+            client.allow_http = g.allow_http;
+            let o = slack::Options {
+                api: api_url.clone(),
+                channels: channel.clone(),
+                oldest: since.as_deref().map(slack::parse_since).transpose()?,
+                include_dms: *include_dms,
+                include_archived: *include_archived,
+                max_messages: *max_messages,
+            };
+            let collected = slack::collect(&client, &o, &progress).await?;
+            for w in &collected.warnings {
+                eprintln!("warning: {w}");
+            }
+            scan::scan_chunks(engine, filter, &collected.chunks)
+        }
+        ScanSource::Jira {
+            site,
+            jql,
+            project,
+            email_env,
+            token_env,
+            max_issues,
+            no_history,
+            max_rate_wait,
+            ..
+        } => {
+            use kubera::sources::jira;
+            let site = jira::site_base(site, g.allow_http)?;
+            let email = env_secret(email_env.as_ref(), "--email-env")?;
+            let token = env_secret(token_env.as_ref(), "--token-env")?;
+            if email.is_some() && token.is_none() {
+                bail!("--email-env needs --token-env (the API token)");
+            }
+            let mut client = kubera::forge::Client::new(
+                token,
+                email,
+                std::time::Duration::from_secs(*max_rate_wait),
+            )?;
+            client.allow_http = g.allow_http;
+            let jql = match (jql, project.is_empty()) {
+                (Some(q), _) => q.clone(),
+                (None, true) => jira::DEFAULT_JQL.to_string(),
+                (None, false) => format!(
+                    "project in ({}) ORDER BY created DESC",
+                    project
+                        .iter()
+                        .map(|p| format!("\"{}\"", p.replace(['"', '\\'], "")))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            };
+            let o = jira::Options {
+                site,
+                jql,
+                max_issues: *max_issues,
+                history: !no_history,
+            };
+            let collected = jira::collect(&client, &o, &progress).await?;
+            for w in &collected.warnings {
+                eprintln!("warning: {w}");
+            }
+            scan::scan_chunks(engine, filter, &collected.chunks)
+        }
+        ScanSource::Confluence {
+            site,
+            space,
+            what,
+            email_env,
+            token_env,
+            max_pages,
+            max_versions,
+            max_rate_wait,
+            ..
+        } => {
+            use kubera::sources::{confluence, jira};
+            let site = jira::site_base(site, g.allow_http)?;
+            let site = site.strip_suffix("/wiki").unwrap_or(&site).to_string();
+            let email = env_secret(email_env.as_ref(), "--email-env")?;
+            let token = env_secret(token_env.as_ref(), "--token-env")?;
+            let mut client = kubera::forge::Client::new(
+                token,
+                email,
+                std::time::Duration::from_secs(*max_rate_wait),
+            )?;
+            client.allow_http = g.allow_http;
+            let o = confluence::Options {
+                site,
+                spaces: space.clone(),
+                what: if what.is_empty() {
+                    confluence::ALL.to_vec()
+                } else {
+                    what.clone()
+                },
+                max_pages: *max_pages,
+                max_versions: *max_versions,
+            };
+            let collected = confluence::collect(&client, &o, &progress).await?;
+            for w in &collected.warnings {
+                eprintln!("warning: {w}");
+            }
+            scan::scan_chunks(engine, filter, &collected.chunks)
+        }
+        ScanSource::Package {
+            packages,
+            all_versions,
+            max_versions,
+            max_package_size,
+            registry_url,
+            ..
+        } => {
+            use kubera::sources::package;
+            let refs = packages
+                .iter()
+                .map(|p| package::parse(p))
+                .collect::<Result<Vec<_>>>()?;
+            let mut client =
+                kubera::forge::Client::new(None, None, std::time::Duration::from_secs(300))?;
+            client.allow_http = g.allow_http;
+            let o = package::Options {
+                all_versions: *all_versions,
+                max_versions: *max_versions,
+                max_size: *max_package_size,
+                max_file_size: max_size,
+                registry_url: registry_url.clone(),
+            };
+            let collector = scan::Collector::default();
+            let n = package::scan(&client, &refs, &o, filter, &progress, &mut |c| {
+                collector.push(scan::scan_chunk(engine, filter, &c))
+            })
+            .await?;
+            progress(format!("{n} package file(s) scanned"));
+            collector.into_findings()
+        }
+        ScanSource::Dockerhub {
+            orgs,
+            limit,
+            tags,
+            platform,
+            registry_user,
+            registry_token_env,
+            max_layer_size,
+            max_image_size,
+            hub_url,
+            registry,
+            ..
+        } => {
+            use kubera::sources::{dockerhub, image};
+            let token = env_secret(registry_token_env.as_ref(), "--registry-token-env")?;
+            let jwt = match (registry_user, &token) {
+                (Some(u), Some(t)) => Some(dockerhub::login(hub_url, u, t, g.allow_http).await?),
+                _ => None,
+            };
+            let mut client =
+                kubera::forge::Client::new(jwt, None, std::time::Duration::from_secs(900))?;
+            client.allow_http = g.allow_http;
+            let o = dockerhub::Options {
+                hub: hub_url.clone(),
+                registry: registry.clone(),
+                limit: *limit,
+                tags: *tags,
+                max_image_size: *max_image_size,
+            };
+            let mut findings = Vec::new();
+            for org in orgs {
+                if org.is_empty()
+                    || !org
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "-_".contains(c))
+                {
+                    bail!("`{org}` is not a Docker Hub organization or user name");
+                }
+                progress(format!("{org}: listing repositories"));
+                let (refs, warnings) = dockerhub::images(&client, org, &o).await?;
+                for w in warnings {
+                    eprintln!("warning: {w}");
+                }
+                for r in refs {
+                    progress(format!("pulling {r} ({platform})"));
+                    let pulled = image::pull(
+                        &r,
+                        &image::PullOptions {
+                            platform: platform.clone(),
+                            user: registry_user.clone(),
+                            token: token.clone(),
+                            allow_http: g.allow_http,
+                            max_layer_size: *max_layer_size,
+                        },
+                    )
+                    .await;
+                    let img = match pulled {
+                        Ok(i) => i,
+                        Err(e) => {
+                            eprintln!("warning: {r}: {e:#}");
+                            continue;
+                        }
+                    };
+                    let target = scan::Target::Image(std::sync::Arc::new(img));
+                    match scan::run(engine, filter, &target, max_size, &|_| {}) {
+                        Ok(f) => findings.extend(f),
+                        Err(e) => eprintln!("warning: {r}: {e:#}"),
+                    }
+                }
+            }
+            findings
+        }
+        ScanSource::Huggingface {
+            targets,
+            kind,
+            token_env,
+            include_lfs,
+            max_lfs_size,
+            limit,
+            hub_url,
+            opts,
+            ..
+        } => {
+            use kubera::sources::huggingface as hf;
+            let token = env_secret(token_env.as_ref(), "--token-env")?;
+            let mut client = kubera::forge::Client::new(
+                token.clone(),
+                None,
+                std::time::Duration::from_secs(900),
+            )?;
+            client.allow_http = g.allow_http;
+            let o = hf::Options {
+                hub: hub_url.clone(),
+                targets: targets.clone(),
+                types: kind.clone(),
+                limit: *limit,
+                max_lfs_size: *max_lfs_size,
+                max_file_size: max_size,
+            };
+            let repos = hf::repos(&client, &o, &progress).await?;
+            if repos.is_empty() {
+                bail!("no repositories found for {}", targets.join(", "));
+            }
+            let git: Vec<(String, String)> = repos
+                .iter()
+                .map(|r| {
+                    let url = hf::clone_url(hub_url, r);
+                    let label = url.split_once("://").map_or(url.as_str(), |x| x.1);
+                    (url.clone(), label.to_string())
+                })
+                .collect();
+            let auth = kubera::sources::remote::Auth {
+                token,
+                // The Hub takes any user name with a token.
+                user: Some("hf".into()),
+                allow_http: g.allow_http,
+                interactive: false,
+            };
+            let mut findings =
+                scan_git_repos(&git, &auth, engine, filter, max_size, opts.jobs, &progress);
+            if *include_lfs {
+                for r in &repos {
+                    progress(format!("{}: LFS files", r.id));
+                    let mut warnings = Vec::new();
+                    let chunks = hf::lfs_chunks(&client, &o, r, filter, &mut warnings).await?;
+                    for w in warnings {
+                        eprintln!("warning: {w}");
+                    }
+                    findings.extend(scan::scan_chunks(engine, filter, &chunks));
+                }
+            }
+            findings
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(findings))
+}
+
+async fn cmd_scan_bitbucket(
+    g: &GlobalArgs,
+    source: &ScanSource,
+    engine: &Engine,
+    filter: &Filter,
+    max_size: u64,
+    progress: &dyn Fn(String),
+) -> Result<Vec<Finding>> {
+    use kubera::sources::bitbucket;
+    let ScanSource::Bitbucket {
+        repos,
+        workspace,
+        what,
+        token_env,
+        token_user,
+        api_url,
+        max_items,
+        max_runs,
+        max_rate_wait,
+        opts,
+    } = source
+    else {
+        unreachable!()
+    };
+    let token = env_secret(token_env.as_ref(), "--token-env")?;
+    let mut client = kubera::forge::Client::new(
+        token.clone(),
+        token_user.clone(),
+        std::time::Duration::from_secs(*max_rate_wait),
+    )?;
+    client.allow_http = g.allow_http;
+    let api = api_url.trim_end_matches('/');
+    let mut all = repos.clone();
+    for ws in workspace {
+        progress(format!("workspace {ws}: listing repositories"));
+        let list = client
+            .list(
+                &kubera::forge::Source::BitbucketWorkspace(ws.clone()),
+                Some(api),
+            )
+            .await?;
+        all.extend(list.into_iter().map(|r| r.full_name));
+    }
+    all.sort();
+    all.dedup();
+    if all.is_empty() {
+        bail!("nothing to scan: pass workspace/repo repositories or --workspace");
+    }
+    // Snippets belong to workspaces: those named, and those of the repos.
+    let mut snippet_workspaces: Vec<String> = workspace.clone();
+    snippet_workspaces.extend(
+        all.iter()
+            .filter_map(|r| r.split_once('/').map(|(w, _)| w.to_string())),
+    );
+    snippet_workspaces.sort();
+    snippet_workspaces.dedup();
+    let o = bitbucket::Options {
+        api: api.to_string(),
+        repos: all,
+        snippet_workspaces,
+        what: if what.is_empty() {
+            bitbucket::ALL.to_vec()
+        } else {
+            what.clone()
+        },
+        max_items: *max_items,
+        max_runs: *max_runs,
+        max_log_size: 256 * 1024 * 1024,
+        max_file_size: max_size,
+    };
+    let collected = bitbucket::collect(&client, &o, progress).await?;
+    for w in &collected.warnings {
+        eprintln!("warning: {w}");
+    }
+    let mut findings = scan::scan_chunks(engine, filter, &collected.chunks);
+    let auth = kubera::sources::remote::Auth {
+        token,
+        // Access tokens clone as `x-token-auth`; app passwords and API
+        // tokens with their user.
+        user: Some(token_user.clone().unwrap_or_else(|| "x-token-auth".into())),
+        allow_http: g.allow_http,
+        interactive: false,
+    };
+    findings.extend(scan_git_repos(
+        &collected.git,
+        &auth,
+        engine,
+        filter,
+        max_size,
+        opts.jobs,
+        progress,
+    ));
+    Ok(findings)
+}
+
+async fn cmd_scan_gitlab(
+    g: &GlobalArgs,
+    source: &ScanSource,
+    engine: &Engine,
+    filter: &Filter,
+    max_size: u64,
+    progress: &dyn Fn(String),
+) -> Result<Vec<Finding>> {
+    use kubera::sources::gitlab;
+    let ScanSource::Gitlab {
+        projects,
+        group,
+        what,
+        token_env,
+        api_url,
+        max_items,
+        max_jobs,
+        max_rate_wait,
+        opts,
+    } = source
+    else {
+        unreachable!()
+    };
+    let token = env_secret(token_env.as_ref(), "--token-env")?;
+    let mut client = kubera::forge::Client::new(
+        token.clone(),
+        None,
+        std::time::Duration::from_secs(*max_rate_wait),
+    )?;
+    client.allow_http = g.allow_http;
+    let api = api_url.trim_end_matches('/');
+    let mut all = projects.clone();
+    for grp in group {
+        progress(format!("group {grp}: listing projects"));
+        let list = client
+            .list(&kubera::forge::Source::GitLabGroup(grp.clone()), Some(api))
+            .await?;
+        all.extend(list.into_iter().map(|r| r.full_name));
+    }
+    all.sort();
+    all.dedup();
+    if all.is_empty() {
+        bail!("nothing to scan: pass group/project paths or --group");
+    }
+    let o = gitlab::Options {
+        api: api.to_string(),
+        projects: all,
+        what: if what.is_empty() {
+            gitlab::ALL.to_vec()
+        } else {
+            what.clone()
+        },
+        max_items: *max_items,
+        max_jobs: *max_jobs,
+        max_log_size: 256 * 1024 * 1024,
+        max_file_size: max_size,
+    };
+    let collected = gitlab::collect(&client, &o, progress).await?;
+    for w in &collected.warnings {
+        eprintln!("warning: {w}");
+    }
+    let mut findings = scan::scan_chunks(engine, filter, &collected.chunks);
+    let auth = kubera::sources::remote::Auth {
+        token,
+        // GitLab takes any user name with a token; `oauth2` works for
+        // personal, project and OAuth tokens alike.
+        user: Some("oauth2".into()),
+        allow_http: g.allow_http,
+        interactive: false,
+    };
+    findings.extend(scan_git_repos(
+        &collected.git,
+        &auth,
+        engine,
+        filter,
+        max_size,
+        opts.jobs,
+        progress,
+    ));
     Ok(findings)
 }
 
@@ -2001,11 +2979,13 @@ async fn cmd_scan_repos(
         cache_dir: cache_dir.clone(),
         git: git::GitOptions {
             max_depth: *max_depth,
-            // Repositories already run in parallel: share the CPUs.
+            // Repositories already run in parallel: share the CPUs among
+            // those actually scanned at the same time.
             jobs: if opts.jobs > 0 {
                 opts.jobs
             } else {
-                (git::effective_jobs(0) / (*repo_concurrency).max(1)).max(1)
+                let parallel = (*repo_concurrency).clamp(1, targets.len().max(1));
+                (git::effective_jobs(0) / parallel).max(1)
             },
             ..Default::default()
         },
@@ -2129,8 +3109,15 @@ fn resolve_secret<'a>(
     Ok((t, chosen.parts.clone()))
 }
 
-fn services(ctx: Ctx, engine: Engine, filter: Filter, max_file_size: u64) -> kubera::tui::Services {
+fn services(
+    ctx: Ctx,
+    engine: Engine,
+    filter: Filter,
+    max_file_size: u64,
+    verify_cache: Option<kubera::verify_cache::Cache>,
+) -> kubera::tui::Services {
     kubera::tui::Services {
+        verify_cache: verify_cache.map(Arc::new),
         engine,
         filter,
         templates: ctx.templates,
@@ -2141,11 +3128,18 @@ fn services(ctx: Ctx, engine: Engine, filter: Filter, max_file_size: u64) -> kub
     }
 }
 
-fn cmd_tui(g: &GlobalArgs, target: Option<String>, git: bool, verify: bool) -> Result<u8> {
+fn cmd_tui(
+    g: &GlobalArgs,
+    target: Option<String>,
+    git: bool,
+    verify: bool,
+    cache: &CacheArgs,
+) -> Result<u8> {
     if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
         bail!("the TUI needs an interactive terminal");
     }
     let ctx = context(g)?;
+    let verify_cache = cache.resolve(&ctx.cfg)?;
     let engine = Engine::new(ctx.templates.iter().map(|l| l.template.clone()).collect())?;
     let mut filter = Filter::new(&ctx.cfg.excludes(&[], false), &ctx.cfg.allowlist)?;
     filter.suppress(kubera::baseline::Baseline::resolve(None)?.fingerprints());
@@ -2169,7 +3163,7 @@ fn cmd_tui(g: &GlobalArgs, target: Option<String>, git: bool, verify: bool) -> R
             kubera::tui::Start::Scan(target, label)
         }
     };
-    let svc = services(ctx, engine, filter, max);
+    let svc = services(ctx, engine, filter, max, verify_cache);
     tokio::task::block_in_place(|| {
         if verify {
             kubera::tui::run_with(svc, start, true)

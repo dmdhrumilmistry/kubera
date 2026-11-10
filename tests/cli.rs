@@ -458,17 +458,52 @@ async fn mass_scan_github_org_rate_limited_incremental() {
     assert!(err.contains("1 new commit(s), clean"), "{err}");
 }
 
+#[test]
+fn forks_in_one_mass_scan_each_report_their_findings() {
+    let dir = tempfile::tempdir().unwrap();
+    let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+    std::fs::create_dir(&a).unwrap();
+    make_repo(&a, true);
+    git(
+        dir.path(),
+        &["clone", "-q", a.to_str().unwrap(), b.to_str().unwrap()],
+    );
+    let state = dir.path().join("state.json");
+    let out = kubera(
+        &[
+            "scan",
+            "repos",
+            a.to_str().unwrap(),
+            b.to_str().unwrap(),
+            "--state",
+            state.to_str().unwrap(),
+            "-f",
+            "json",
+        ],
+        dir.path(),
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    // The fork's history was scanned once, but both repositories have the
+    // finding, so neither baseline advances.
+    assert_eq!(json(&out).as_array().unwrap().len(), 2, "{err}");
+    assert!(err.contains("0 baseline(s) advanced, 2 kept"), "{err}");
+}
+
 /// A repository with `n` commits built with `git fast-import` (fast even for
 /// thousands of commits). Every 50th commit adds a token; one commit adds a
-/// token under `node_modules/` (skipped by default).
-fn big_history_repo(n: usize) -> tempfile::TempDir {
+/// token under `node_modules/` (skipped by default). `copies` more branches
+/// replay commits 1.. on top of a commit of their own, later in time (as a
+/// rebase or a series of cherry-picks would): same file changes, other
+/// commit ids.
+fn big_history_repo(n: usize, copies: usize) -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     let d = dir.path();
     git(d, &["init", "-q", "-b", "main"]);
     let mut stream = String::new();
-    for i in 0..n {
+    let mut mark = 0;
+    let files_of = |i: usize| {
         let mut files = vec![(format!("src/f{i}.txt"), format!("line {i}\n"))];
-        if i % 50 == 0 {
+        if i.is_multiple_of(50) {
             let tok = format!("gh{}_{}{i:04}", "p", "9nVq3kZ1Lr8XwT2pYb6Hd4Fs7Jc0Mg5A");
             files.push((format!("conf/c{i}.env"), format!("TOKEN={tok}\n")));
         }
@@ -476,19 +511,36 @@ fn big_history_repo(n: usize) -> tempfile::TempDir {
             let tok = format!("gh{}_{}", "p", "Zz9nVq3kZ1Lr8XwT2pYb6Hd4Fs7Jc0Mg5Ae1");
             files.push(("node_modules/pkg/index.js".into(), format!("t='{tok}'\n")));
         }
+        files
+    };
+    let mut commit = |stream: &mut String, branch: &str, from: usize, time: usize, files| {
+        mark += 1;
         stream.push_str(&format!(
-            "commit refs/heads/main\nmark :{}\ncommitter T <t@example.com> {} +0000\ndata 2\nc\n",
-            i + 1,
-            1_700_000_000 + i
+            "commit refs/heads/{branch}\nmark :{mark}\ncommitter T <t@example.com> {} +0000\ndata 2\nc\n",
+            1_700_000_000 + time
         ));
-        if i > 0 {
-            stream.push_str(&format!("from :{i}\n"));
+        if from > 0 {
+            stream.push_str(&format!("from :{from}\n"));
         }
         for (path, body) in files {
+            let body: String = body;
             stream.push_str(&format!(
                 "M 644 inline {path}\ndata {}\n{body}\n",
                 body.len()
             ));
+        }
+        mark
+    };
+    let mut prev = 0;
+    for i in 0..n {
+        prev = commit(&mut stream, "main", prev, i, files_of(i));
+    }
+    for k in 0..copies {
+        let t = 10_000 * (k + 1);
+        let own = vec![(format!("BRANCH{k}"), format!("{k}\n"))];
+        let mut prev = commit(&mut stream, &format!("copy{k}"), 1, t, own);
+        for i in 1..n {
+            prev = commit(&mut stream, &format!("copy{k}"), prev, t + i, files_of(i));
         }
     }
     let mut child = Command::new("git")
@@ -526,14 +578,36 @@ fn finding_keys(v: &serde_json::Value) -> Vec<(String, String, String)> {
 
 #[test]
 fn parallel_history_scan_matches_serial_and_skips_dependencies() {
-    let dir = big_history_repo(300);
+    // Two copied branches: every change on them repeats one of main.
+    let dir = big_history_repo(300, 2);
     let d = dir.path();
     let serial = json(&kubera(&["scan", "git", ".", "-f", "json", "-j", "1"], d));
     let parallel = json(&kubera(&["scan", "git", ".", "-f", "json", "-j", "4"], d));
     assert_eq!(finding_keys(&serial).len(), 6, "{serial:#}");
     assert_eq!(finding_keys(&serial), finding_keys(&parallel));
-    // Output order is deterministic despite parallel workers.
+    // Output order is deterministic despite parallel workers, and so is
+    // the commit each repeated change is reported at: the first one.
     assert_eq!(serial, parallel);
+    let three = json(&kubera(&["scan", "git", ".", "-f", "json", "-j", "3"], d));
+    assert_eq!(serial, three);
+    let main = Command::new("git")
+        .args(["rev-list", "main"])
+        .current_dir(d)
+        .output()
+        .unwrap();
+    let main = String::from_utf8(main.stdout).unwrap();
+    for (_, commit, _) in finding_keys(&serial) {
+        assert!(
+            main.contains(&commit),
+            "{commit} is a copy, not the first commit"
+        );
+    }
+    // Only main (a branch with no repeats) gives the same findings.
+    let only_main = json(&kubera(
+        &["scan", "git", ".", "-f", "json", "--branch", "main"],
+        d,
+    ));
+    assert_eq!(serial, only_main);
 
     let all = json(&kubera(
         &["scan", "git", ".", "-f", "json", "--no-default-excludes"],
@@ -561,7 +635,7 @@ fn parallel_history_scan_matches_serial_and_skips_dependencies() {
 
 #[test]
 fn checkpoint_is_removed_on_success_and_never_mixes_scans() {
-    let dir = big_history_repo(120);
+    let dir = big_history_repo(120, 1);
     let d = dir.path();
     let cp = d.join("scan.checkpoint");
     let cp_s = cp.to_str().unwrap();
@@ -794,4 +868,132 @@ fn html_report_is_self_contained_and_redacted() {
     assert!(html.contains("Content-Security-Policy"));
     assert!(!html.contains(&fake_github_token()));
     assert!(!html.contains("http://") && !html.contains("src=\"https://"));
+}
+
+#[tokio::test]
+async fn verify_cache_flag_and_config_reuse_results() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/me"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"user": {"login": "alice"}})),
+        )
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path().to_path_buf();
+    std::fs::write(
+        d.join("mock.yaml"),
+        format!(
+            r#"
+id: mock-cli
+name: Mock CLI Key
+detect:
+  keywords: [mkc_]
+  patterns:
+    - name: token
+      regex: '\b(mkc_[A-Za-z0-9]{{16}})\b'
+verify:
+  request:
+    url: {}/me
+    auth: {{ type: bearer, token: "{{{{ token }}}}" }}
+  valid: {{ status: [200] }}
+  extract:
+    - {{ name: owner, label: Owner, json: user.login }}
+"#,
+            server.uri()
+        ),
+    )
+    .unwrap();
+    let secret = format!("mkc_{}", "Zq8Lw2Pm9Xa1Bc3D");
+    let run = |extra: Vec<String>| {
+        let (d, secret) = (d.clone(), secret.clone());
+        tokio::task::spawn_blocking(move || {
+            let mut child = Command::new(env!("CARGO_BIN_EXE_kubera"))
+                .args(["--allow-http", "--no-builtin", "-t", "mock.yaml"])
+                .args(["scan", "stdin", "--verify"])
+                .args(extra)
+                .current_dir(&d)
+                .env("NO_COLOR", "1")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(format!("key = {secret}\n").as_bytes())
+                .unwrap();
+            child.wait_with_output().unwrap()
+        })
+    };
+    let requests = || async { server.received_requests().await.unwrap().len() };
+    let args = |a: &[&str]| -> Vec<String> {
+        a.iter()
+            .map(|s| s.to_string())
+            .chain(["-f".into(), "json".into()])
+            .collect()
+    };
+    let flag = args(&["--verify-cache=cache/v.json"]);
+
+    let out = run(flag.clone()).await.unwrap();
+    let v = json(&out);
+    assert_eq!(v[0]["verification"]["status"], "verified");
+    assert!(v[0]["verification"].get("cached").is_none());
+    assert_eq!(requests().await, 1);
+    let stored = std::fs::read_to_string(d.join("cache/v.json")).unwrap();
+    assert!(!stored.contains(&secret[4..]), "secret in the cache file");
+
+    // Second run: no request; the result says it is cached.
+    let out = run(flag.clone()).await.unwrap();
+    let v = json(&out);
+    assert_eq!(requests().await, 1);
+    assert_eq!(v[0]["verification"]["status"], "verified");
+    assert_eq!(v[0]["verification"]["cached"], true);
+    assert_eq!(v[0]["verification"]["details"]["Owner"], "alice");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("1 result(s) reused without a request"),
+        "{err}"
+    );
+    assert!(err.contains("1 cached"), "{err}");
+
+    // Pretty output marks it too.
+    let out = run(vec!["--verify-cache=cache/v.json".into()])
+        .await
+        .unwrap();
+    let pretty = String::from_utf8_lossy(&out.stdout);
+    assert!(pretty.contains("no request sent"), "{pretty}");
+
+    // The config file enables it as well (path relative to the file), and
+    // --no-verify-cache overrides it.
+    std::fs::write(
+        d.join(".kubera.yaml"),
+        "verify_cache:\n  path: cache/v.json\n  ttl: { live: 2h }\n",
+    )
+    .unwrap();
+    let out = run(args(&[])).await.unwrap();
+    assert_eq!(json(&out)[0]["verification"]["cached"], true);
+    assert_eq!(requests().await, 1);
+    let out = run(args(&["--no-verify-cache"])).await.unwrap();
+    assert!(json(&out)[0]["verification"].get("cached").is_none());
+    assert_eq!(requests().await, 2);
+    // A live TTL of 0 means: always ask.
+    let out = run(args(&["--verify-cache-ttl", "live=0"])).await.unwrap();
+    assert!(json(&out)[0]["verification"].get("cached").is_none());
+    assert_eq!(requests().await, 3);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(d.join("cache/v.json"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
 }

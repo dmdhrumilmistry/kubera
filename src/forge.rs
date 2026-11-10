@@ -47,11 +47,17 @@ pub struct Client {
     pub allow_http: bool,
 }
 
+/// Which API a request goes to: decides the auth header and `Accept`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Kind {
+pub enum Kind {
     GitHub,
+    /// `PRIVATE-TOKEN` header.
     GitLab,
+    /// Basic auth with `user`, otherwise a bearer token.
     Bitbucket,
+    /// Any other JSON API (Slack, Jira, Docker Hub, ...): basic auth with
+    /// `user`, otherwise a bearer token.
+    Other,
 }
 
 impl Client {
@@ -61,7 +67,7 @@ impl Client {
                 .user_agent(concat!("kubera/", env!("CARGO_PKG_VERSION")))
                 .redirect(reqwest::redirect::Policy::none())
                 .connect_timeout(Duration::from_secs(10))
-                .timeout(Duration::from_secs(60))
+                .timeout(Duration::from_secs(120))
                 .build()?,
             token,
             user,
@@ -75,31 +81,42 @@ impl Client {
         let Some(tok) = &self.token else { return rb };
         match (kind, &self.user) {
             (Kind::GitLab, _) => rb.header("PRIVATE-TOKEN", tok),
-            (Kind::Bitbucket, Some(u)) => rb.basic_auth(u, Some(tok)),
+            (Kind::Bitbucket | Kind::Other, Some(u)) => rb.basic_auth(u, Some(tok)),
             _ => rb.bearer_auth(tok),
         }
     }
 
-    /// GET with retries and rate-limit handling. Returns the JSON body and
-    /// response headers.
-    async fn get(
+    /// Send an authorized GET, retrying transport errors, 5xx answers and
+    /// rate limits. Redirects are not followed; any other response is
+    /// returned whatever its status.
+    async fn send(
         &self,
         kind: Kind,
         url: &reqwest::Url,
-    ) -> Result<(Value, reqwest::header::HeaderMap)> {
+        accept: Option<&str>,
+    ) -> Result<reqwest::Response> {
         if url.scheme() != "https" && !(self.allow_http && url.scheme() == "http") {
-            bail!("refusing non-https API url {url}");
+            bail!(
+                "refusing non-https API url {}",
+                crate::http::redact_url(url)
+            );
         }
         let mut attempt = 0u32;
         loop {
             let mut rb = self.http.get(url.clone());
-            rb = match kind {
-                Kind::GitHub => rb
-                    .header("Accept", "application/vnd.github+json")
-                    .header("X-GitHub-Api-Version", "2022-11-28"),
-                _ => rb.header("Accept", "application/json"),
+            rb = match (kind, accept) {
+                (_, Some(a)) => rb.header("Accept", a),
+                (Kind::GitHub, None) => rb.header("Accept", "application/vnd.github+json"),
+                (_, None) => rb.header("Accept", "application/json"),
             };
-            let res = self.authorize(kind, rb).send().await;
+            if kind == Kind::GitHub {
+                rb = rb.header("X-GitHub-Api-Version", "2022-11-28");
+            }
+            let res = self
+                .authorize(kind, rb)
+                .send()
+                .await
+                .map_err(reqwest::Error::without_url);
             let resp = match res {
                 Ok(r) => r,
                 Err(e) if attempt < self.retries => {
@@ -112,8 +129,7 @@ impl Client {
                 Err(e) => return Err(e).context(format!("GET {}", host(url))),
             };
             let status = resp.status().as_u16();
-            let headers = resp.headers().clone();
-            if let Some(wait) = rate_limit_wait(status, &headers) {
+            if let Some(wait) = rate_limit_wait(status, resp.headers()) {
                 if attempt >= self.retries {
                     bail!("{}: still rate limited after {attempt} retries", host(url));
                 }
@@ -146,22 +162,42 @@ impl Client {
                 tokio::time::sleep(d).await;
                 continue;
             }
-            let body = resp.text().await.unwrap_or_default();
-            if !(200..300).contains(&status) {
-                bail!(
-                    "{} answered HTTP {status}: {}",
-                    host(url),
-                    crate::http::snippet(&body)
-                );
-            }
-            // Proactive slow-down before the budget is exhausted.
-            if let Some(wait) = near_limit_wait(&headers).filter(|w| *w <= self.max_wait) {
-                eprintln!("api: rate limit nearly used; pausing {}s", wait.as_secs());
-                tokio::time::sleep(wait).await;
-            }
-            let json = serde_json::from_str(&body).context("API returned invalid JSON")?;
-            return Ok((json, headers));
+            return Ok(resp);
         }
+    }
+
+    /// GET with retries and rate-limit handling. Returns the JSON body and
+    /// response headers.
+    async fn get(
+        &self,
+        kind: Kind,
+        url: &reqwest::Url,
+    ) -> Result<(Value, reqwest::header::HeaderMap)> {
+        let resp = self.send(kind, url, None).await?;
+        let status = resp.status().as_u16();
+        let headers = resp.headers().clone();
+        let body = read_capped(resp, MAX_JSON).await?;
+        let body = String::from_utf8_lossy(&body);
+        if !(200..300).contains(&status) {
+            bail!(
+                "{} answered HTTP {status}: {}",
+                host(url),
+                crate::http::snippet(&body)
+            );
+        }
+        // Proactive slow-down before the budget is exhausted.
+        if let Some(wait) = near_limit_wait(&headers).filter(|w| *w <= self.max_wait) {
+            eprintln!("api: rate limit nearly used; pausing {}s", wait.as_secs());
+            tokio::time::sleep(wait).await;
+        }
+        let json = serde_json::from_str(&body).context("API returned invalid JSON")?;
+        Ok((json, headers))
+    }
+
+    /// One JSON document (an object, or a single page).
+    pub async fn get_json(&self, kind: Kind, url: &str) -> Result<Value> {
+        let u = reqwest::Url::parse(url).context("invalid API url")?;
+        Ok(self.get(kind, &u).await?.0)
     }
 
     /// List the repositories of an org / user / group / workspace.
@@ -316,61 +352,67 @@ impl Client {
     /// Every item of a paginated GitHub list endpoint (JSON array), up to
     /// `max` items, following `Link: rel="next"` on the same origin only.
     pub async fn github_list(&self, url: &str, max: usize) -> Result<Vec<Value>> {
+        self.paginate(Kind::GitHub, url, max).await
+    }
+
+    /// Every item of a paginated list endpoint, up to `max` items. A page is
+    /// a JSON array or an object wrapping one (`{"values": [...]}`); the next
+    /// page comes from `Link: rel="next"` or a `next` / `_links.next` URL in
+    /// the body (Bitbucket, Docker Hub, Confluence; absolute or relative),
+    /// and is only followed on the same origin.
+    pub async fn paginate(&self, kind: Kind, url: &str, max: usize) -> Result<Vec<Value>> {
         let base = reqwest::Url::parse(url).context("invalid API url")?;
         let mut next = Some(base.clone());
         let mut out = Vec::new();
+        let mut pages = 0;
         while let Some(u) = next.take() {
-            let (json, headers) = self.get(Kind::GitHub, &u).await?;
+            pages += 1;
+            if pages > 10_000 {
+                bail!("too many pages from {}", host(&base));
+            }
+            let (json, headers) = self.get(kind, &u).await?;
             // Some endpoints wrap the array (`{"workflow_runs": [...]}`).
             let items = match &json {
                 Value::Array(a) => a.clone(),
-                Value::Object(o) => o
-                    .values()
-                    .find_map(|v| v.as_array().cloned())
+                Value::Object(o) => ["values", "results", "items"]
+                    .iter()
+                    .find_map(|k| o.get(*k).and_then(Value::as_array).cloned())
+                    .or_else(|| o.values().find_map(|v| v.as_array().cloned()))
                     .unwrap_or_default(),
                 _ => Vec::new(),
             };
+            let empty = items.is_empty();
             out.extend(items);
             if out.len() >= max {
                 out.truncate(max);
                 break;
             }
-            next = match link_next(&headers) {
-                Some(n) => {
-                    let n = reqwest::Url::parse(&n).context("invalid pagination url")?;
-                    if n.origin() != base.origin() {
-                        bail!(
-                            "refusing to follow pagination to another host: {}",
-                            host(&n)
-                        );
-                    }
-                    Some(n)
-                }
+            if empty {
+                break;
+            }
+            let candidate = link_next(&headers).or_else(|| {
+                json.get("next")
+                    .or_else(|| json.pointer("/_links/next"))
+                    .and_then(Value::as_str)
+                    .filter(|n| !n.is_empty())
+                    .map(str::to_string)
+            });
+            next = match candidate {
+                Some(n) => Some(same_origin(&base, &n)?),
                 None => None,
             };
         }
         Ok(out)
     }
 
-    /// Download a GitHub resource that redirects to pre-signed storage
-    /// (Actions logs): the token goes to the API only, never to the
-    /// redirect target, which must be https. At most `max` bytes.
-    pub async fn github_download(&self, url: &str, max: u64) -> Result<Option<Vec<u8>>> {
+    /// Download a resource that may redirect to pre-signed storage (GitHub
+    /// Actions logs, CI traces, LFS files): the token goes to the API only,
+    /// never to the redirect target, which must be https. At most `max`
+    /// bytes; `None` when it is larger, or gone (404/410).
+    pub async fn download(&self, kind: Kind, url: &str, max: u64) -> Result<Option<Vec<u8>>> {
         let u = reqwest::Url::parse(url).context("invalid API url")?;
-        if u.scheme() != "https" && !(self.allow_http && u.scheme() == "http") {
-            bail!("refusing non-https API url {}", host(&u));
-        }
-        let rb = self
-            .http
-            .get(u.clone())
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2022-11-28");
-        let resp = self
-            .authorize(Kind::GitHub, rb)
-            .send()
-            .await
-            .map_err(reqwest::Error::without_url)
-            .with_context(|| format!("GET {}", host(&u)))?;
+        let accept = (kind != Kind::GitHub).then_some("*/*");
+        let resp = self.send(kind, &u, accept).await?;
         let status = resp.status().as_u16();
         let resp = if (300..400).contains(&status) {
             let loc = resp
@@ -398,20 +440,63 @@ impl Client {
             404 | 410 => return Ok(None),
             s => bail!("{} answered HTTP {s}", host(&u)),
         }
-        let mut resp = resp;
-        let mut buf = Vec::new();
-        while let Some(chunk) = resp.chunk().await? {
-            buf.extend_from_slice(&chunk);
-            if buf.len() as u64 > max {
-                return Ok(None);
-            }
+        if resp.content_length().is_some_and(|n| n > max) {
+            return Ok(None);
         }
-        Ok(Some(buf))
+        let buf = read_capped(resp, max.saturating_add(1)).await?;
+        Ok((buf.len() as u64 <= max).then_some(buf))
+    }
+
+    /// [`Client::download`] from the GitHub API.
+    pub async fn github_download(&self, url: &str, max: u64) -> Result<Option<Vec<u8>>> {
+        self.download(Kind::GitHub, url, max).await
     }
 }
 
-fn enc(s: &str) -> String {
-    percent_encoding::utf8_percent_encode(s, percent_encoding::NON_ALPHANUMERIC).to_string()
+/// Largest JSON response read.
+const MAX_JSON: u64 = 64 * 1024 * 1024;
+
+/// Read at most `max` bytes of a body.
+async fn read_capped(mut resp: reqwest::Response, max: u64) -> Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(reqwest::Error::without_url)? {
+        let room = usize::try_from(max)
+            .unwrap_or(usize::MAX)
+            .saturating_sub(buf.len());
+        buf.extend_from_slice(&chunk[..chunk.len().min(room)]);
+        if buf.len() as u64 >= max {
+            break;
+        }
+    }
+    Ok(buf)
+}
+
+/// Resolve a pagination URL (absolute or relative to `base`) and refuse it
+/// unless it stays on `base`'s origin, so a token is never sent elsewhere.
+pub fn same_origin(base: &reqwest::Url, next: &str) -> Result<reqwest::Url> {
+    let u = base.join(next).context("invalid pagination url")?;
+    if u.origin() != base.origin() {
+        bail!(
+            "refusing to follow pagination to another host: {}",
+            host(&u)
+        );
+    }
+    Ok(u)
+}
+
+/// Percent-encode one URL path or query component (unreserved characters
+/// `-._~` are kept).
+pub fn enc(s: &str) -> String {
+    const COMPONENT: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+        .remove(b'-')
+        .remove(b'_')
+        .remove(b'.')
+        .remove(b'~');
+    // `.` and `..` would be collapsed by URL normalisation.
+    if s.chars().all(|c| c == '.') {
+        return s.replace('.', "%2E");
+    }
+    percent_encoding::utf8_percent_encode(s, COMPONENT).to_string()
 }
 
 fn host(u: &reqwest::Url) -> String {
@@ -422,7 +507,7 @@ fn repo_info(kind: Kind, v: &Value) -> Option<RepoInfo> {
     let s = |p: &str| v.pointer(p).and_then(Value::as_str).map(str::to_string);
     let b = |p: &str| v.pointer(p).and_then(Value::as_bool).unwrap_or(false);
     Some(match kind {
-        Kind::GitHub => RepoInfo {
+        Kind::GitHub | Kind::Other => RepoInfo {
             full_name: s("/full_name")?,
             clone_url: s("/clone_url")?,
             archived: b("/archived"),

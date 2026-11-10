@@ -15,7 +15,7 @@ kubera scan git ~/src/monorepo --checkpoint monorepo.ckpt         # resumable
 
 A single `git log -p` uses one CPU, and on a big repository git, not the detectors, is the bottleneck. Kubera lists the commits to scan with `git rev-list`, splits them into partitions, and runs one `git log` per CPU over them. Each worker parses its process's output while git is still producing it. The findings are the same as a sequential scan.
 
-`-j N` sets the number of workers (default `0`: one per CPU). It applies to every history scan: `scan git`, `scan repos`, and the wikis and gists of `scan github`. In `scan repos`, the CPUs are divided between the `--repo-concurrency` repositories scanned at the same time, so the machine is not oversubscribed.
+`-j N` sets the number of workers (default `0`: one per CPU). It applies to every history scan: `scan git`, `scan repos`, and the wikis and gists of `scan github`. In `scan repos`, the CPUs are divided between the repositories scanned at the same time (`--repo-concurrency`, or fewer when fewer repositories are listed), so the machine is neither oversubscribed nor left idle.
 
 Measured on [rust-lang/cargo](https://github.com/rust-lang/cargo) (24,445 commits) on 4 vCPUs:
 
@@ -26,6 +26,25 @@ Measured on [rust-lang/cargo](https://github.com/rust-lang/cargo) (24,445 commit
 | Parallel, with `--exclude-path` on a heavy directory | **2.5 s** |
 
 See [Benchmarks](benchmarks.md#parallel-history-scanning) for the setup.
+
+### Repeated changes
+
+The same file change often appears in many commits: cherry-picks onto release branches, rebased or copied branches that are kept around, vendored code added on several branches. Git prints the old and new blob ids of every file diff, and with a fixed diff algorithm the added lines depend on those two blobs only. Kubera therefore scans each pair of blobs **once**:
+
+- A secret in a repeated change is reported **once**, at the **first commit that introduced it**: the oldest commit in `git rev-list` order, whichever worker met it first. Output stays deterministic and identical for any `-j`.
+- No secret is lost: the skipped chunks have exactly the text of the scanned one. A secret that is also added by a *different* change (another file, other neighbouring lines) is still reported there too.
+- [Checkpoints](#resumable-scans) remember the repeated changes that produced findings, so a resumed scan reports exactly what an uninterrupted one would.
+- In [`scan repos`](#mass-scanning), the scan results are shared between the repositories of a run (forks, mirrors and repositories that vendor the same code), while every repository still reports its own findings with its own commits, so per-repository state and baselines are unaffected.
+
+What it saves is Kubera's own work on the repeated text (detection and decoding); git still produces every diff, and on most repositories git is the larger cost. Measured on 4 vCPUs (see [Benchmarks](benchmarks.md#repeated-changes)):
+
+| Repository | Repeated file changes | Before | After |
+|---|---:|---:|---:|
+| rust-lang/cargo (24,445 commits) | 6% | 3.71 s | 3.71 s |
+| 9 copies of a branch adding 1,500 real source files (22 MB) | 89% | 1.38 s | **1.04 s** (-25%) |
+| 9 copies of a branch of 2,000 small edits | 89% | 1.00 s | 0.93 s |
+
+Nothing is stored between runs: [`--state`](#scan-only-what-changed) already keeps later runs from reading old commits at all.
 
 ### Skip junk early
 
@@ -110,6 +129,8 @@ Forks and archived repositories are skipped unless `--include-forks` / `--includ
 1. **First run:** every repository is cloned once (bare) into `--cache-dir`.
 2. **Later runs:** each mirror is updated with `git fetch --prune`, which downloads only new objects. With `--state`, only never-scanned commits are read.
 
+3. **Verification:** with `--verify --verify-cache`, secrets found again (a leak that is still in history, the same key in several repositories) are not sent to their vendor again while the last result is fresh: 1 hour for live ones, 24 hours for invalid ones. See [Verification cache](scanning.md#verification-cache).
+
 Network, disk I/O and CPU scale with **what changed** since the last passing scan, not with the size of the organization. Repositories are processed `--repo-concurrency` at a time, and each one's history is scanned in [parallel](#parallel-history) with its share of the CPUs. A failure in one repository is reported and doesn't stop the others.
 
 ### Rate limiting
@@ -134,7 +155,7 @@ A nightly job that only reports new leaks (add `--notify-env` to get a Slack mes
     path: ~/.cache/kubera
     key: kubera-${{ github.run_id }}
     restore-keys: kubera-
-- run: kubera scan repos --github-org acme --token-env GH_TOKEN --cache-dir ~/.cache/kubera --state ~/.cache/kubera/state.json --fail
+- run: kubera scan repos --github-org acme --token-env GH_TOKEN --cache-dir ~/.cache/kubera --state ~/.cache/kubera/state.json --verify --verify-cache=$HOME/.cache/kubera/verify.json --fail
   env:
     GH_TOKEN: ${{ secrets.ORG_READ_TOKEN }}
 ```

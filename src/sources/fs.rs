@@ -89,6 +89,7 @@ fn read_inner(path: &Path, max_size: u64, filter: &Filter) -> Result<Vec<Chunk>>
                     ..location.clone()
                 },
                 line_map: None,
+                content_id: None,
             });
         })?;
         return Ok(out);
@@ -105,5 +106,6 @@ fn read_inner(path: &Path, max_size: u64, filter: &Filter) -> Result<Vec<Chunk>>
         text: String::from_utf8_lossy(&data).into_owned(),
         location,
         line_map: None,
+        content_id: None,
     }])
 }

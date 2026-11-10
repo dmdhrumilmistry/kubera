@@ -8,12 +8,13 @@ Kubera handles live credentials, so it is conservative by default.
 - **No secrets in argv.** `verify`, `analyze` and `rotate` take credentials from environment variables (`--secret-env`) or stdin (`--secret-stdin`). `--secret` works but warns that values leak into shell history and process listings.
 - **No secrets in diagnostics.** HTTP errors include only `scheme://host/…`, never paths or query strings (some APIs put tokens in the path). The HTTP library's own error text has its URL removed for the same reason. Verification and step messages pass through a masking filter that replaces every known secret value.
 - **Files that hold secrets are private and short-lived.** A [checkpoint](incremental.md#resumable-scans) (`--checkpoint`) must store raw secrets to report them on resume, so it is written atomically with mode `0600` and deleted as soon as the scan completes.
+- **The verification cache holds no secrets, and is private anyway.** With [`--verify-cache`](scanning.md#verification-cache), results are keyed by fingerprint (a truncated SHA-256 that cannot be reversed) and store the status, the already masked message, the extracted details (account names, scopes; extractors marked `secret` are redacted) and the time of the check. Details can still name accounts, so the file is written atomically with mode `0600`, in a directory created with mode `0700`. A cached result is always marked as such (`"cached": true`), and live results are reused for an hour at most by default, so a revoked key is noticed quickly.
 - **Files meant to be shared hold none.** The [baseline](triage.md) (`.kubera-baseline.json`) contains fingerprints, detector ids and locations, never secret values, so it can be committed. State files contain only refs and commit ids.
 - **Dry-run plans** print requests with auth-like headers (`authorization`, `*token*`, `*key*`, `*secret*`, `cookie`, `signature`) replaced by `<redacted>`, and secret values (raw and URL-encoded) masked in URLs and bodies.
 
 ## Network
 
-- **Verification is opt-in.** A plain `scan` of files, git history or stdin makes no network calls (beyond cloning a remote repository or pulling an image you asked for).
+- **Verification is opt-in.** A plain `scan` of files, git history or stdin makes no network calls (beyond cloning a remote repository or pulling an image you asked for). The verification cache only ever removes requests.
 - **HTTPS only.** Requests to any other scheme are refused before anything is sent. (A hidden `--allow-http` flag exists for local mock servers in tests.)
 - **No redirects.** A redirect is treated as an unexpected response, so a credential can never be bounced to another host.
 - **Certificate verification is always on.** On Linux, macOS and Windows, Kubera uses the operating system's trust store. On Android (Termux), where that verifier only works from Java, it uses `SSL_CERT_FILE`, then Termux's bundle, then Android's system store, then Mozilla's embedded roots. See [Installation](installation.md#termux-android). There is no option to disable verification.
@@ -55,8 +56,20 @@ Kubera handles live credentials, so it is conservative by default.
 ## GitHub, buckets and clusters
 
 - **GitHub** (`scan github`): the token is read from an environment variable. API pagination is followed only to the same host. Actions logs are downloaded from GitHub's pre-signed storage URL **without** the token, so it never reaches the storage host.
-- **Buckets** (`scan bucket`): S3 credentials come from the standard `AWS_*` environment variables and are used only to sign requests (SigV4); a GCS access token comes from `--token-env`. Both are sent only to the storage endpoint, over HTTPS, without following redirects. Objects are filtered by path and size before download and never written to disk.
+- **GitLab** (`scan gitlab`): the same rules. The token goes only to the `--api-url` host as `PRIVATE-TOKEN`; job logs that redirect to object storage are fetched without it; snippet repositories on any other host are skipped rather than cloned with the token.
+- **Bitbucket** (`scan bitbucket`): the same rules: credentials only to the API host, step logs fetched from storage without them, snippets cloned only from `bitbucket.org`.
+- **Slack** (`scan slack`): read-only Web API calls; the token goes only to `slack.com`. Uploaded files are not fetched from `files.slack.com`, so the token never leaves the API host.
+- **Jira** (`scan jira`): every URL is built from `--site`; the email and API token go only there. **Confluence** (`scan confluence`) works the same way, and follows `_links.next` pagination only on the site's own host.
+- **Buckets** (`scan bucket`): S3 credentials come from the standard `AWS_*` environment variables and are used only to sign requests (SigV4); a GCS access token comes from `--token-env`; an Azure account key (`AZURE_STORAGE_KEY`) only signs requests (Shared Key) and a SAS token comes from `--sas-env`. Both are sent only to the storage endpoint, over HTTPS, without following redirects. Objects are filtered by path and size before download and never written to disk.
 - **Kubernetes** (`scan k8s`): only read-only `list` calls. TLS trusts only the cluster's CA when the kubeconfig names one. A cluster with `insecure-skip-tls-verify` and plain `http://` servers are refused, rather than sending a token over an unverified connection. RBAC denials become warnings, not failures.
+
+## Packages
+
+`scan package` downloads only from the official registries and their file hosts, over HTTPS, without credentials. Every file is checked against the registry's sha256 / sha512 digest before it is opened (a mismatch fails the scan), sizes are checked before downloading, and packages are read in memory with the archive limits below.
+
+## Hugging Face
+
+`scan huggingface` sends its optional token only to `huggingface.co` (API bearer header, origin-scoped git header). LFS files are only downloaded with `--include-lfs`, after their size and path were checked, from a redirect fetched without the token, and are sha256-verified before they are opened.
 
 ## Interactive use
 
