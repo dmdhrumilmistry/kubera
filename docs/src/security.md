@@ -99,6 +99,16 @@ Filesystem scans never follow symlinks.
 
 A template decides where a matched secret is sent. Only load templates you trust (`-t`, `templates:` in `.kubera.yaml`), and review third-party templates the way you would review code. `kubera templates show <id>` prints exactly what will run.
 
+## Release integrity
+
+- **Checksums, always.** Every release archive has a `.sha256` file, and both installers refuse an archive that does not match it.
+- **Keyless signatures.** The release workflow signs each archive, the SBOM and the manifests tarball with [Sigstore](https://www.sigstore.dev) (`cosign sign-blob`, bundles published as `<asset>.sigstore.json`) and signs the container image by digest. The certificate names the workflow (`dmdhrumilmistry/kubera/.github/workflows/release.yml`) and the ref it ran on, and is recorded in the public Rekor transparency log; there is no long-lived private key to steal.
+- **Provenance.** GitHub build provenance attestations (SLSA) link each archive and the image to the exact commit and workflow run that built them, and an SBOM attestation links each archive to its CycloneDX SBOM. Verify with `gh attestation verify`.
+- **Never re-signed.** Finishing a partial release adds missing signatures only; published assets and signatures are never replaced. Provenance is attested only for bytes the attesting run built.
+- **Package manager manifests** (Homebrew, Scoop, winget, AUR) are generated from the checksums of the published archives, which are hashed again before rendering.
+
+See [Verifying a release](installation.md#verifying-a-release) for the commands.
+
 ## Reporting vulnerabilities
 
 Please report security issues privately through [GitHub security advisories](https://github.com/dmdhrumilmistry/kubera/security/advisories/new) rather than in public issues.

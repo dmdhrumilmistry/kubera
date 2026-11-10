@@ -10,6 +10,9 @@
 #   KUBERA_INSTALL_DIR     install directory (default: %LOCALAPPDATA%\Programs\kubera\bin)
 #   KUBERA_DOWNLOAD_BASE   override the release download URL (https only; mirrors)
 #   KUBERA_NO_MODIFY_PATH  set to 1 to leave the user PATH alone
+#   KUBERA_VERIFY_ATTESTATION  set to 1 to also verify the GitHub build
+#                          provenance attestation with `gh attestation verify`
+#                          (needs the GitHub CLI, logged in)
 
 & {
     Set-StrictMode -Version 2
@@ -95,6 +98,15 @@
         $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
         if ($expected -notmatch '^[0-9a-f]{64}$' -or $expected -ne $actual) {
             Die "checksum mismatch for $asset (expected $expected, got $actual)"
+        }
+
+        if ($env:KUBERA_VERIFY_ATTESTATION -eq '1') {
+            if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
+                Die 'KUBERA_VERIFY_ATTESTATION=1 needs the GitHub CLI (gh) on PATH'
+            }
+            Say 'verifying build provenance attestation'
+            & gh attestation verify $archive --repo $Repo --signer-workflow "$Repo/.github/workflows/release.yml" | Out-Null
+            if ($LASTEXITCODE -ne 0) { Die "attestation verification failed for $asset" }
         }
 
         $unpacked = Join-Path $tmp 'unpacked'

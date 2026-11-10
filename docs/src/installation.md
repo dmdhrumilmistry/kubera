@@ -57,7 +57,45 @@ The crate is called `kubera-cli` (the `kubera` name on crates.io belongs to an u
 
 ## Prebuilt binaries
 
-Every [GitHub release](https://github.com/dmdhrumilmistry/kubera/releases) has archives for Linux (x86_64/aarch64, static), macOS (x86_64/arm64), Windows (x86_64) and Android (aarch64), each with a `.sha256` file.
+Every [GitHub release](https://github.com/dmdhrumilmistry/kubera/releases) has archives for Linux (x86_64, aarch64, i686, armv7, armv6 static musl; riscv64 glibc), Android/Termux (aarch64, armv7, x86_64), macOS (x86_64, arm64), Windows (x86_64, ARM64) and FreeBSD (x86_64), each with a `.sha256` file, a Sigstore signature bundle (`.sigstore.json`) and a GitHub build provenance attestation. The release also carries a CycloneDX SBOM, `kubera-vX.Y.Z.cdx.json`.
+
+## Verifying a release
+
+The installers always check the SHA-256. Releases published after v0.2.0 are also signed and attested by the release workflow itself, with short-lived [Sigstore](https://www.sigstore.dev) certificates bound to GitHub's OIDC identity for `dmdhrumilmistry/kubera/.github/workflows/release.yml`: no long-lived signing key exists that could leak. To check that an archive was built by that workflow from this repository:
+
+```bash
+# GitHub CLI: build provenance (which commit, which workflow run).
+gh attestation verify kubera-x86_64-unknown-linux-musl.tar.gz --repo dmdhrumilmistry/kubera
+
+# The SBOM attestation for the same archive.
+gh attestation verify kubera-x86_64-unknown-linux-musl.tar.gz --repo dmdhrumilmistry/kubera \
+  --predicate-type https://cyclonedx.org/bom
+
+# cosign: the detached signature bundle next to the archive on the release.
+cosign verify-blob kubera-x86_64-unknown-linux-musl.tar.gz \
+  --bundle kubera-x86_64-unknown-linux-musl.tar.gz.sigstore.json \
+  --certificate-identity-regexp '^https://github\.com/dmdhrumilmistry/kubera/\.github/workflows/release\.yml@refs/(heads/main|tags/v[0-9.]+)$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+The same works for `kubera-vX.Y.Z.cdx.json` and `kubera-packaging-vX.Y.Z.tar.gz`. To make the installer check the attestation too (on top of the checksum, never instead of it), install the [GitHub CLI](https://cli.github.com), run `gh auth login`, and set `KUBERA_VERIFY_ATTESTATION=1`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dmdhrumilmistry/kubera/main/install.sh | KUBERA_VERIFY_ATTESTATION=1 sh
+```
+
+```powershell
+$env:KUBERA_VERIFY_ATTESTATION = '1'; irm https://raw.githubusercontent.com/dmdhrumilmistry/kubera/main/install.ps1 | iex
+```
+
+Container images are signed by digest and carry a provenance attestation in the registry:
+
+```bash
+cosign verify ghcr.io/dmdhrumilmistry/kubera:latest \
+  --certificate-identity-regexp '^https://github\.com/dmdhrumilmistry/kubera/\.github/workflows/release\.yml@refs/(heads/main|tags/v[0-9.]+)$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+gh attestation verify oci://ghcr.io/dmdhrumilmistry/kubera:latest --repo dmdhrumilmistry/kubera
+```
 
 ## Container image
 

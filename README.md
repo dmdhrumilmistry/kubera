@@ -79,7 +79,7 @@ winget install dmdhrumilmistry.kubera
 
 Arch Linux: `paru -S kubera-bin` (AUR).
 
-The installers download the release binary for your platform, **verify its SHA-256**, and install `kubera` to `~/.local/bin` (or `$PREFIX/bin` on Termux; `%LOCALAPPDATA%\Programs\kubera\bin` on Windows, added to your user PATH). Prebuilt archives for Linux, macOS, Windows and Android are on the [releases page](https://github.com/dmdhrumilmistry/kubera/releases). The crate is `kubera-cli`; the command is `kubera`. The image (`ghcr.io/dmdhrumilmistry/kubera`, linux/amd64 and arm64) runs as non-root and includes git. [Installation →](https://dmdhrumilmistry.github.io/kubera/installation.html)
+The installers download the release binary for your platform, **verify its SHA-256**, and install `kubera` to `~/.local/bin` (or `$PREFIX/bin` on Termux; `%LOCALAPPDATA%\Programs\kubera\bin` on Windows, added to your user PATH). Prebuilt archives for Linux, macOS, Windows and Android are on the [releases page](https://github.com/dmdhrumilmistry/kubera/releases). Releases are signed with Sigstore and carry GitHub build provenance and an SBOM ([verifying](https://dmdhrumilmistry.github.io/kubera/installation.html#verifying-a-release)). The crate is `kubera-cli`; the command is `kubera`. The image (`ghcr.io/dmdhrumilmistry/kubera`, linux/amd64 and arm64) runs as non-root and includes git. [Installation →](https://dmdhrumilmistry.github.io/kubera/installation.html)
 
 ## Quick start
 

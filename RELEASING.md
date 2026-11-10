@@ -9,6 +9,7 @@ A release publishes, from one workflow run (`.github/workflows/release.yml`):
   `CARGO_REGISTRY_TOKEN`);
 - the container image `ghcr.io/<owner>/kubera:<version>`, `:<major>.<minor>`
   and `:latest` (linux/amd64, linux/arm64);
+- signatures and provenance (see "Signing" below);
 - package manager manifests (Homebrew formula, Scoop manifest, winget
   manifests, AUR `PKGBUILD` and `.SRCINFO`), rendered from
   `packaging/templates/` with the checksums of the published archives,
@@ -43,6 +44,42 @@ A manual run without **publish** only builds (useful to test the pipeline).
 The workflow refuses to publish from any branch but `main`, when the version
 input does not match `Cargo.toml`, or when the tag already exists (unless
 **complete** is checked).
+
+## Signing
+
+Nothing to set up: the workflow signs with GitHub's OIDC token
+(`id-token: write`), so no signing key or secret exists.
+
+- `publish` generates a CycloneDX SBOM of the released source
+  (`kubera-vX.Y.Z.cdx.json`, via `cargo-cyclonedx`), then downloads every
+  archive back from the release, checks it against its `.sha256`, and signs
+  it with `cosign sign-blob --bundle` (keyless). The bundles are uploaded as
+  `<asset>.sigstore.json`. It then creates GitHub build provenance
+  attestations for the archives and the SBOM (`actions/attest-build-provenance`)
+  and an SBOM attestation for the archives (`actions/attest-sbom`).
+- `image` builds with BuildKit SBOM and provenance, signs the pushed digest
+  with `cosign sign`, and pushes a GitHub provenance attestation to GHCR.
+- `packages` signs and attests `kubera-packaging-vX.Y.Z.tar.gz` the same way.
+
+In **complete** mode existing assets are never re-signed or replaced: an
+asset gets a signature bundle only if the release has none for it, and a
+provenance attestation only if this run built those exact bytes and the
+digest has none yet. Running **complete** on a release from before signing
+existed (v0.2.0) therefore adds signature bundles and the SBOM, but no
+provenance for the archives an earlier run built. The image is pushed again
+in complete mode, and that new digest is signed.
+
+Check a release after publishing (see the installation docs for the full
+commands):
+
+```bash
+gh release download vX.Y.Z --repo dmdhrumilmistry/kubera --pattern 'kubera-x86_64-unknown-linux-musl.tar.gz*'
+gh attestation verify kubera-x86_64-unknown-linux-musl.tar.gz --repo dmdhrumilmistry/kubera
+cosign verify-blob kubera-x86_64-unknown-linux-musl.tar.gz \
+  --bundle kubera-x86_64-unknown-linux-musl.tar.gz.sigstore.json \
+  --certificate-identity-regexp '^https://github\.com/dmdhrumilmistry/kubera/\.github/workflows/release\.yml@refs/(heads/main|tags/v[0-9.]+)$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
 
 ## Package managers
 
