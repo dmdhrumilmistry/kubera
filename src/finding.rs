@@ -109,10 +109,10 @@ pub struct Verification {
     pub details: BTreeMap<String, Value>,
     /// Reused from the verification cache (`--verify-cache`): no request
     /// was sent for it in this run.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cached: bool,
     /// Cached results: when the platform was asked (RFC 3339, UTC).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checked_at: Option<String>,
 }
 
