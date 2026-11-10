@@ -1,0 +1,259 @@
+# Cheat sheet: common tasks
+
+One-line recipes, grouped by what you want to do. Every code block has a copy button. Replace `acme/payments` and the other examples with your own names.
+
+## Scan code and git history
+
+Files in a folder (no history):
+
+```bash
+kubera scan fs .
+```
+
+Every commit of the current repository:
+
+```bash
+kubera scan git .
+```
+
+A remote repository (HTTPS, SSH or `github.com/org/repo`):
+
+```bash
+kubera scan git https://github.com/acme/payments.git
+```
+
+A private repository, with a token from an environment variable:
+
+```bash
+kubera scan git https://github.com/acme/payments.git --token-env GH_TOKEN
+```
+
+Only the commits after a given revision:
+
+```bash
+kubera scan git . --since-commit origin/main
+```
+
+Only what the next commit adds (what the pre-commit hook runs):
+
+```bash
+kubera scan staged
+```
+
+Anything piped in, such as a build log:
+
+```bash
+cat build.log | kubera scan stdin
+```
+
+## Scan organizations, images, GitHub, buckets and Kubernetes
+
+Every repository of a GitHub organization, with cached mirrors for fast re-runs:
+
+```bash
+kubera scan repos --github-org acme --token-env GH_TOKEN --cache-dir ~/.cache/kubera --state ~/.cache/kubera/state.json
+```
+
+A container image, every layer, no Docker needed:
+
+```bash
+kubera scan image ghcr.io/acme/api:1.4.2
+```
+
+GitHub issues, pull requests, comments and Actions logs of an organization:
+
+```bash
+kubera scan github --org acme --token-env GH_TOKEN
+```
+
+An S3 bucket (credentials from `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`):
+
+```bash
+kubera scan bucket s3://acme-backups
+```
+
+A live Kubernetes cluster, current kubeconfig context:
+
+```bash
+kubera scan k8s
+```
+
+## Verify and browse findings
+
+Verify everything a scan finds:
+
+```bash
+kubera scan git . --verify
+```
+
+Report only live secrets:
+
+```bash
+kubera scan git . --only-verified
+```
+
+Browse the results in the TUI:
+
+```bash
+kubera scan git . --verify -i
+```
+
+Open the TUI home menu:
+
+```bash
+kubera
+```
+
+Check one credential: paste it at the hidden prompt and Kubera works out what it is:
+
+```bash
+kubera verify
+```
+
+## Respond to a live secret: analyze, rotate, revoke
+
+The full procedure is in [After a scan](workflow.md#live-secrets-revoke-and-rotate). Each command asks for the secret at a hidden prompt.
+
+What the credential can access (read-only API calls):
+
+```bash
+kubera analyze aws-access-key
+```
+
+The rotation plan, as a dry run:
+
+```bash
+kubera rotate aws-access-key
+```
+
+Rotate it, and save the new credential to a new `0600` file:
+
+```bash
+kubera rotate aws-access-key --execute -o new-aws-key.json
+```
+
+The same for a single-part secret, read from an environment variable:
+
+```bash
+kubera rotate gitlab-pat --secret-env LEAKED_TOKEN --execute -o new-gitlab-token.json
+```
+
+Confirm the old credential is dead (exit code `2` = invalid):
+
+```bash
+kubera verify aws-access-key
+```
+
+## Triage: false positives, accepted risks and baselines
+
+In the TUI: <kbd>x</kbd> false positive, <kbd>m</kbd> accepted risk, <kbd>u</kbd> undo. On the command line:
+
+Record everything found today, so only new findings are reported from now on:
+
+```bash
+kubera scan git . --update-baseline
+```
+
+Record only the findings whose platform says they are invalid:
+
+```bash
+kubera scan git . --verify --results invalid --update-baseline
+```
+
+Share the decisions with your team and CI:
+
+```bash
+git add .kubera-baseline.json && git commit -m "kubera: record triage decisions"
+```
+
+Report everything again, ignoring the baseline:
+
+```bash
+kubera scan git . --no-baseline
+```
+
+To silence one line in the code, add a `kubera:ignore` comment to it. See [Baselines and triage](triage.md) and [Configuration](configuration.md).
+
+## Reports
+
+A self-contained HTML report:
+
+```bash
+kubera scan git . --verify -f html > kubera-report.html
+```
+
+JSON, one array of redacted findings:
+
+```bash
+kubera scan git . --verify -f json > findings.json
+```
+
+SARIF for GitHub code scanning:
+
+```bash
+kubera scan git . -f sarif > kubera.sarif
+```
+
+## Prevent new leaks: pre-commit, CI and alerts
+
+Install the pre-commit hook in this repository:
+
+```bash
+kubera hook install
+```
+
+Fail a CI job when secrets are found (exit code `183`):
+
+```bash
+kubera scan git . --fail
+```
+
+In CI, scan only the commits added since the last passing run:
+
+```bash
+kubera scan git . --state .kubera-state.json --fail
+```
+
+The GitHub Action, as a workflow step:
+
+```yaml
+- uses: dmdhrumilmistry/kubera@v0.2.0
+```
+
+Any other CI, with the container image:
+
+```bash
+docker run --rm -v "$PWD:/scan" ghcr.io/dmdhrumilmistry/kubera scan git /scan --fail
+```
+
+Post live findings to Slack (the webhook URL is in `SLACK_WEBHOOK`):
+
+```bash
+kubera scan git . --verify --notify-env SLACK_WEBHOOK
+```
+
+## Templates and detectors
+
+List every detector and what it supports:
+
+```bash
+kubera templates list
+```
+
+Start a new detector:
+
+```bash
+kubera templates new acme-key > templates.d/acme.yaml
+```
+
+Validate templates and run their samples:
+
+```bash
+kubera templates validate templates.d/
+```
+
+Scan with your own templates as well as the builtin ones:
+
+```bash
+kubera -t templates.d scan fs .
+```

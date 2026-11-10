@@ -1,6 +1,6 @@
 [book]
 title = "Kubera"
-description = "Template-driven secret detection, verification, analysis and rotation"
+description = "Kubera finds leaked secrets in code, git history, container images, GitHub, buckets and Kubernetes, verifies which are live, and helps you analyze, rotate and triage them."
 authors = ["dmdhrumilmistry"]
 language = "en"
 src = "src"
@@ -12,6 +12,16 @@ site-url = "/kubera/"
 default-theme = "light"
 preferred-dark-theme = "navy"
 additional-css = ["theme/kubera.css"]
+no-section-label = true
 
 [output.html.search]
 enable = true
+limit-results = 40
+teaser-word-count = 40
+# Page titles and headings weigh more than body text, so "rotate" or
+# "false positive" lands on the page about it first.
+boost-title = 3
+boost-hierarchy = 2
+boost-paragraph = 1
+expand = true
+heading-split-level = 3

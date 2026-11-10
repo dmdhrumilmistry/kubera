@@ -1,4 +1,6 @@
-# Scanning
+# Scanning files, git history and stdin
+
+This page covers the core scan sources and the options every scan shares: verification, output formats, suppressions and exit codes.
 
 ```bash
 kubera scan fs <PATH>...       # files and directories
@@ -182,7 +184,9 @@ These global flags work with every command:
 
 Identical secrets found in several places are verified **once**.
 
-## Suppressing findings
+What to do with each status, from rotating a live secret to marking an invalid one: [After a scan: triage and response](workflow.md).
+
+## Suppressing findings and false positives
 
 - Add `kubera:ignore` anywhere on the line.
 - Add the finding's `fingerprint` to `allowlist.fingerprints` in `.kubera.yaml`.
@@ -236,7 +240,12 @@ One file with everything inline, to open in a browser or attach to a ticket:
 
 The page is built for hostile input, since paths, commit authors and API responses come from what was scanned. Every value is rendered as text, never as HTML, and only `https://` links become anchors. A Content-Security-Policy blocks every network request and allows only the page's own script, pinned by its SHA-256 hash. So the report works offline and cannot phone home.
 
-Secrets are redacted unless the scan ran with `--show-secrets`. The page then shows a visible warning: treat that file as a secret.
+<div class="kubera-callout warning">
+<p class="kubera-callout-title">--show-secrets</p>
+
+Secrets are redacted unless the scan ran with `--show-secrets`. The page then shows a visible warning: treat that file as a secret. The same goes for any output produced with `--show-secrets`: never attach it to a ticket or keep it in CI logs.
+
+</div>
 
 ## Exit codes
 

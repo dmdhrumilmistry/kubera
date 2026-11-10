@@ -1,5 +1,7 @@
 # Large, incremental and mass scans
 
+This page covers huge repositories, scans that only read new commits, and scanning every repository of a GitHub, GitLab or Bitbucket organization.
+
 ## Large repositories
 
 ```bash

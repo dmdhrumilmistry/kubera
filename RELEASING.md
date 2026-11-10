@@ -23,8 +23,9 @@ A release publishes, from one workflow run (`.github/workflows/release.yml`):
      ```bash
      git tag -a vX.Y.Z -m "kubera vX.Y.Z" origin/main && git push origin vX.Y.Z
      ```
-3. First release only: make the `kubera` package public under the
-   repository's Packages settings, or `docker pull` needs a login.
+3. The image `ghcr.io/dmdhrumilmistry/kubera` is public, so `docker pull`
+   needs no login. A fork publishes a private package on its first release:
+   make it public under the repository's Packages settings.
 
 If a release stops part way (for example the crates.io upload fails after the
 GitHub release was created), fix the cause, then run the workflow on `main`

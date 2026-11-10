@@ -2,25 +2,36 @@
 
 [Introduction](introduction.md)
 
-# User guide
+# Get started
 
 - [Installation](installation.md)
-- [Scanning](scanning.md)
-  - [Remote repositories](remote.md)
-  - [Large, incremental and mass scans](incremental.md)
-  - [Container images](containers.md)
-  - [GitHub issues, PRs and Actions](github.md)
-  - [Cloud storage buckets](buckets.md)
-  - [Kubernetes clusters](kubernetes.md)
+- [Your first scan](quickstart.md)
+- [After a scan: triage and response](workflow.md)
+- [Cheat sheet: common tasks](cheatsheet.md)
+
+# Guides
+
 - [Interactive TUI](tui.md)
-- [Baselines and triage](triage.md)
-- [MCP server](mcp.md)
 - [Verify, analyze and rotate](lifecycle.md)
+- [Baselines and triage](triage.md)
 - [Configuration](configuration.md)
+
+# Sources
+
+- [Files, git history and stdin](scanning.md)
+- [Remote repositories](remote.md)
+- [Large, incremental and mass scans](incremental.md)
+- [Container images](containers.md)
+- [GitHub issues, PRs and Actions](github.md)
+- [Cloud storage buckets](buckets.md)
+- [Kubernetes clusters](kubernetes.md)
+
+# Integrations
+
+- [CI and GitHub Action](ci.md)
 - [Pre-commit hook](hooks.md)
-- [CI integration](ci.md)
-- [Alerts](alerts.md)
-- [Benchmarks](benchmarks.md)
+- [Alerts: Slack and webhooks](alerts.md)
+- [MCP server for AI assistants](mcp.md)
 
 # Templates
 
@@ -30,5 +41,6 @@
 
 # Internals
 
-- [Architecture](architecture.md)
 - [Security model](security.md)
+- [Architecture](architecture.md)
+- [Benchmarks](benchmarks.md)

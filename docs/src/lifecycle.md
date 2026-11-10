@@ -1,6 +1,6 @@
 # Verify, analyze and rotate
 
-These commands work on **one credential** you already hold, typically a finding from `scan`. In the [TUI](tui.md) the same actions are a keypress away (`v`, `a`, `p`).
+These commands work on **one credential** you already hold, typically a finding from `scan`: check whether it is live, see what it can access, and rotate or revoke it. In the [TUI](tui.md) the same actions are a keypress away (<kbd>v</kbd>, <kbd>a</kbd>, <kbd>p</kbd>). For the step-by-step response to a leak, see [After a scan](workflow.md#live-secrets-revoke-and-rotate).
 
 ## Just paste it
 
@@ -107,6 +107,13 @@ To perform it:
 kubera rotate aws-access-key -e access_key_id=AK -e secret_access_key=SK \
   --execute --output-file new-aws-key.json
 ```
+
+<div class="kubera-callout danger">
+<p class="kubera-callout-title">--execute calls the vendor's API for real</p>
+
+A rotation creates, deactivates or revokes credentials. Read the dry-run plan first, and make sure you can deploy the new credential before the old one stops working.
+
+</div>
 
 What happens on `--execute`:
 

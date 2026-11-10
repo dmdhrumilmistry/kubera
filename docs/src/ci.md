@@ -1,5 +1,7 @@
 # CI integration
 
+Run Kubera in CI to fail builds that add secrets: with the GitHub Action, the container image on any CI, or a plain binary. A baseline keeps old, known findings from failing the build.
+
 ## Fail the build on leaks
 
 ```bash
@@ -121,11 +123,18 @@ The same steps by hand, with any way of installing Kubera:
 
 ## Verification in CI
 
-`--verify` sends candidates to vendor APIs. In CI, consider `--only-verified` to cut noise, and remember that CI egress rules must allow the vendor hosts. Logs never contain unmasked secrets unless you pass `--show-secrets`, so never pass it in CI.
+`--verify` sends candidates to vendor APIs. In CI, consider `--only-verified` to cut noise, and remember that CI egress rules must allow the vendor hosts.
+
+<div class="kubera-callout warning">
+<p class="kubera-callout-title">Never pass --show-secrets in CI</p>
+
+Logs never contain unmasked secrets unless you pass `--show-secrets`. CI logs are often readable by everyone with access to the repository.
+
+</div>
 
 For scheduled scans that should page someone, add `--notify-env` (see [Alerts](alerts.md)).
 
-## pre-commit
+## pre-commit hook
 
 Stop secrets before they reach CI with the [pre-commit hook](hooks.md):
 
