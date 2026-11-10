@@ -23,8 +23,8 @@ Each entry records a decision:
 | Decision | Made by |
 |---|---|
 | `baseline` | `--update-baseline`: existing findings accepted when kubera was adopted |
-| `false_positive` | `x` in the TUI: not a real secret |
-| `accepted` | `m` in the TUI: a real secret, risk accepted (for example a sandbox key) |
+| `false_positive` | <kbd>x</kbd> in the TUI: not a real secret |
+| `accepted` | <kbd>m</kbd> in the TUI: a real secret, risk accepted (for example a sandbox key) |
 
 ```json
 {
@@ -47,19 +47,25 @@ Each entry records a decision:
 - It is machine-managed. Kubera never rewrites your hand-written `.kubera.yaml`.
 - To report a finding again, delete its entry from the file.
 
-## Triage in the TUI
+## Mark a false positive or accepted risk in the TUI
 
 Browse findings with `kubera scan ... -i` (or `kubera`), then decide on each one:
 
 | Key | Action |
 |---|---|
-| `x` | Mark the selected finding as a false positive |
-| `m` | Mark it as an accepted risk |
-| `u` | Undo the last mark |
+| <kbd>x</kbd> | Mark the selected finding as a false positive |
+| <kbd>m</kbd> | Mark it as an accepted risk |
+| <kbd>u</kbd> | Undo the last mark |
 
 A marked finding disappears from the list and is saved to `.kubera-baseline.json` straight away, so later scans and the CI job agree with your decision. Commit the file to share it.
 
+<img class="kubera-shot" src="images/tui-triage.svg" alt="TUI after pressing m: the status line reads marked Figma Personal Access Token as accepted risk in .kubera-baseline.json - u to undo">
+
+Not sure which decision fits? [After a scan](workflow.md#invalid-secrets-mark-them-and-move-on) explains when to use each, by verification status.
+
 ## Baseline or allowlist?
+
+Both hide findings. They differ in who writes them and what they match.
 
 | | Baseline | Allowlist in `.kubera.yaml` |
 |---|---|---|

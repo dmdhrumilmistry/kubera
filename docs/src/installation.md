@@ -1,5 +1,7 @@
 # Installation
 
+Kubera is a single binary with its detectors built in. Pick the install that suits you, then check it with `kubera --version`. Next: [Your first scan](quickstart.md).
+
 ## One-line install (Linux, macOS, Termux)
 
 ```bash

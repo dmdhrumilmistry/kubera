@@ -27,6 +27,7 @@
   <a href="#install">Install</a> ·
   <a href="#quick-start">Quick start</a> ·
   <a href="#interactive-tui">TUI</a> ·
+  <a href="#after-a-scan">After a scan</a> ·
   <a href="#scanning-remote-repositories">Remote repos</a> ·
   <a href="#ci-and-pre-commit">CI</a> ·
   <a href="#builtin-detectors">Detectors</a> ·
@@ -98,20 +99,39 @@ kubera rotate  gitlab-pat --secret-env TOKEN --execute -o new.json  # rotate, ne
 
 ## Interactive TUI
 
-Run `kubera` with no arguments to scan, browse findings, verify (`v`), analyze (`a`) and plan rotations (`p`), all from the keyboard. Secrets stay masked until you press `r`.
+Run `kubera` with no arguments to scan, browse findings, verify (`v`), analyze (`a`) and plan rotations (`p`), all from the keyboard. Mark false positives (`x`) or accepted risks (`m`) as you go. Secrets stay masked until you press `r`. What to do next: [After a scan](#after-a-scan).
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/dmdhrumilmistry/kubera/main/docs/src/images/tui-results.svg" alt="Kubera TUI: findings list and detail pane for a live AWS key" width="820">
 </p>
 
 <details>
-<summary>More screenshots: home screen, analysis tab, phone layout</summary>
+<summary>More screenshots: home screen, analysis tab, rotation plan, triage, phone layout</summary>
 <p align="center">
   <img src="https://raw.githubusercontent.com/dmdhrumilmistry/kubera/main/docs/src/images/tui-home.svg" alt="TUI home screen" width="680"><br><br>
   <img src="https://raw.githubusercontent.com/dmdhrumilmistry/kubera/main/docs/src/images/tui-analysis.svg" alt="TUI analysis tab for an AWS key" width="820"><br><br>
+  <img src="https://raw.githubusercontent.com/dmdhrumilmistry/kubera/main/docs/src/images/tui-rotation.svg" alt="TUI rotation tab: dry-run plan for a live AWS key" width="820"><br><br>
+  <img src="https://raw.githubusercontent.com/dmdhrumilmistry/kubera/main/docs/src/images/tui-triage.svg" alt="TUI after pressing m: finding saved as an accepted risk in .kubera-baseline.json" width="820"><br><br>
   <img src="https://raw.githubusercontent.com/dmdhrumilmistry/kubera/main/docs/src/images/tui-phone.svg" alt="TUI on a 50-column phone terminal (Termux)" width="380">
 </p>
 </details>
+
+## After a scan
+
+Verification sorts findings by what the platform says, and each status has a clear next step:
+
+| Status | Meaning | Next step |
+|---|---|---|
+| `●` live | The credential works | Analyze (`a`), plan the rotation (`p`), then `kubera rotate <detector> --execute -o new.json`, update consumers and verify again |
+| `✓` invalid | Revoked, expired or fake | Nothing to rotate: mark it accepted (`m`) or false positive (`x`) and commit `.kubera-baseline.json` |
+| `?` unknown | Network error, rate limit, odd response | Verify again later (`v`), or check in the vendor console |
+| `-` not verifiable | No verifier (private keys) | Review by hand |
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/dmdhrumilmistry/kubera/main/docs/src/images/tui-verified.svg" alt="Kubera TUI after verification: one live AWS key, three invalid findings, one unknown, and the status line verification done: 1 live, 3 invalid, 1 unknown" width="820">
+</p>
+
+The full guide, with the rotation and history clean-up steps: [After a scan: triage and response](https://dmdhrumilmistry.github.io/kubera/workflow.html) · [Cheat sheet](https://dmdhrumilmistry.github.io/kubera/cheatsheet.html)
 
 ## Scanning remote repositories
 

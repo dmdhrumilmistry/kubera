@@ -1,5 +1,7 @@
 # Architecture
 
+How Kubera is put together: the pipeline from sources to reports, the modules, and how it is tested.
+
 ```text
             ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
  sources    │  fs (rayon)  │  │ git log -p   │  │ image, stdin │

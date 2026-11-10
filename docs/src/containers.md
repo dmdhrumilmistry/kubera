@@ -1,5 +1,7 @@
 # Container images
 
+Images ship whatever went into their layers, including files a later layer deleted. `kubera scan image` reads every layer and the image config, straight from the registry.
+
 ```bash
 kubera scan image alpine:3.20                          # Docker Hub
 kubera scan image ghcr.io/acme/api:1.4.2 --verify      # any OCI registry

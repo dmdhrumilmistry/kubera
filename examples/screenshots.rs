@@ -15,12 +15,14 @@ use kubera::detect::Engine;
 use kubera::finding::{Finding, Location, SourceKind, Status, Verification};
 use kubera::http::{Http, HttpOptions};
 use kubera::report::{self, Format, Style};
-use kubera::steps::{Extracted, StepResult};
+use kubera::rotate;
+use kubera::steps::{self, Extracted, StepResult};
 use kubera::template;
-use kubera::tui::app::{DetailTab, Screen};
+use kubera::tui::app::{DetailTab, Msg, Screen};
 use kubera::tui::theme::Theme;
 use kubera::tui::{App, Services, ui};
 use ratatui::backend::TestBackend;
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::{Color, Modifier};
 use serde_json::json;
 
@@ -43,26 +45,21 @@ fn services() -> Services {
     }
 }
 
-/// Placeholder secret parts: long enough to redact, never token-shaped.
-fn finding(
-    svc: &Services,
-    id: &str,
-    path: &str,
-    line: usize,
-    status: Option<Status>,
-    details: &[(&str, &str)],
-) -> Finding {
+/// A finding with placeholder secret parts: long enough to redact, never
+/// token-shaped. `n` makes the parts (and so the fingerprint) unique when a
+/// scene needs several findings of the same detector.
+fn placeholder_finding(svc: &Services, id: &str, path: &str, line: usize, n: u8) -> Finding {
     let t = template::find(&svc.templates, id).unwrap();
     let mut parts = BTreeMap::new();
     for p in &t.detect.patterns {
         let v = if p.secret {
-            format!("{}-placeholder-value-0000", p.name)
+            format!("{}-placeholder-value-{n:04}", p.name)
         } else {
-            "AKIAEXAMPLEPUBLICID0".to_string()
+            format!("AKIAEXAMPLEPUBLICID{n}")
         };
         parts.insert(p.name.clone(), v);
     }
-    let mut f = Finding::new(
+    Finding::new(
         t,
         parts,
         Location {
@@ -80,7 +77,18 @@ fn finding(
             layer: None,
             ..Default::default()
         },
-    );
+    )
+}
+
+fn finding(
+    svc: &Services,
+    id: &str,
+    path: &str,
+    line: usize,
+    status: Option<Status>,
+    details: &[(&str, &str)],
+) -> Finding {
+    let mut f = placeholder_finding(svc, id, path, line, 0);
     f.verification = status.map(|s| Verification {
         status: s,
         message: (s == Status::Invalid).then(|| "HTTP 401: Bad credentials".to_string()),
@@ -90,6 +98,130 @@ fn finding(
             .collect(),
     });
     f
+}
+
+fn verification(status: Status, message: Option<String>, details: &[(&str, &str)]) -> Verification {
+    Verification {
+        status,
+        message,
+        details: details
+            .iter()
+            .map(|(k, v)| (k.to_string(), json!(v)))
+            .collect(),
+    }
+}
+
+/// A typical first run: a handful of findings, then `V` (verify all). The
+/// verdicts are what the platforms answer; messages are built the way
+/// `verify` builds them.
+fn verify_scene(svc: &Services) -> Vec<(Finding, Verification)> {
+    let aws_rejected = format!(
+        "HTTP 403: {}",
+        kubera::http::snippet(
+            r#"<ErrorResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">
+  <Error><Type>Sender</Type><Code>InvalidClientTokenId</Code>
+  <Message>The security token included in the request is invalid.</Message></Error>
+</ErrorResponse>"#
+        )
+    );
+    vec![
+        (
+            placeholder_finding(svc, "aws-access-key", "deploy/terraform.tfvars", 12, 0),
+            verification(
+                Status::Verified,
+                None,
+                &[
+                    ("ARN", "arn:aws:iam::123456789012:user/ci-deployer"),
+                    ("Account", "123456789012"),
+                    ("IAM user", "ci-deployer"),
+                ],
+            ),
+        ),
+        (
+            placeholder_finding(svc, "figma-pat", "design/export-icons.js", 8, 1),
+            verification(
+                Status::Invalid,
+                Some(format!(
+                    "HTTP 403: {}",
+                    kubera::http::snippet(r#"{"status":403,"err":"Invalid token"}"#)
+                )),
+                &[],
+            ),
+        ),
+        (
+            placeholder_finding(svc, "aws-access-key", "scripts/backup.sh", 5, 2),
+            verification(Status::Invalid, Some(aws_rejected.clone()), &[]),
+        ),
+        (
+            placeholder_finding(svc, "aws-access-key", "ci/legacy-pipeline.yml", 31, 3),
+            verification(Status::Invalid, Some(aws_rejected), &[]),
+        ),
+        (
+            placeholder_finding(svc, "slack-webhook", ".github/workflows/notify.yml", 22, 4),
+            verification(
+                Status::Unknown,
+                Some(format!(
+                    "unexpected response (status 429 not in [400]): {}",
+                    kubera::http::snippet("rate_limited")
+                )),
+                &[],
+            ),
+        ),
+        (
+            placeholder_finding(svc, "private-key", "certs/staging.pem", 1, 5),
+            verification(
+                Status::Unsupported,
+                Some("template has no verifier".into()),
+                &[],
+            ),
+        ),
+    ]
+}
+
+/// The dry-run plan `kubera rotate` (and `p` in the TUI) shows, rendered by
+/// the same request code. The SigV4 timestamp is pinned so regenerated
+/// images do not change on every run.
+fn rotation_plan(svc: &Services, f: &Finding) -> rotate::Report {
+    let t = template::find(&svc.templates, &f.detector).unwrap();
+    let r = t.rotate.as_ref().expect("detector has rotation");
+    let secrets: Vec<String> = f.secret.values().cloned().collect();
+    let mut vars = kubera::verify::secret_vars(&f.secret);
+    let mut plan = Vec::new();
+    for s in &r.steps {
+        let request = steps::describe(&svc.http.prepare(&s.request, &vars).unwrap(), &secrets)
+            .lines()
+            .map(|l| {
+                if l.trim_start().starts_with("x-amz-date:") {
+                    "  x-amz-date: 20261014T101951Z".to_string()
+                } else {
+                    l.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        plan.push(rotate::PlannedStep {
+            name: s.name.clone(),
+            description: s.description.clone(),
+            request,
+        });
+        for e in &s.extract {
+            vars.insert(e.name.clone(), format!("<{} from {}>", e.name, s.name));
+        }
+    }
+    rotate::Report {
+        detector: t.id.clone(),
+        executed: false,
+        verification: f.verification.clone().unwrap(),
+        instructions: r.instructions.clone(),
+        plan,
+        steps: Vec::new(),
+        completed: false,
+        outputs: BTreeMap::new(),
+    }
+}
+
+fn key(c: char) -> KeyEvent {
+    KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
 }
 
 fn demo_findings(svc: &Services) -> Vec<Finding> {
@@ -586,6 +718,60 @@ fn main() {
         "tui-phone.svg",
         svg(&grid_from_app(&app, 50, 44), "Termux"),
     );
+
+    // TUI: after `V` (verify all) - live, invalid, unknown and unverifiable
+    // findings, the status line with the totals, and an invalid finding
+    // selected so its Verification section shows the platform's answer.
+    // Triage writes `.kubera-baseline.json` to the current directory, so
+    // these scenes run in a scratch directory and are written afterwards.
+    let scratch = tempfile::tempdir().unwrap();
+    let cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(scratch.path()).unwrap();
+    let mut shots = Vec::new();
+    let mut svc = services();
+    svc.baseline = Some(PathBuf::from(kubera::baseline::DEFAULT_FILE));
+    let scene = verify_scene(&svc);
+    let mut app = App::new(svc);
+    app.set_results(
+        scene.iter().map(|(f, _)| f.clone()).collect(),
+        "https://github.com/acme/payments.git".into(),
+    );
+    app.on_key(key('V'));
+    for (f, v) in &scene {
+        app.on_msg(Msg::Verified(f.fingerprint.clone(), v.clone()));
+    }
+    app.on_key(key('j'));
+    shots.push((
+        "tui-verified.svg",
+        svg(
+            &grid_from_app(&app, 120, 34),
+            "kubera tui - after verification",
+        ),
+    ));
+
+    // TUI: `m` on the invalid Figma token: saved as an accepted risk, gone
+    // from the list, the next finding selected.
+    app.on_key(key('m'));
+    shots.push((
+        "tui-triage.svg",
+        svg(&grid_from_app(&app, 120, 34), "kubera tui - triage"),
+    ));
+
+    // TUI: `p` on the live AWS key: the dry-run rotation plan.
+    app.on_key(key('g'));
+    app.on_key(key('p'));
+    let plan = rotation_plan(&services(), app.current().unwrap());
+    let fp = app.current().unwrap().fingerprint.clone();
+    app.on_msg(Msg::Plan(fp, Ok(plan)));
+    shots.push((
+        "tui-rotation.svg",
+        svg(&grid_from_app(&app, 120, 36), "kubera tui - rotation plan"),
+    ));
+    std::env::set_current_dir(cwd).unwrap();
+    drop(scratch);
+    for (name, data) in shots {
+        write(&dir, name, data);
+    }
 
     // CLI: banner + report cards + summary, with colours.
     let svc = services();

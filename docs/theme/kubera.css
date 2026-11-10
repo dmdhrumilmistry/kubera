@@ -1,17 +1,92 @@
-/* Kubera brand accents for mdBook (all built-in themes). */
+/*
+ * Kubera theme for mdBook. Works with every built-in theme (light, rust,
+ * coal, navy, ayu): colours are tokens, redefined for light and dark.
+ *
+ * Components used from the Markdown sources (plain HTML blocks):
+ *   .kubera-hero, .kubera-actions, .kubera-btn     landing page header
+ *   .kubera-steps                                  numbered "start here" path
+ *   .kubera-cards, .kubera-card                    feature and task cards
+ *   .kubera-callout.tip|note|warning|danger        callouts
+ *   .kubera-flow                                   decision diagram
+ *   .kubera-status.live|invalid|unknown|unverifiable  status pills
+ *   img.kubera-shot                                screenshots
+ */
+
 :root {
   --kubera-gold: #f5b700;
   --kubera-amber: #e58518;
+  --content-max-width: 800px;
 }
-.light, .rust {
-  --links: #b7791f;
-  --sidebar-active: #b7791f;
+
+/* ----- Colour tokens ----------------------------------------------------- */
+
+.light, .rust, html:not(.js) {
+  --links: #a35f00;
+  --sidebar-active: #a35f00;
+  --kb-accent: #b7791f;
+  --kb-accent-soft: rgba(245, 183, 0, 0.14);
+  --kb-surface: rgba(0, 0, 0, 0.025);
+  --kb-surface-raised: #ffffff;
+  --kb-border: rgba(0, 0, 0, 0.12);
+  --kb-border-strong: rgba(0, 0, 0, 0.22);
+  --kb-muted: #57606a;
+  --kb-line: rgba(0, 0, 0, 0.22);
+  --kb-shadow: 0 1px 2px rgba(0, 0, 0, 0.05), 0 6px 20px rgba(0, 0, 0, 0.06);
+  --kb-tip: #1a7f37;
+  --kb-tip-bg: rgba(26, 127, 55, 0.07);
+  --kb-note: #0969da;
+  --kb-note-bg: rgba(9, 105, 218, 0.07);
+  --kb-warning: #9a6700;
+  --kb-warning-bg: rgba(212, 167, 44, 0.12);
+  --kb-danger: #cf222e;
+  --kb-danger-bg: rgba(207, 34, 46, 0.07);
+  --kb-live: #cf222e;
+  --kb-invalid: #1a7f37;
+  --kb-unknown: #9a6700;
+  --kb-unverifiable: #6e7781;
 }
-.navy, .coal, .ayu {
+.rust {
+  --kb-surface-raised: rgba(255, 255, 255, 0.55);
+}
+
+.coal, .navy, .ayu {
   --links: #f5b700;
   --sidebar-active: #f5b700;
+  --kb-accent: #f5b700;
+  --kb-accent-soft: rgba(245, 183, 0, 0.12);
+  --kb-surface: rgba(255, 255, 255, 0.035);
+  --kb-surface-raised: rgba(255, 255, 255, 0.05);
+  --kb-border: rgba(255, 255, 255, 0.12);
+  --kb-border-strong: rgba(255, 255, 255, 0.24);
+  --kb-muted: #9aa4b2;
+  --kb-line: rgba(255, 255, 255, 0.24);
+  --kb-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.25);
+  --kb-tip: #3fb950;
+  --kb-tip-bg: rgba(63, 185, 80, 0.1);
+  --kb-note: #58a6ff;
+  --kb-note-bg: rgba(88, 166, 255, 0.1);
+  --kb-warning: #e3b341;
+  --kb-warning-bg: rgba(227, 179, 65, 0.1);
+  --kb-danger: #ff7b72;
+  --kb-danger-bg: rgba(248, 81, 73, 0.1);
+  --kb-live: #ff7b72;
+  --kb-invalid: #3fb950;
+  --kb-unknown: #e3b341;
+  --kb-unverifiable: #9aa4b2;
 }
+
+/* ----- Chrome ------------------------------------------------------------ */
+
 .sidebar .chapter li a.active { font-weight: 600; }
+.sidebar .chapter li.part-title {
+  margin-top: 1.4em;
+  font-size: 0.78em;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--sidebar-fg);
+  opacity: 0.75;
+}
 .menu-title::before {
   content: "";
   display: inline-block;
@@ -21,19 +96,106 @@
   vertical-align: -0.15em;
   background: url("../images/logo.svg") center / contain no-repeat;
 }
-.content h1, .content h2 { letter-spacing: -0.01em; }
-.content h1 { border-bottom: 2px solid var(--kubera-gold); padding-bottom: 0.2em; }
 
-/* Hero banner and screenshots. */
-.kubera-hero { margin: 0.5em 0 1.5em; }
-.kubera-hero img, img.kubera-shot {
+/* ----- Typography -------------------------------------------------------- */
+
+.content { line-height: 1.65; }
+.content p, .content ol, .content ul { line-height: 1.65em; }
+.content li + li { margin-top: 0.25em; }
+.content h1, .content h2, .content h3 { letter-spacing: -0.01em; line-height: 1.25; }
+.content h1 {
+  border-bottom: 2px solid var(--kubera-gold);
+  padding-bottom: 0.25em;
+  margin-bottom: 0.6em;
+}
+.content h2 { margin-top: 2.2em; }
+.content h3 { margin-top: 1.8em; }
+.content h1 + p, .content .kubera-lead {
+  font-size: 1.08em;
+  color: var(--fg);
+}
+.content a { text-underline-offset: 2px; }
+
+/* Inline code: a little padding and no awkward overflow on phones. */
+.content :not(pre) > code {
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  overflow-wrap: anywhere;
+}
+
+/* Code blocks. */
+.content pre {
+  border: 1px solid var(--kb-border);
+  border-radius: 8px;
+}
+.content pre > code { padding: 0.9em 1em; line-height: 1.55; }
+
+/* Keys. */
+.content kbd {
+  display: inline-block;
+  min-width: 1.5em;
+  padding: 0.05em 0.45em;
+  font-family: var(--mono-font);
+  font-size: 0.82em;
+  line-height: 1.5;
+  text-align: center;
+  white-space: nowrap;
+  color: var(--fg);
+  background: var(--kb-surface-raised);
+  border: 1px solid var(--kb-border-strong);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  box-shadow: none;
+  vertical-align: 0.05em;
+}
+
+/* Tables. */
+.content .table-wrapper { margin: 1em 0 1.4em; }
+.content table {
+  width: 100%;
+  margin: 0;
+  border-collapse: separate;
+  border-spacing: 0;
+  border: 1px solid var(--table-border-color);
+  border-radius: 8px;
+  font-size: 0.94em;
+}
+.content table th, .content table td {
+  padding: 0.5em 0.8em;
+  border: 0;
+  border-top: 1px solid var(--table-border-color);
+  text-align: left;
+  vertical-align: top;
+}
+.content table td + td, .content table th + th {
+  border-left: 1px solid var(--table-border-color);
+}
+.content table thead th {
+  border-top: 0;
+  font-weight: 650;
+  background: var(--table-header-bg);
+}
+.content table thead tr { border: 0; }
+.content table thead th:first-child { border-top-left-radius: 7px; }
+.content table thead th:last-child { border-top-right-radius: 7px; }
+.content table tbody tr:nth-child(2n) { background: var(--table-alternate-bg); }
+.content table td code { white-space: nowrap; overflow-wrap: normal; }
+
+/* Screenshots. */
+.content img { max-width: 100%; }
+img.kubera-shot {
   display: block;
   max-width: 100%;
   height: auto;
+  margin: 1.2em 0 1.6em;
   border-radius: 10px;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
 }
-img.kubera-shot { margin: 1em 0 1.5em; }
+.kubera-caption {
+  margin: -1em 0 1.6em;
+  font-size: 0.88em;
+  color: var(--kb-muted);
+}
 .kubera-row {
   display: flex;
   gap: 16px;
@@ -42,22 +204,262 @@ img.kubera-shot { margin: 1em 0 1.5em; }
 }
 .kubera-row > * { flex: 1 1 280px; min-width: 0; }
 
-/* Feature cards. */
+/* ----- Landing page ------------------------------------------------------ */
+
+.kubera-hero { margin: 0.25em 0 1.75em; }
+.kubera-hero img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 14px;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.22);
+}
+.kubera-hero .kubera-lead {
+  margin: 1.1em 0 0.9em;
+  font-size: 1.18em;
+  line-height: 1.55;
+}
+.kubera-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0.9em 0 0;
+}
+a.kubera-btn {
+  display: inline-block;
+  padding: 0.5em 1.05em;
+  border: 1px solid var(--kb-border-strong);
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 0.95em;
+  color: var(--fg);
+  text-decoration: none;
+  background: var(--kb-surface-raised);
+  transition: border-color 0.15s, transform 0.15s;
+}
+a.kubera-btn:hover { border-color: var(--kubera-gold); text-decoration: none; transform: translateY(-1px); }
+a.kubera-btn.primary {
+  color: #1b1300;
+  border-color: transparent;
+  background: linear-gradient(135deg, #ffd65c, var(--kubera-gold) 55%, var(--kubera-amber));
+}
+
+/* "Start here" path. */
+ol.kubera-steps {
+  list-style: none;
+  counter-reset: kstep;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin: 1em 0 1.75em;
+  padding: 0;
+}
+ol.kubera-steps > li { counter-increment: kstep; margin: 0; }
+ol.kubera-steps > li > a {
+  position: relative;
+  display: block;
+  height: 100%;
+  box-sizing: border-box;
+  padding: 0.85em 0.9em 0.8em;
+  border: 1px solid var(--kb-border);
+  border-radius: 10px;
+  background: var(--kb-surface);
+  color: var(--fg);
+  text-decoration: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+ol.kubera-steps > li > a:hover { border-color: var(--kubera-gold); box-shadow: var(--kb-shadow); }
+ol.kubera-steps > li > a::before {
+  content: counter(kstep);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.7em;
+  height: 1.7em;
+  margin-bottom: 0.45em;
+  border-radius: 50%;
+  font-weight: 700;
+  font-size: 0.85em;
+  color: #1b1300;
+  background: var(--kubera-gold);
+}
+ol.kubera-steps strong { display: block; margin-bottom: 0.15em; }
+ol.kubera-steps span { display: block; font-size: 0.88em; line-height: 1.45; color: var(--kb-muted); }
+
+/* Cards. */
 .kubera-cards {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
-  margin: 1em 0 1.5em;
+  margin: 1em 0 1.6em;
 }
+.kubera-cards.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .kubera-card {
-  border: 1px solid var(--table-border-color);
+  display: block;
+  box-sizing: border-box;
+  border: 1px solid var(--kb-border);
   border-top: 3px solid var(--kubera-gold);
-  border-radius: 8px;
-  padding: 0.7em 0.9em;
-  background: var(--table-alternate-bg);
+  border-radius: 10px;
+  padding: 0.75em 0.95em 0.8em;
+  background: var(--kb-surface);
+  color: var(--fg);
 }
-@media (max-width: 640px) {
-  .kubera-cards { grid-template-columns: 1fr; }
+a.kubera-card { text-decoration: none; transition: border-color 0.15s, box-shadow 0.15s, transform 0.15s; }
+a.kubera-card:hover {
+  text-decoration: none;
+  border-color: var(--kubera-gold);
+  box-shadow: var(--kb-shadow);
+  transform: translateY(-1px);
 }
 .kubera-card strong { display: block; margin-bottom: 0.25em; }
-.kubera-card p { margin: 0; font-size: 0.92em; }
+a.kubera-card strong { color: var(--links); }
+a.kubera-card p, a.kubera-card code, ol.kubera-steps code { color: var(--fg); }
+.kubera-card p { margin: 0; font-size: 0.92em; line-height: 1.5; }
+.kubera-card > code {
+  display: block;
+  margin-top: 0.55em;
+  padding: 0.3em 0.5em;
+  font-size: 0.8em;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+@media (max-width: 900px) {
+  ol.kubera-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .kubera-cards.three { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 560px) {
+  ol.kubera-steps, .kubera-cards, .kubera-cards.three { grid-template-columns: 1fr; }
+  .kubera-hero .kubera-lead { font-size: 1.05em; }
+}
+
+/* ----- Callouts ---------------------------------------------------------- */
+
+.kubera-callout {
+  --kc: var(--kb-note);
+  --kc-bg: var(--kb-note-bg);
+  margin: 1.3em 0;
+  padding: 0.7em 1em;
+  border: 1px solid var(--kb-border);
+  border-left: 4px solid var(--kc);
+  border-radius: 8px;
+  background: var(--kc-bg);
+}
+.kubera-callout.tip { --kc: var(--kb-tip); --kc-bg: var(--kb-tip-bg); }
+.kubera-callout.warning { --kc: var(--kb-warning); --kc-bg: var(--kb-warning-bg); }
+.kubera-callout.danger { --kc: var(--kb-danger); --kc-bg: var(--kb-danger-bg); }
+.kubera-callout > :first-child { margin-top: 0; }
+.kubera-callout > :last-child { margin-bottom: 0; }
+.kubera-callout p, .kubera-callout li { line-height: 1.55em; }
+.kubera-callout pre { margin: 0.6em 0; }
+p.kubera-callout-title {
+  margin: 0 0 0.3em;
+  font-size: 0.78em;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--kc);
+}
+
+/* ----- Status pills ------------------------------------------------------ */
+
+.kubera-status {
+  display: inline-block;
+  padding: 0.05em 0.6em;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-family: var(--mono-font);
+  font-size: 0.82em;
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.kubera-status.live { color: var(--kb-live); }
+.kubera-status.invalid { color: var(--kb-invalid); }
+.kubera-status.unknown { color: var(--kb-unknown); }
+.kubera-status.unverifiable { color: var(--kb-unverifiable); }
+
+/* ----- Decision flow ----------------------------------------------------- */
+
+.kubera-flow { margin: 1.5em 0 2em; }
+.kubera-flow-start {
+  position: relative;
+  max-width: 560px;
+  margin: 0 auto;
+  padding: 0.7em 1em;
+  text-align: center;
+  border: 1px solid var(--kb-border-strong);
+  border-radius: 10px;
+  background: var(--kb-accent-soft);
+  font-weight: 600;
+}
+.kubera-flow-start::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -19px;
+  height: 18px;
+  border-left: 2px solid var(--kb-line);
+}
+.kubera-flow-branches {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 18px;
+  padding-top: 18px;
+}
+.kubera-flow-branches::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 12.5%;
+  right: 12.5%;
+  border-top: 2px solid var(--kb-line);
+}
+.kubera-flow-branch {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: 0.7em 0.8em 0.75em;
+  border: 1px solid var(--kb-border);
+  border-top: 3px solid var(--kb-branch, var(--kb-border-strong));
+  border-radius: 10px;
+  background: var(--kb-surface);
+  font-size: 0.9em;
+}
+.kubera-flow-branch::before {
+  content: "";
+  position: absolute;
+  top: -21px;
+  left: 50%;
+  height: 18px;
+  border-left: 2px solid var(--kb-line);
+}
+.kubera-flow-branch.live { --kb-branch: var(--kb-live); }
+.kubera-flow-branch.invalid { --kb-branch: var(--kb-invalid); }
+.kubera-flow-branch.unknown { --kb-branch: var(--kb-unknown); }
+.kubera-flow-branch.unverifiable { --kb-branch: var(--kb-unverifiable); }
+.kubera-flow-branch .kubera-flow-head { margin-bottom: 0.2em; }
+.kubera-flow-branch .kubera-flow-what {
+  margin: 0.2em 0 0.5em;
+  font-size: 0.92em;
+  line-height: 1.45;
+  color: var(--kb-muted);
+}
+.kubera-flow-branch ol {
+  margin: 0 0 0.6em;
+  padding-left: 1.25em;
+}
+.kubera-flow-branch ol li { line-height: 1.45; margin: 0.25em 0 0; }
+.kubera-flow-branch a.kubera-flow-more {
+  margin-top: auto;
+  font-size: 0.92em;
+  font-weight: 600;
+}
+@media (max-width: 760px) {
+  .kubera-flow-branches { grid-template-columns: 1fr; padding-top: 0; }
+  .kubera-flow-branches::before,
+  .kubera-flow-start::after,
+  .kubera-flow-branch::before { display: none; }
+}
