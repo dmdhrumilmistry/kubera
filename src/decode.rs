@@ -296,8 +296,9 @@ fn alphabet_mask(block: &[u8]) -> u64 {
         *f = (letter | digit | other) as u8;
     }
     let mut m = 0u64;
-    for (k, c) in flags.chunks_exact(8).enumerate() {
-        let v = u64::from_le_bytes(c.try_into().expect("8 bytes"));
+    let (words, _) = flags.as_chunks::<8>();
+    for (k, c) in words.iter().enumerate() {
+        let v = u64::from_le_bytes(*c);
         // Gathers the low bit of each byte into the top byte, in order.
         m |= (v.wrapping_mul(0x0102_0408_1020_4080) >> 56) << (8 * k);
     }
