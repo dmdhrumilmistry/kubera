@@ -10,6 +10,28 @@ curl -fsSL https://raw.githubusercontent.com/dmdhrumilmistry/kubera/main/install
 
 The script picks the prebuilt binary for your OS and CPU (static Linux musl, macOS Intel/Apple Silicon, Android/Termux aarch64), **verifies its SHA-256 checksum** and installs it to `~/.local/bin` (or `$PREFIX/bin` on Termux). Set `KUBERA_VERSION=v0.1.0` to pin a release or `KUBERA_INSTALL_DIR` to change the location. Read the script first if you prefer: it's short.
 
+## One-line install (Windows)
+
+In PowerShell (Windows PowerShell 5.1 or PowerShell 7):
+
+```powershell
+irm https://raw.githubusercontent.com/dmdhrumilmistry/kubera/main/install.ps1 | iex
+```
+
+The script picks the x86_64 or ARM64 zip for your CPU, **verifies its SHA-256 checksum**, installs `kubera.exe` to `%LOCALAPPDATA%\Programs\kubera\bin` and adds that folder to your **user** PATH (no administrator rights needed; open a new terminal afterwards). It understands the same variables as `install.sh`:
+
+| Variable | Effect |
+|---|---|
+| `KUBERA_VERSION` | Release tag to install, e.g. `v0.2.0` (default: latest) |
+| `KUBERA_INSTALL_DIR` | Install folder |
+| `KUBERA_NO_MODIFY_PATH` | `1` leaves your PATH alone |
+
+```powershell
+$env:KUBERA_VERSION = 'v0.2.0'; irm https://raw.githubusercontent.com/dmdhrumilmistry/kubera/main/install.ps1 | iex
+```
+
+Re-running the script upgrades in place, even while an old `kubera.exe` is running. To read it before running it, download it first: `irm https://raw.githubusercontent.com/dmdhrumilmistry/kubera/main/install.ps1 -OutFile install.ps1`.
+
 ## Cargo
 
 ```bash
