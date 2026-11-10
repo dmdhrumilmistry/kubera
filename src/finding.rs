@@ -28,6 +28,8 @@ pub enum SourceKind {
     GitLab,
     /// Bitbucket issues, pull requests, comments and Pipelines logs.
     Bitbucket,
+    /// Slack messages and thread replies.
+    Slack,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

@@ -10,6 +10,7 @@ pub mod gitlab;
 pub mod image;
 pub mod kube;
 pub mod remote;
+pub mod slack;
 
 use crate::finding::Location;
 

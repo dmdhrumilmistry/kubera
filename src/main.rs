@@ -559,6 +559,46 @@ enum ScanSource {
         #[command(flatten)]
         opts: ScanArgs,
     },
+    /// Scan Slack: channel messages and thread replies, with a bot (xoxb-)
+    /// or user (xoxp-) token. Read-only; rate limits are honoured.
+    Slack {
+        /// Channel name or id (repeatable) [default: every channel the
+        /// token can see].
+        #[arg(long, value_name = "CHANNEL")]
+        channel: Vec<String>,
+        /// Only messages after this date (YYYY-MM-DD, RFC 3339 or Unix
+        /// seconds).
+        #[arg(long, value_name = "DATE")]
+        since: Option<String>,
+        /// Environment variable with the Slack token (scopes
+        /// channels:history, channels:read, groups:history, groups:read).
+        #[arg(long, value_name = "ENV_VAR")]
+        token_env: String,
+        /// Also read direct and group messages (user tokens; im:history,
+        /// mpim:history).
+        #[arg(long)]
+        include_dms: bool,
+        /// Also read archived channels.
+        #[arg(long)]
+        include_archived: bool,
+        /// Messages read per channel, thread replies included (newest
+        /// first).
+        #[arg(long, default_value_t = 10_000, value_name = "N")]
+        max_messages: usize,
+        /// Web API base (tests).
+        #[arg(
+            long,
+            value_name = "URL",
+            default_value = "https://slack.com/api",
+            hide = true
+        )]
+        api_url: String,
+        /// Longest rate-limit wait (seconds) before giving up.
+        #[arg(long, default_value_t = 900, value_name = "SECS")]
+        max_rate_wait: u64,
+        #[command(flatten)]
+        opts: ScanArgs,
+    },
     /// Scan a cloud storage bucket: s3://bucket[/prefix] (also MinIO, R2
     /// and other S3-compatible stores with --endpoint-url) or
     /// gs://bucket[/prefix]. Archives inside are opened too.
@@ -1153,6 +1193,7 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         | ScanSource::Github { opts, .. }
         | ScanSource::Gitlab { opts, .. }
         | ScanSource::Bitbucket { opts, .. }
+        | ScanSource::Slack { opts, .. }
         | ScanSource::Bucket { opts, .. }
         | ScanSource::K8s { opts, .. }
         | ScanSource::Stdin { opts } => opts,
@@ -1278,7 +1319,7 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
             scan::Target::Text(String::new())
         }
         // API sources, scanned by `cmd_scan_api`.
-        ScanSource::Gitlab { .. } | ScanSource::Bitbucket { .. } => {
+        ScanSource::Gitlab { .. } | ScanSource::Bitbucket { .. } | ScanSource::Slack { .. } => {
             scan::Target::Text(String::new())
         }
         ScanSource::Image {
@@ -1539,6 +1580,15 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
             .cloned()
             .collect::<Vec<_>>()
             .join(", "),
+        ScanSource::Slack { channel, .. } if !channel.is_empty() => format!(
+            "Slack {}",
+            channel
+                .iter()
+                .map(|c| format!("#{}", c.trim_start_matches('#')))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        ScanSource::Slack { .. } => "Slack".into(),
         ScanSource::Image { image, .. } => image.clone(),
         ScanSource::Bucket { url, .. } => url.clone(),
         ScanSource::K8s { context, .. } => {
@@ -1951,6 +2001,39 @@ async fn cmd_scan_api(
         }
         ScanSource::Bitbucket { .. } => {
             cmd_scan_bitbucket(g, source, engine, filter, max_size, &progress).await?
+        }
+        ScanSource::Slack {
+            channel,
+            since,
+            token_env,
+            api_url,
+            include_dms,
+            include_archived,
+            max_messages,
+            max_rate_wait,
+            ..
+        } => {
+            use kubera::sources::slack;
+            let token = env_secret(Some(token_env), "--token-env")?;
+            let mut client = kubera::forge::Client::new(
+                token,
+                None,
+                std::time::Duration::from_secs(*max_rate_wait),
+            )?;
+            client.allow_http = g.allow_http;
+            let o = slack::Options {
+                api: api_url.clone(),
+                channels: channel.clone(),
+                oldest: since.as_deref().map(slack::parse_since).transpose()?,
+                include_dms: *include_dms,
+                include_archived: *include_archived,
+                max_messages: *max_messages,
+            };
+            let collected = slack::collect(&client, &o, &progress).await?;
+            for w in &collected.warnings {
+                eprintln!("warning: {w}");
+            }
+            scan::scan_chunks(engine, filter, &collected.chunks)
         }
         _ => return Ok(None),
     };

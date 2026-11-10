@@ -78,6 +78,12 @@ Bitbucket issues, pull requests, comments and Pipelines logs of a workspace:
 kubera scan bitbucket --workspace acme --token-env BB_TOKEN
 ```
 
+Slack channels and threads since the start of the year (bot or user token):
+
+```bash
+kubera scan slack --since 2026-01-01 --token-env SLACK_TOKEN
+```
+
 An S3 bucket (credentials from `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`):
 
 ```bash

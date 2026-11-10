@@ -342,3 +342,110 @@ async fn bitbucket_issues_pull_requests_and_pipeline_logs() {
     assert!(blob.headers.get("authorization").is_none());
     assert!(!reqs.iter().any(|r| r.url.path().contains("pullrequests/8")));
 }
+
+#[tokio::test]
+async fn slack_history_threads_and_rate_limits() {
+    let [t1, t2, t3] = fake_tokens();
+    let server = MockServer::start().await;
+    let ok = |mut v: serde_json::Value| {
+        v["ok"] = true.into();
+        json(v)
+    };
+    Mock::given(method("GET"))
+        .and(path("/auth.test"))
+        .and(header("authorization", "Bearer slack-token"))
+        .respond_with(ok(
+            serde_json::json!({"team": "Acme", "url": "https://acme.slack.com/"}),
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.list"))
+        .respond_with(ok(serde_json::json!({"channels": [
+            {"id": "C01GENERAL", "name": "general"},
+            {"id": "C02RANDOM0", "name": "random"}
+        ]})))
+        .mount(&server)
+        .await;
+    // The first history call is rate limited: kubera waits and retries.
+    Mock::given(method("GET"))
+        .and(path("/conversations.history"))
+        .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "1"))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.history"))
+        .and(query_param("channel", "C01GENERAL"))
+        .and(query_param("oldest", "1672531200"))
+        .and(query_param_is_missing("cursor"))
+        .respond_with(ok(serde_json::json!({
+            "messages": [
+                {"ts": "1700000000.000100", "user": "U1", "text": format!("deploy with {t1}")},
+                {"ts": "1700000100.000200", "text": "thread", "reply_count": 1,
+                 "thread_ts": "1700000100.000200"}
+            ],
+            "response_metadata": {"next_cursor": "c2"}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.history"))
+        .and(query_param("channel", "C01GENERAL"))
+        .and(query_param("cursor", "c2"))
+        .respond_with(ok(serde_json::json!({"messages": [
+            {"ts": "1690000000.000300", "attachments": [{"text": format!("TOKEN={t3}")}]}
+        ]})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.history"))
+        .and(query_param("channel", "C02RANDOM0"))
+        .respond_with(json(
+            serde_json::json!({"ok": false, "error": "not_in_channel"}),
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.replies"))
+        .and(query_param("ts", "1700000100.000200"))
+        .respond_with(ok(serde_json::json!({"messages": [
+            {"ts": "1700000100.000200", "text": "thread", "thread_ts": "1700000100.000200"},
+            {"ts": "1700000200.000400", "text": format!("here {t2}"), "thread_ts": "1700000100.000200"}
+        ]})))
+        .mount(&server)
+        .await;
+
+    let found = run(
+        &[
+            "scan",
+            "slack",
+            "--api-url",
+            &server.uri(),
+            "--token-env",
+            "SLACK",
+            "--since",
+            "2023-01-01",
+        ],
+        &[("SLACK", "slack-token")],
+    )
+    .await;
+    assert_eq!(
+        paths(&found, "slack"),
+        vec![
+            "#general/1690000000.000300",
+            "#general/1700000000.000100",
+            "#general/1700000100.000200/1700000200.000400"
+        ]
+    );
+    let reply = found
+        .iter()
+        .find(|f| f["location"]["path"] == "#general/1700000100.000200/1700000200.000400")
+        .unwrap();
+    assert_eq!(
+        reply["location"]["link"],
+        "https://acme.slack.com/archives/C01GENERAL/p1700000200000400?thread_ts=1700000100.000200&cid=C01GENERAL"
+    );
+    assert_eq!(reply["location"]["repository"], "slack:Acme");
+}
