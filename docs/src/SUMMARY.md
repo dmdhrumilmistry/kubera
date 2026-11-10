@@ -25,6 +25,7 @@
 - [Large, incremental and mass scans](incremental.md)
 - [Container images](containers.md)
 - [GitHub issues, PRs and Actions](github.md)
+- [GitLab issues, MRs and CI logs](gitlab.md)
 - [Cloud storage buckets](buckets.md)
 - [Kubernetes clusters](kubernetes.md)
 

@@ -58,15 +58,7 @@ pub struct Options {
     pub max_file_size: u64,
 }
 
-/// What [`collect`] gathered.
-#[derive(Default)]
-pub struct Collected {
-    pub chunks: Vec<Chunk>,
-    /// Git repositories to scan with the history scanner: (clone URL, label).
-    pub git: Vec<(String, String)>,
-    /// Non-fatal problems (e.g. Actions disabled, no access).
-    pub warnings: Vec<String>,
-}
+pub use super::Collected;
 
 /// Web base for an API base (`https://api.github.com` -> `https://github.com`,
 /// `https://ghe/api/v3` -> `https://ghe`).

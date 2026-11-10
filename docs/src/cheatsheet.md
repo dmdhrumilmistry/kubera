@@ -66,6 +66,12 @@ GitHub issues, pull requests, comments and Actions logs of an organization:
 kubera scan github --org acme --token-env GH_TOKEN
 ```
 
+GitLab issues, merge requests, comments and CI job logs of a group:
+
+```bash
+kubera scan gitlab --group acme --token-env GL_TOKEN
+```
+
 An S3 bucket (credentials from `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`):
 
 ```bash

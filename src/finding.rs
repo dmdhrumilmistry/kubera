@@ -23,6 +23,9 @@ pub enum SourceKind {
     Bucket,
     /// A live Kubernetes cluster.
     Kubernetes,
+    /// GitLab issues, merge requests, comments and CI job logs.
+    #[serde(rename = "gitlab")]
+    GitLab,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

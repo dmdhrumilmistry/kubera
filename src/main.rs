@@ -489,6 +489,38 @@ enum ScanSource {
         #[command(flatten)]
         opts: ScanArgs,
     },
+    /// Scan GitLab beyond the code: issues, merge requests and their
+    /// comments, CI job logs, snippets and wikis (gitlab.com or a
+    /// self-managed instance).
+    Gitlab {
+        /// Projects as group/project (subgroups allowed: group/sub/project).
+        projects: Vec<String>,
+        /// Every project of this group, subgroups included (repeatable).
+        #[arg(long, value_name = "GROUP")]
+        group: Vec<String>,
+        /// What to scan (comma separated) [default: all].
+        #[arg(long, value_enum, value_delimiter = ',')]
+        what: Vec<kubera::sources::gitlab::What>,
+        /// Environment variable with a GitLab token (read_api scope; needed
+        /// for private projects, raises rate limits).
+        #[arg(long, value_name = "ENV_VAR")]
+        token_env: Option<String>,
+        /// Self-managed GitLab API base, e.g. https://gitlab.example.com/api/v4.
+        #[arg(long, value_name = "URL", default_value = "https://gitlab.com/api/v4")]
+        api_url: String,
+        /// Issues / merge requests / comments read per project and kind
+        /// (newest first).
+        #[arg(long, default_value_t = 2000, value_name = "N")]
+        max_items: usize,
+        /// CI jobs whose logs are read per project (newest first).
+        #[arg(long, default_value_t = 50, value_name = "N")]
+        max_jobs: usize,
+        /// Longest rate-limit wait (seconds) before giving up.
+        #[arg(long, default_value_t = 900, value_name = "SECS")]
+        max_rate_wait: u64,
+        #[command(flatten)]
+        opts: ScanArgs,
+    },
     /// Scan a cloud storage bucket: s3://bucket[/prefix] (also MinIO, R2
     /// and other S3-compatible stores with --endpoint-url) or
     /// gs://bucket[/prefix]. Archives inside are opened too.
@@ -1081,6 +1113,7 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         | ScanSource::Image { opts, .. }
         | ScanSource::Staged { opts, .. }
         | ScanSource::Github { opts, .. }
+        | ScanSource::Gitlab { opts, .. }
         | ScanSource::Bucket { opts, .. }
         | ScanSource::K8s { opts, .. }
         | ScanSource::Stdin { opts } => opts,
@@ -1205,6 +1238,8 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         ScanSource::Github { .. } | ScanSource::Bucket { .. } | ScanSource::K8s { .. } => {
             scan::Target::Text(String::new())
         }
+        // API sources, scanned by `cmd_scan_api`.
+        ScanSource::Gitlab { .. } => scan::Target::Text(String::new()),
         ScanSource::Image {
             image,
             platform,
@@ -1362,6 +1397,18 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         )
         .await?;
         (0, Default::default(), findings)
+    } else if let Some(findings) = cmd_scan_api(
+        g,
+        &source,
+        &engine,
+        &filter,
+        max_size,
+        show_progress,
+        &ctx.style,
+    )
+    .await?
+    {
+        (0, Default::default(), findings)
     } else if let ScanSource::Repos { .. } = &source {
         let results = cmd_scan_repos(g, &source, &engine, &filter, max_size, &ctx.style).await?;
         let commits = results.iter().map(|r| r.commits_scanned).sum();
@@ -1432,6 +1479,14 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
             .iter()
             .chain(org)
             .chain(user)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", "),
+        ScanSource::Gitlab {
+            projects, group, ..
+        } => projects
+            .iter()
+            .chain(group)
             .cloned()
             .collect::<Vec<_>>()
             .join(", "),
@@ -1762,38 +1817,173 @@ async fn cmd_scan_github(
         eprintln!("warning: {w}");
     }
     let mut findings = scan::scan_chunks(engine, filter, &collected.chunks);
-    for (url, label) in &collected.git {
+    let auth = kubera::sources::remote::Auth {
+        token: token.clone(),
+        user: None,
+        allow_http: g.allow_http,
+        interactive: false,
+    };
+    findings.extend(scan_git_repos(
+        &collected.git,
+        &auth,
+        engine,
+        filter,
+        max_size,
+        opts.jobs,
+        &progress,
+    ));
+    Ok(findings)
+}
+
+/// Scan the git repositories an API source returned (wikis, snippets,
+/// gists, model repositories) with the history scanner.
+fn scan_git_repos(
+    repos: &[(String, String)],
+    auth: &kubera::sources::remote::Auth,
+    engine: &Engine,
+    filter: &Filter,
+    max_size: u64,
+    jobs: usize,
+    progress: &dyn Fn(String),
+) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    for (url, label) in repos {
         progress(format!("{label}: history"));
         let target = scan::Target::Git {
             repo: url.clone(),
             options: git::GitOptions {
-                jobs: opts.jobs,
+                jobs,
                 ..Default::default()
             },
-            auth: kubera::sources::remote::Auth {
-                token: token.clone(),
-                user: None,
-                allow_http: g.allow_http,
-                interactive: false,
-            },
+            auth: auth.clone(),
             baseline: None,
             mirror: None,
         };
         match scan::run_detailed(engine, filter, &target, max_size, &|_| {}) {
             Ok(out) => findings.extend(out.findings),
             // Repositories without a wiki have no wiki repository.
-            Err(e) if label.ends_with("(wiki)") => {
-                let _ = e;
-                if show_progress {
-                    eprintln!(
-                        "{} {label}: skipped (no wiki, or no access)",
-                        style.dim("›")
-                    );
-                }
+            Err(_) if label.ends_with("(wiki)") => {
+                progress(format!("{label}: skipped (no wiki, or no access)"));
             }
             Err(e) => eprintln!("warning: {label}: {e:#}"),
         }
     }
+    findings
+}
+
+/// The value of the environment variable named by a `--*-env` flag.
+fn env_secret(var: Option<&String>, flag: &str) -> Result<Option<String>> {
+    match var {
+        Some(var) => Ok(Some(std::env::var(var).with_context(|| {
+            format!("environment variable `{var}` (from {flag}) is not set")
+        })?)),
+        None => Ok(None),
+    }
+}
+
+/// API sources added after `scan github`: `None` when `source` is not one.
+async fn cmd_scan_api(
+    g: &GlobalArgs,
+    source: &ScanSource,
+    engine: &Engine,
+    filter: &Filter,
+    max_size: u64,
+    show_progress: bool,
+    style: &Style,
+) -> Result<Option<Vec<Finding>>> {
+    let progress = |m: String| {
+        if show_progress {
+            eprintln!("{} {m}", style.dim("›"));
+        }
+    };
+    let findings = match source {
+        ScanSource::Gitlab { .. } => {
+            cmd_scan_gitlab(g, source, engine, filter, max_size, &progress).await?
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(findings))
+}
+
+async fn cmd_scan_gitlab(
+    g: &GlobalArgs,
+    source: &ScanSource,
+    engine: &Engine,
+    filter: &Filter,
+    max_size: u64,
+    progress: &dyn Fn(String),
+) -> Result<Vec<Finding>> {
+    use kubera::sources::gitlab;
+    let ScanSource::Gitlab {
+        projects,
+        group,
+        what,
+        token_env,
+        api_url,
+        max_items,
+        max_jobs,
+        max_rate_wait,
+        opts,
+    } = source
+    else {
+        unreachable!()
+    };
+    let token = env_secret(token_env.as_ref(), "--token-env")?;
+    let mut client = kubera::forge::Client::new(
+        token.clone(),
+        None,
+        std::time::Duration::from_secs(*max_rate_wait),
+    )?;
+    client.allow_http = g.allow_http;
+    let api = api_url.trim_end_matches('/');
+    let mut all = projects.clone();
+    for grp in group {
+        progress(format!("group {grp}: listing projects"));
+        let list = client
+            .list(&kubera::forge::Source::GitLabGroup(grp.clone()), Some(api))
+            .await?;
+        all.extend(list.into_iter().map(|r| r.full_name));
+    }
+    all.sort();
+    all.dedup();
+    if all.is_empty() {
+        bail!("nothing to scan: pass group/project paths or --group");
+    }
+    let o = gitlab::Options {
+        api: api.to_string(),
+        projects: all,
+        what: if what.is_empty() {
+            gitlab::ALL.to_vec()
+        } else {
+            what.clone()
+        },
+        max_items: *max_items,
+        max_jobs: *max_jobs,
+        max_log_size: 256 * 1024 * 1024,
+        max_file_size: max_size,
+    };
+    let collected = gitlab::collect(&client, &o, progress).await?;
+    for w in &collected.warnings {
+        eprintln!("warning: {w}");
+    }
+    let mut findings = scan::scan_chunks(engine, filter, &collected.chunks);
+    let auth = kubera::sources::remote::Auth {
+        token,
+        // GitLab takes any user name with a token; `oauth2` works for
+        // personal, project and OAuth tokens alike.
+        user: Some("oauth2".into()),
+        allow_http: g.allow_http,
+        interactive: false,
+    };
+    findings.extend(scan_git_repos(
+        &collected.git,
+        &auth,
+        engine,
+        filter,
+        max_size,
+        opts.jobs,
+        progress,
+    ));
     Ok(findings)
 }
 

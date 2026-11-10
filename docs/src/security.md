@@ -55,6 +55,7 @@ Kubera handles live credentials, so it is conservative by default.
 ## GitHub, buckets and clusters
 
 - **GitHub** (`scan github`): the token is read from an environment variable. API pagination is followed only to the same host. Actions logs are downloaded from GitHub's pre-signed storage URL **without** the token, so it never reaches the storage host.
+- **GitLab** (`scan gitlab`): the same rules. The token goes only to the `--api-url` host as `PRIVATE-TOKEN`; job logs that redirect to object storage are fetched without it; snippet repositories on any other host are skipped rather than cloned with the token.
 - **Buckets** (`scan bucket`): S3 credentials come from the standard `AWS_*` environment variables and are used only to sign requests (SigV4); a GCS access token comes from `--token-env`. Both are sent only to the storage endpoint, over HTTPS, without following redirects. Objects are filtered by path and size before download and never written to disk.
 - **Kubernetes** (`scan k8s`): only read-only `list` calls. TLS trusts only the cluster's CA when the kubeconfig names one. A cluster with `insecure-skip-tls-verify` and plain `http://` servers are refused, rather than sending a token over an unverified connection. RBAC denials become warnings, not failures.
 
