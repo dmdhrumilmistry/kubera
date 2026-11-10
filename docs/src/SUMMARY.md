@@ -26,6 +26,7 @@
 - [Container images](containers.md)
 - [GitHub issues, PRs and Actions](github.md)
 - [GitLab issues, MRs and CI logs](gitlab.md)
+- [Bitbucket issues, PRs and Pipelines](bitbucket.md)
 - [Cloud storage buckets](buckets.md)
 - [Kubernetes clusters](kubernetes.md)
 

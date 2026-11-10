@@ -72,6 +72,12 @@ GitLab issues, merge requests, comments and CI job logs of a group:
 kubera scan gitlab --group acme --token-env GL_TOKEN
 ```
 
+Bitbucket issues, pull requests, comments and Pipelines logs of a workspace:
+
+```bash
+kubera scan bitbucket --workspace acme --token-env BB_TOKEN
+```
+
 An S3 bucket (credentials from `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`):
 
 ```bash

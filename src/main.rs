@@ -521,6 +521,44 @@ enum ScanSource {
         #[command(flatten)]
         opts: ScanArgs,
     },
+    /// Scan Bitbucket Cloud beyond the code: issues, pull requests and
+    /// their comments, Pipelines step logs and workspace snippets.
+    Bitbucket {
+        /// Repositories as workspace/repo.
+        repos: Vec<String>,
+        /// Every repository and snippet of this workspace (repeatable).
+        #[arg(long, value_name = "WORKSPACE")]
+        workspace: Vec<String>,
+        /// What to scan (comma separated) [default: all].
+        #[arg(long, value_enum, value_delimiter = ',')]
+        what: Vec<kubera::sources::bitbucket::What>,
+        /// Environment variable with a Bitbucket access token (bearer), or
+        /// an app password / API token used with --token-user.
+        #[arg(long, value_name = "ENV_VAR")]
+        token_env: Option<String>,
+        /// User for app passwords and API tokens (your Bitbucket username,
+        /// or your Atlassian email for API tokens).
+        #[arg(long, value_name = "USER", requires = "token_env")]
+        token_user: Option<String>,
+        /// API base (tests and proxies).
+        #[arg(
+            long,
+            value_name = "URL",
+            default_value = "https://api.bitbucket.org/2.0"
+        )]
+        api_url: String,
+        /// Issues / pull requests / comments read per repository and kind.
+        #[arg(long, default_value_t = 2000, value_name = "N")]
+        max_items: usize,
+        /// Pipelines whose step logs are read per repository (newest first).
+        #[arg(long, default_value_t = 20, value_name = "N")]
+        max_runs: usize,
+        /// Longest rate-limit wait (seconds) before giving up.
+        #[arg(long, default_value_t = 900, value_name = "SECS")]
+        max_rate_wait: u64,
+        #[command(flatten)]
+        opts: ScanArgs,
+    },
     /// Scan a cloud storage bucket: s3://bucket[/prefix] (also MinIO, R2
     /// and other S3-compatible stores with --endpoint-url) or
     /// gs://bucket[/prefix]. Archives inside are opened too.
@@ -1114,6 +1152,7 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         | ScanSource::Staged { opts, .. }
         | ScanSource::Github { opts, .. }
         | ScanSource::Gitlab { opts, .. }
+        | ScanSource::Bitbucket { opts, .. }
         | ScanSource::Bucket { opts, .. }
         | ScanSource::K8s { opts, .. }
         | ScanSource::Stdin { opts } => opts,
@@ -1239,7 +1278,9 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
             scan::Target::Text(String::new())
         }
         // API sources, scanned by `cmd_scan_api`.
-        ScanSource::Gitlab { .. } => scan::Target::Text(String::new()),
+        ScanSource::Gitlab { .. } | ScanSource::Bitbucket { .. } => {
+            scan::Target::Text(String::new())
+        }
         ScanSource::Image {
             image,
             platform,
@@ -1487,6 +1528,14 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         } => projects
             .iter()
             .chain(group)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", "),
+        ScanSource::Bitbucket {
+            repos, workspace, ..
+        } => repos
+            .iter()
+            .chain(workspace)
             .cloned()
             .collect::<Vec<_>>()
             .join(", "),
@@ -1900,9 +1949,107 @@ async fn cmd_scan_api(
         ScanSource::Gitlab { .. } => {
             cmd_scan_gitlab(g, source, engine, filter, max_size, &progress).await?
         }
+        ScanSource::Bitbucket { .. } => {
+            cmd_scan_bitbucket(g, source, engine, filter, max_size, &progress).await?
+        }
         _ => return Ok(None),
     };
     Ok(Some(findings))
+}
+
+async fn cmd_scan_bitbucket(
+    g: &GlobalArgs,
+    source: &ScanSource,
+    engine: &Engine,
+    filter: &Filter,
+    max_size: u64,
+    progress: &dyn Fn(String),
+) -> Result<Vec<Finding>> {
+    use kubera::sources::bitbucket;
+    let ScanSource::Bitbucket {
+        repos,
+        workspace,
+        what,
+        token_env,
+        token_user,
+        api_url,
+        max_items,
+        max_runs,
+        max_rate_wait,
+        opts,
+    } = source
+    else {
+        unreachable!()
+    };
+    let token = env_secret(token_env.as_ref(), "--token-env")?;
+    let mut client = kubera::forge::Client::new(
+        token.clone(),
+        token_user.clone(),
+        std::time::Duration::from_secs(*max_rate_wait),
+    )?;
+    client.allow_http = g.allow_http;
+    let api = api_url.trim_end_matches('/');
+    let mut all = repos.clone();
+    for ws in workspace {
+        progress(format!("workspace {ws}: listing repositories"));
+        let list = client
+            .list(
+                &kubera::forge::Source::BitbucketWorkspace(ws.clone()),
+                Some(api),
+            )
+            .await?;
+        all.extend(list.into_iter().map(|r| r.full_name));
+    }
+    all.sort();
+    all.dedup();
+    if all.is_empty() {
+        bail!("nothing to scan: pass workspace/repo repositories or --workspace");
+    }
+    // Snippets belong to workspaces: those named, and those of the repos.
+    let mut snippet_workspaces: Vec<String> = workspace.clone();
+    snippet_workspaces.extend(
+        all.iter()
+            .filter_map(|r| r.split_once('/').map(|(w, _)| w.to_string())),
+    );
+    snippet_workspaces.sort();
+    snippet_workspaces.dedup();
+    let o = bitbucket::Options {
+        api: api.to_string(),
+        repos: all,
+        snippet_workspaces,
+        what: if what.is_empty() {
+            bitbucket::ALL.to_vec()
+        } else {
+            what.clone()
+        },
+        max_items: *max_items,
+        max_runs: *max_runs,
+        max_log_size: 256 * 1024 * 1024,
+        max_file_size: max_size,
+    };
+    let collected = bitbucket::collect(&client, &o, progress).await?;
+    for w in &collected.warnings {
+        eprintln!("warning: {w}");
+    }
+    let mut findings = scan::scan_chunks(engine, filter, &collected.chunks);
+    let auth = kubera::sources::remote::Auth {
+        token,
+        // Access tokens clone as `x-token-auth`; app passwords and API
+        // tokens with their user.
+        user: Some(token_user.clone().unwrap_or_else(|| "x-token-auth".into())),
+        allow_http: g.allow_http,
+        interactive: false,
+    };
+    findings.extend(scan_git_repos(
+        &collected.git,
+        &auth,
+        engine,
+        filter,
+        max_size,
+        opts.jobs,
+        progress,
+    ));
+    Ok(findings)
 }
 
 async fn cmd_scan_gitlab(

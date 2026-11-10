@@ -26,6 +26,8 @@ pub enum SourceKind {
     /// GitLab issues, merge requests, comments and CI job logs.
     #[serde(rename = "gitlab")]
     GitLab,
+    /// Bitbucket issues, pull requests, comments and Pipelines logs.
+    Bitbucket,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

@@ -193,3 +193,152 @@ async fn gitlab_issues_notes_and_job_logs() {
             .any(|r| r.url.path().contains("merge_requests/4"))
     );
 }
+
+#[tokio::test]
+async fn bitbucket_issues_pull_requests_and_pipeline_logs() {
+    use base64::Engine as _;
+    let [t1, t2, t3, t4, t5] = fake_tokens();
+    let server = MockServer::start().await;
+    let uri = server.uri();
+    let basic = format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode("ci-bot:bb-token")
+    );
+    let base = "/repositories/acme/app";
+    Mock::given(method("GET"))
+        .and(path(base))
+        .and(header("authorization", basic.as_str()))
+        .respond_with(json(serde_json::json!({
+            "full_name": "acme/app", "has_issues": true,
+            "links": {"html": {"href": "https://bitbucket.org/acme/app"}}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("{base}/issues")))
+        .and(query_param("page", "2"))
+        .respond_with(json(serde_json::json!({"values": [
+            {"id": 5, "title": "old", "content": {"raw": format!("key {t4}")}}
+        ]})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("{base}/issues")))
+        .and(query_param_is_missing("page"))
+        .respond_with(json(serde_json::json!({
+            "values": [{"id": 2, "title": "Deploy broken", "content": {"raw": format!("tried {t1}")},
+                        "links": {"html": {"href": "https://bitbucket.org/acme/app/issues/2"}}}],
+            "next": format!("{uri}{base}/issues?pagelen=50&page=2")
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("{base}/issues/2/comments")))
+        .respond_with(json(serde_json::json!({"values": [
+            {"id": 9, "content": {"raw": format!("use {t2}")}}
+        ]})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("{base}/issues/5/comments")))
+        .respond_with(json(serde_json::json!({"values": []})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("{base}/pullrequests")))
+        .respond_with(json(serde_json::json!({"values": [
+            {"id": 7, "title": "fix", "summary": {"raw": ""}, "comment_count": 2},
+            {"id": 8, "title": "docs", "summary": {"raw": ""}, "comment_count": 0}
+        ]})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("{base}/pullrequests/7/comments")))
+        .respond_with(json(serde_json::json!({"values": [
+            {"id": 3, "content": {"raw": format!("oops {t5}")}, "inline": {"path": "src/a.py"}},
+            {"id": 4, "deleted": true, "content": {"raw": format!("gone {t2}")}}
+        ]})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("{base}/pipelines/")))
+        .respond_with(json(serde_json::json!({"values": [
+            {"uuid": "{p-1}", "build_number": 12}
+        ]})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("{base}/pipelines/%7Bp-1%7D/steps/")))
+        .respond_with(json(serde_json::json!({"values": [
+            {"uuid": "{s-1}", "name": "Deploy"}
+        ]})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "{base}/pipelines/%7Bp-1%7D/steps/%7Bs-1%7D/log"
+        )))
+        .respond_with(ResponseTemplate::new(307).insert_header(
+            "location",
+            format!("{uri}/storage/step.log?X-Amz-Signature=x"),
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/storage/step.log"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(format!("+ ./deploy.sh\nTOKEN={t3}\n")),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/snippets/acme"))
+        .respond_with(json(serde_json::json!({"values": [
+            {"id": "abc", "links": {"clone": [
+                {"name": "https", "href": "https://ci-bot@elsewhere.example/acme/abc.git"}
+            ]}}
+        ]})))
+        .mount(&server)
+        .await;
+
+    let found = run(
+        &[
+            "scan",
+            "bitbucket",
+            "acme/app",
+            "--api-url",
+            &uri,
+            "--token-env",
+            "BB",
+            "--token-user",
+            "ci-bot",
+        ],
+        &[("BB", "bb-token")],
+    )
+    .await;
+    assert_eq!(
+        paths(&found, "bitbucket"),
+        vec![
+            "issues/2",
+            "issues/2/comments/9",
+            "issues/5",
+            "pipelines/12/Deploy",
+            "pull-requests/7/comments/3 (src/a.py)"
+        ]
+    );
+    let log = found
+        .iter()
+        .find(|f| f["location"]["path"] == "pipelines/12/Deploy")
+        .unwrap();
+    assert_eq!(
+        log["location"]["link"],
+        "https://bitbucket.org/acme/app/pipelines/results/12"
+    );
+    let reqs = server.received_requests().await.unwrap();
+    let blob = reqs
+        .iter()
+        .find(|r| r.url.path() == "/storage/step.log")
+        .unwrap();
+    assert!(blob.headers.get("authorization").is_none());
+    assert!(!reqs.iter().any(|r| r.url.path().contains("pullrequests/8")));
+}

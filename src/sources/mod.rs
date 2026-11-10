@@ -1,6 +1,7 @@
 //! Input sources. Every source turns its input into [`Chunk`]s of text.
 
 pub mod archive;
+pub mod bitbucket;
 pub mod bucket;
 pub mod fs;
 pub mod git;

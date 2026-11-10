@@ -482,9 +482,19 @@ pub fn same_origin(base: &reqwest::Url, next: &str) -> Result<reqwest::Url> {
     Ok(u)
 }
 
-/// Percent-encode one URL path or query component.
+/// Percent-encode one URL path or query component (unreserved characters
+/// `-._~` are kept).
 pub fn enc(s: &str) -> String {
-    percent_encoding::utf8_percent_encode(s, percent_encoding::NON_ALPHANUMERIC).to_string()
+    const COMPONENT: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+        .remove(b'-')
+        .remove(b'_')
+        .remove(b'.')
+        .remove(b'~');
+    // `.` and `..` would be collapsed by URL normalisation.
+    if s.chars().all(|c| c == '.') {
+        return s.replace('.', "%2E");
+    }
+    percent_encoding::utf8_percent_encode(s, COMPONENT).to_string()
 }
 
 fn host(u: &reqwest::Url) -> String {
