@@ -36,6 +36,10 @@ allowlist:
 
 # Skip files larger than this many bytes (default 10 MiB).
 max_file_size: 5242880
+
+# Record every scan in the findings database (kubera serve): true for the
+# default file, or a path relative to this file. --no-db skips it once.
+db: true
 ```
 
 Unknown keys are rejected, so typos fail loudly instead of being silently ignored.

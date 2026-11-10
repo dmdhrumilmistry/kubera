@@ -36,6 +36,10 @@ futures = "0.3.34"
 globset = "0.4.21"
 hex = "0.4.3"
 hmac = "0.13.0"
+# `kubera serve`: hyper is already in the tree through reqwest.
+http-body-util = "0.1.5"
+hyper = { version = "1.12.0", features = ["server", "http1"] }
+hyper-util = { version = "0.1.21", features = ["tokio"] }
 include_dir = "0.7.4"
 owo-colors = "4.4.0"
 percent-encoding = "2.3.2"
@@ -51,7 +55,7 @@ serde_yaml = "0.9.34"
 sha2 = "0.11.1"
 tar = "0.4.46"
 tempfile = "3.27.0"
-tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "signal"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "signal", "net"] }
 walkdir = "2.5.0"
 zip = { version = "9.5.0", default-features = false, features = ["deflate-flate2"] }
 

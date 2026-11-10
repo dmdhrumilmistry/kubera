@@ -41,6 +41,11 @@ Kubera handles live credentials, so it is conservative by default.
 - **Issues** (`kubera remediate --issues`) never contain secret values: only fingerprints, redacted previews and locations, even from a `--show-secrets` file. Values from the findings file go into code spans, so hostile paths cannot inject mentions, links or HTML; only plain `https://` links are kept. Issues go only to a **private** repository unless `--allow-public-repo`, nothing is created without `--execute`, committer mentions are off by default, and a `POST` is never retried.
 - **History purge** (`kubera purge`) must hold raw secrets in its `git filter-repo` expressions file, so the file is created with mode `0600`, never overwrites an existing file, and is refused inside the repository (where it could be committed). Kubera prints the rewrite commands and warnings but never rewrites or pushes anything.
 
+## Findings database and dashboard
+
+- The findings database (`scan --db`) stores **redacted** findings and fingerprints only, never secret values, even with `--show-secrets`. It is appended to with mode `0600` in a `0700` directory.
+- `kubera serve` listens on `127.0.0.1` by default and refuses any other address unless you pass `--allow-remote` **and** a token (`--token-env`, at least 16 characters, compared in constant time). On localhost it checks the `Host` header against DNS rebinding. It is read-only (`GET` / `HEAD`), sends `nosniff`, `no-referrer`, `no-store` and anti-framing headers, and the page has no external assets: a Content-Security-Policy allows only its own script and style (pinned by SHA-256) and same-origin requests. Values are rendered as text, never HTML. There is no TLS: use an SSH tunnel or a TLS proxy to reach it remotely. See [Findings dashboard](dashboard.md#security).
+
 ## Repository credentials
 
 - Tokens for private repositories (`--token-env`) reach git as an `Authorization` header in `GIT_CONFIG_*` **environment variables**, never on the command line. The header is scoped to the repository's origin, so it can't follow a redirect to another host, and it is never sent over plain `http://`.

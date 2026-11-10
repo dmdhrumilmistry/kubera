@@ -246,6 +246,26 @@ enum Command {
         #[arg(long, value_enum, default_value_t = OutFormat::Pretty)]
         format: OutFormat,
     },
+    /// Local web dashboard over the findings database (`scan --db`):
+    /// trends, open live findings, breakdowns, and a JSON API.
+    Serve {
+        /// Findings database [default: `db:` in .kubera.yaml, else <user
+        /// data dir>/kubera/findings.jsonl].
+        #[arg(long, value_name = "PATH")]
+        db: Option<PathBuf>,
+        /// Address to listen on. Non-loopback addresses need
+        /// --allow-remote and --token-env.
+        #[arg(long, default_value = kubera::serve::DEFAULT_LISTEN, value_name = "ADDR:PORT")]
+        listen: std::net::SocketAddr,
+        /// Allow a non-loopback --listen address (plain HTTP: put it behind
+        /// TLS or an SSH tunnel).
+        #[arg(long)]
+        allow_remote: bool,
+        /// Environment variable with an access token (at least 16
+        /// characters). Required with --allow-remote; optional otherwise.
+        #[arg(long, value_name = "ENV_VAR")]
+        token_env: Option<String>,
+    },
     /// Manage detector templates.
     Templates {
         #[command(subcommand)]
@@ -587,6 +607,15 @@ struct ScanArgs {
     /// Browse the results in the interactive TUI instead of printing them.
     #[arg(short = 'i', long)]
     interactive: bool,
+    /// Record this scan in the findings database for `kubera serve`
+    /// (redacted values and fingerprints only) [default PATH: <user data
+    /// dir>/kubera/findings.jsonl]. Also `db:` in .kubera.yaml. Put it
+    /// after the paths, or write `--db=PATH`.
+    #[arg(long, value_name = "PATH", num_args = 0..=1, default_missing_value = "")]
+    db: Option<PathBuf>,
+    /// Do not record this scan, even if .kubera.yaml enables `db:`.
+    #[arg(long, conflicts_with = "db")]
+    no_db: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -908,6 +937,52 @@ async fn run(cli: Cli) -> Result<u8> {
             replacement,
             format,
         } => cmd_purge(&cli.global, findings, repo, output, replacement, format),
+        Command::Serve {
+            db,
+            listen,
+            allow_remote,
+            token_env,
+        } => {
+            let cfg = Config::load(cli.global.config.as_deref())?;
+            let path = match db {
+                Some(p) => p,
+                None => cfg
+                    .db_path(None, false)?
+                    .map(Ok)
+                    .unwrap_or_else(kubera::db::default_path)?,
+            };
+            let token = match &token_env {
+                Some(var) => Some(std::env::var(var).with_context(|| {
+                    format!("environment variable `{var}` (from --token-env) is not set")
+                })?),
+                None => None,
+            };
+            if !path.exists() {
+                eprintln!(
+                    "warning: {} does not exist yet; record scans with `kubera scan ... --db`",
+                    path.display()
+                );
+            }
+            let has_token = token.is_some();
+            let shown = path.display().to_string();
+            kubera::serve::serve(
+                kubera::serve::Options {
+                    db: path,
+                    listen,
+                    allow_remote,
+                    token,
+                },
+                move |addr| {
+                    eprintln!("kubera dashboard: http://{addr}/ (database {shown})");
+                    if has_token {
+                        eprintln!("open http://{addr}/?token=<token> once to sign in");
+                    }
+                    eprintln!("press Ctrl-C to stop");
+                },
+            )
+            .await?;
+            Ok(0)
+        }
         Command::Templates { cmd } => cmd_templates(&cli.global, cmd),
         Command::Hook { cmd } => {
             let st = Style {
@@ -1355,6 +1430,30 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         ),
     };
     let mut notify_failed = false;
+    if let Some(path) = ctx.cfg.db_path(opts.db.as_deref(), opts.no_db)? {
+        let (target, kind, incremental) = db_target(&source, &label);
+        let rec = kubera::db::ScanRecord::new(
+            &target,
+            kind,
+            // Filtered results (--only-verified, --results) are partial too.
+            incremental || !kinds.is_empty(),
+            do_verify,
+            &findings,
+            baseline.as_ref(),
+        );
+        match kubera::db::append(&path, &rec) {
+            Ok(()) => {
+                if show_progress {
+                    eprintln!("{} recorded in {}", ctx.style.dim("›"), path.display());
+                }
+            }
+            Err(e) => {
+                // A scheduled scan whose record was lost must not look clean.
+                notify_failed = true;
+                eprintln!("warning: findings database: {e:#}");
+            }
+        }
+    }
     if !notify_targets.is_empty() {
         let alert: Vec<Finding> = findings
             .iter()
@@ -1490,6 +1589,75 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
     } else {
         0
     })
+}
+
+/// Database identity of a scan: a stable target key, the kind, and whether
+/// it read only part of the target.
+fn db_target(source: &ScanSource, label: &str) -> (String, &'static str, bool) {
+    match source {
+        ScanSource::Fs { paths, .. } => (
+            paths
+                .iter()
+                .map(|p| {
+                    std::fs::canonicalize(p)
+                        .unwrap_or_else(|_| p.clone())
+                        .display()
+                        .to_string()
+                })
+                .collect::<Vec<_>>()
+                .join(", "),
+            "fs",
+            false,
+        ),
+        ScanSource::Git {
+            repo,
+            branch,
+            since_commit,
+            max_depth,
+            state,
+            ..
+        } => (
+            kubera::state::repo_key(repo),
+            "git",
+            state.is_some() || since_commit.is_some() || max_depth.is_some() || branch.is_some(),
+        ),
+        ScanSource::Repos {
+            repos,
+            github_org,
+            github_user,
+            gitlab_group,
+            bitbucket_workspace,
+            repo_list,
+            state,
+            limit,
+            ..
+        } => {
+            let mut parts: Vec<String> = Vec::new();
+            parts.extend(github_org.iter().map(|o| format!("github-org:{o}")));
+            parts.extend(github_user.iter().map(|o| format!("github-user:{o}")));
+            parts.extend(gitlab_group.iter().map(|o| format!("gitlab-group:{o}")));
+            parts.extend(bitbucket_workspace.iter().map(|o| format!("bitbucket:{o}")));
+            parts.extend(repo_list.iter().map(|p| format!("list:{}", p.display())));
+            parts.extend(repos.iter().cloned());
+            (
+                format!("repos {}", parts.join(", ")),
+                "repos",
+                state.is_some() || limit.is_some(),
+            )
+        }
+        ScanSource::Image { .. } => (label.to_string(), "image", false),
+        ScanSource::Stdin { .. } => ("stdin".into(), "stdin", true),
+        ScanSource::Staged { .. } => (label.to_string(), "staged", true),
+        ScanSource::Github { what, .. } => (format!("github {label}"), "github", !what.is_empty()),
+        ScanSource::Bucket { url, .. } => (url.clone(), "bucket", false),
+        ScanSource::K8s {
+            namespaces, what, ..
+        } => (
+            label.to_string(),
+            "k8s",
+            !namespaces.is_empty() || !what.is_empty(),
+        ),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

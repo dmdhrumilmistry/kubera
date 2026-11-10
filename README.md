@@ -56,6 +56,7 @@
 | 🛡️ **Prevent** | A **pre-commit hook** (`kubera hook install`, or the pre-commit framework), a **GitHub Action** with code scanning, and a **Docker image**. [CI →](https://dmdhrumilmistry.github.io/kubera/ci.html) |
 | 🧩 **Templates** | Everything per-platform lives in validated YAML, with built-in test samples. |
 | 📤 **Outputs** | Pretty cards, JSON, JSONL, SARIF 2.1.0 and a self-contained **HTML report**, with links to the exact line on GitHub, GitLab and Bitbucket. Secrets redacted by default. |
+| 📈 **Dashboard** | `scan --db` records every scan (redacted) in a local findings database; `kubera serve` shows trends, open live findings, per-repository and per-detector breakdowns and first / last seen, plus a JSON API. Localhost only by default. [Details →](https://dmdhrumilmistry.github.io/kubera/dashboard.html) |
 | 🔔 **Alerts** | **Slack** and HMAC-signed **webhooks** when a scheduled scan finds live secrets. [Details →](https://dmdhrumilmistry.github.io/kubera/alerts.html) |
 | 🤖 **MCP server** | `kubera mcp` lets AI assistants scan and verify, while secrets never reach the model. |
 | ⚡ **Fast** | ~875 MB/s on 4 vCPUs (333 MB of real code in 0.38 s, 38 MiB RAM); one `git log` per CPU scans all 24,445 commits of rust-lang/cargo in 3.7 s (10.6 s single-process). [Benchmarks →](https://dmdhrumilmistry.github.io/kubera/benchmarks.html) |
@@ -88,6 +89,7 @@ kubera scan bucket s3://acme-backups --verify        # S3 / GCS, archives opened
 kubera scan k8s --verify                             # live cluster: Secrets, ConfigMaps, env
 kubera hook install                                  # block commits that add secrets
 kubera scan git . --update-baseline                  # accept today's findings; fail only on new ones
+kubera scan git . --verify --db && kubera serve      # record scans, open the local dashboard
 ```
 
 Check a single credential. Paste it at a hidden prompt, and Kubera works out what it is:

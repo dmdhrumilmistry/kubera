@@ -226,6 +226,26 @@ SARIF for GitHub code scanning:
 kubera scan git . -f sarif > kubera.sarif
 ```
 
+## Track findings over time: the dashboard
+
+Record a scan in the local findings database (redacted, mode `0600`):
+
+```bash
+kubera scan git . --verify --db
+```
+
+Open the dashboard on `http://127.0.0.1:8484/`:
+
+```bash
+kubera serve
+```
+
+Open live findings, as JSON, from the API:
+
+```bash
+curl -s 'http://127.0.0.1:8484/api/findings?state=open&status=live'
+```
+
 ## Prevent new leaks: pre-commit, CI and alerts
 
 Install the pre-commit hook in this repository:

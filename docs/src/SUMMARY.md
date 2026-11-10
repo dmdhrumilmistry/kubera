@@ -15,6 +15,7 @@
 - [Verify, analyze and rotate](lifecycle.md)
 - [Baselines and triage](triage.md)
 - [Remediation: issues and history cleanup](remediation.md)
+- [Findings dashboard](dashboard.md)
 - [Configuration](configuration.md)
 
 # Sources

@@ -30,6 +30,17 @@ pub struct Config {
     /// Skip [`DEFAULT_EXCLUDES`] (dependency directories and lockfiles).
     /// Set to `false` to scan them too.
     pub default_excludes: Option<bool>,
+    /// Record every scan in the findings database: `true` for the default
+    /// file, or a path (relative to the config file).
+    pub db: Option<DbSetting>,
+}
+
+/// `db: true` / `db: false` / `db: path/to/findings.jsonl`.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum DbSetting {
+    Enabled(bool),
+    Path(PathBuf),
 }
 
 /// Paths skipped unless disabled (`--no-default-excludes` or
@@ -91,11 +102,32 @@ impl Config {
             .into_iter()
             .map(|t| if t.is_absolute() { t } else { base.join(t) })
             .collect();
+        if let Some(DbSetting::Path(p)) = &cfg.db
+            && p.is_relative()
+        {
+            cfg.db = Some(DbSetting::Path(base.join(p)));
+        }
         Ok(cfg)
     }
 }
 
 impl Config {
+    /// The findings database to record scans in: `--db [PATH]` (an empty
+    /// path means the default file), else the config's `db:`.
+    pub fn db_path(&self, flag: Option<&Path>, disabled: bool) -> anyhow::Result<Option<PathBuf>> {
+        if disabled {
+            return Ok(None);
+        }
+        match (flag, &self.db) {
+            (Some(p), _) if !p.as_os_str().is_empty() => Ok(Some(p.to_path_buf())),
+            (Some(_), _) | (None, Some(DbSetting::Enabled(true))) => {
+                Ok(Some(crate::db::default_path()?))
+            }
+            (None, Some(DbSetting::Path(p))) => Ok(Some(p.clone())),
+            _ => Ok(None),
+        }
+    }
+
     /// Every exclude glob in effect: the defaults (unless disabled by the
     /// config or `no_defaults`), the config's, then `extra`.
     pub fn excludes(&self, extra: &[String], no_defaults: bool) -> Vec<String> {

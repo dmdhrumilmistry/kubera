@@ -236,6 +236,15 @@ Some detectors have no verifier, for example private keys. Kubera cannot ask any
 2. If it is real, replace it. Press <kbd>p</kbd> (or run `kubera rotate private-key`) for the runbook: generate a new key pair, install the new public key or certificate, then remove the old one and revoke its certificate.
 3. Mark it: <kbd>m</kbd> once replaced, or <kbd>x</kbd> if it is a test key or an example.
 
+## Track progress over time
+
+Add `--db` to your scans (or `db: true` to `.kubera.yaml`) and every scan is recorded, redacted, in a local findings database. `kubera serve` then shows a dashboard on `http://127.0.0.1:8484/`: open and live findings, trends, which repositories and detectors leak most, and when each secret was first and last seen. See [Findings dashboard](dashboard.md).
+
+```bash
+kubera scan git . --verify --db
+kubera serve
+```
+
 ## Make decisions stick: the baseline file
 
 Triage decisions live in `.kubera-baseline.json`, in the directory you started Kubera from. Every later scan, the TUI, the [pre-commit hook](hooks.md) and [CI](ci.md) load it from the working directory and skip the findings recorded in it.
