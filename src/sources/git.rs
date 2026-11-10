@@ -39,6 +39,9 @@ pub struct GitOptions {
     pub jobs: usize,
     /// Resume file for long scans (see [`crate::checkpoint`]).
     pub checkpoint: Option<PathBuf>,
+    /// Scan results of file changes, shared by the repositories of one run
+    /// (see [`crate::dedup`]).
+    pub shared: Option<std::sync::Arc<crate::dedup::Results>>,
 }
 
 fn is_sha(s: &str) -> bool {
@@ -270,6 +273,8 @@ struct Commit {
 
 struct FileDiff {
     path: Option<String>,
+    /// Old and new blob ids from the `index` line.
+    blobs: Option<u128>,
     text: String,
     lines: Vec<usize>,
 }
@@ -513,6 +518,12 @@ fn log_partition(
         "--full-history",
         "--no-walk=unsorted",
         "--stdin",
+        // Blob ids identify repeated changes (see `crate::dedup`); a fixed
+        // diff algorithm makes the text of a change depend on its blobs
+        // only, not on repository or user configuration.
+        "--full-index",
+        "--diff-algorithm=myers",
+        "--indent-heuristic",
         "--format=%x01kubera-commit %H%x00%an%x00%ae%x00%aI",
         "--",
     ]);
@@ -591,6 +602,7 @@ fn parse_log(mut reader: impl BufRead, sink: &(dyn Fn(Chunk) + Sync)) -> Result<
                     ..Default::default()
                 },
                 line_map: Some(f.lines),
+                content_id: f.blobs,
             });
         }
     };
@@ -625,6 +637,7 @@ fn parse_log(mut reader: impl BufRead, sink: &(dyn Fn(Chunk) + Sync)) -> Result<
             flush(&commit, &mut file);
             file = Some(FileDiff {
                 path: None,
+                blobs: None,
                 text: String::new(),
                 lines: Vec::new(),
             });
@@ -632,6 +645,9 @@ fn parse_log(mut reader: impl BufRead, sink: &(dyn Fn(Chunk) + Sync)) -> Result<
             continue;
         }
         let Some(f) = file.as_mut() else { continue };
+        if !in_hunk && let Some(ids) = line.strip_prefix("index ") {
+            f.blobs = blob_pair(ids);
+        }
         if !in_hunk && let Some(p) = line.strip_prefix("+++ ") {
             f.path = p.strip_prefix("b/").map(unquote);
         }
@@ -658,6 +674,19 @@ fn parse_log(mut reader: impl BufRead, sink: &(dyn Fn(Chunk) + Sync)) -> Result<
     Ok(commits)
 }
 
+/// `<old>..<new>[ <mode>]` of an `index` line as one id: the first 64 bits
+/// of each blob id (full ids with `--full-index`; abbreviated ones are
+/// rejected, they could collide).
+fn blob_pair(ids: &str) -> Option<u128> {
+    let (old, new) = ids.split(' ').next()?.split_once("..")?;
+    let prefix = |h: &str| {
+        (h.len() >= 40)
+            .then(|| u64::from_str_radix(h.get(..16)?, 16).ok())
+            .flatten()
+    };
+    Some((u128::from(prefix(old)?) << 64) | u128::from(prefix(new)?))
+}
+
 /// Parse `-a,b +c,d @@` and return `c`.
 fn parse_hunk_start(h: &str) -> Option<usize> {
     let plus = h.split_whitespace().find(|p| p.starts_with('+'))?;
@@ -671,6 +700,19 @@ fn unquote(p: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn blob_pairs_need_full_ids() {
+        let a = "1".repeat(40);
+        let b = format!("{}{}", "abcdef0123456789", "0".repeat(24));
+        let id = blob_pair(&format!("{a}..{b} 100644")).unwrap();
+        assert_eq!(id >> 64, 0x1111_1111_1111_1111);
+        assert_eq!(id as u64, 0xabcd_ef01_2345_6789);
+        assert_eq!(blob_pair(&format!("{a}..{b}")), Some(id));
+        assert_ne!(blob_pair(&format!("{b}..{a}")), Some(id));
+        assert!(blob_pair("1234567..89abcde 100644").is_none());
+        assert!(blob_pair(&format!("{a}{b}")).is_none());
+    }
 
     #[test]
     fn hunk_header() {

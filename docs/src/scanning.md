@@ -45,6 +45,8 @@ kubera scan git . --branch main --since-commit 4b825dc --max-depth 500
 
 Kubera runs `git log -p` and scans only the **added** lines of each commit. It finds secrets that were committed and later deleted, and reports the commit, author, date, file and original line number.
 
+A file change that appears in several commits (cherry-picks, rebased or copied branches, the same vendored file added on several branches) is scanned once and reported once, at the **first commit that introduced it**. See [Repeated changes](incremental.md#repeated-changes).
+
 History is scanned in parallel: Kubera lists the commits, splits them into partitions and runs one `git log` per CPU (`-j N` to choose). Files larger than `--max-file-size` are not diffed at all, and `--exclude-path` globs are handed to git, so skipped paths cost nothing. Long scans can be made resumable with `--checkpoint FILE`. See [Large repositories](incremental.md#large-repositories).
 
 Remote repositories (HTTPS, SSH, `git@host:org/repo`, `github.com/org/repo`, ...) are cloned bare into a temporary directory that is removed afterwards. Private repositories, SSH and web links to findings are covered in [Remote repositories](remote.md).

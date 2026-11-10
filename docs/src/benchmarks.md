@@ -38,6 +38,19 @@ Kubera 0.2.0 splits the commits to scan into partitions and runs one `git log` p
 
 The speedup comes from using every CPU for git's own diff work, which dominates history scans. Excluded paths are handed to git as pathspecs, so it never diffs them.
 
+### Repeated changes
+
+History scans scan a file change that repeats in several commits (same old and new blob) only once and report it at its first commit (see [Repeated changes](incremental.md#repeated-changes)). Full history, no verification, 4 vCPUs, best of 5 interleaved runs:
+
+| Repository | Commits | Repeated file changes | Before | After | Findings |
+|---|---:|---:|---:|---:|---|
+| rust-lang/cargo | 24,445 | 3,943 of 63,179 (6%) | 3.71 s | 3.71 s | same 17 |
+| Synthetic: 1,500 real `.rs` files (22 MB) added on `main` and again on 8 copied branches | 13,509 | 89% | 1.38 s | **1.04 s** | none in either |
+| Synthetic: 2,000 small edits on `main` and again on 8 copied branches | 18,009 | 89% | 1.00 s | 0.93 s | 36 → 4 (same 4 secrets, each at its first commit) |
+| `scan repos` with cargo and a fork of it | 2 × 24,445 | 100% of the fork | 12.0 s | 11.8 s | same 2 × 17 |
+
+On cargo, only 235 of 16,548 non-merge commits consist of repeated changes alone, and git's own diff work (about 10 s of CPU out of 12.7 s for the whole scan) is not skipped, so the gain there is within noise. It pays off where Kubera's work dominates: large files repeated across branches or repositories. Skipping git's diff work for repeated commits would need an extra `git log --raw` pass over the whole history first, which costs more on cargo (about 1 s of CPU) than the 1.4% of commits it could skip.
+
 ### Decoding
 
 [Decoders](scanning.md#decoders) look at every byte of every file for base64 runs, percent-encoding and escapes. Measured in memory on one thread, so that disk and scheduling noise drop out, over `~/.cargo/registry/src` (31,795 files, 378 MB):

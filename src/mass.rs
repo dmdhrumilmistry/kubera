@@ -76,6 +76,10 @@ pub fn run(
 ) -> Vec<RepoResult> {
     let next = AtomicUsize::new(0);
     let results = Mutex::new(Vec::with_capacity(repos.len()));
+    // Forks and mirrors share history: a file change scanned in one
+    // repository is not scanned again in another (each still reports it).
+    let mut git = opts.git.clone();
+    git.shared.get_or_insert_with(Default::default);
     let workers = opts.concurrency.clamp(1, 64).min(repos.len().max(1));
     std::thread::scope(|s| {
         for _ in 0..workers {
@@ -87,7 +91,7 @@ pub fn run(
                     let is_remote = matches!(crate::sources::remote::parse(repo), Ok(Some(_)));
                     let target = Target::Git {
                         repo: repo.clone(),
-                        options: opts.git.clone(),
+                        options: git.clone(),
                         auth: opts.auth.clone(),
                         baseline: opts.baselines.get(&key).cloned(),
                         mirror: match (&opts.cache_dir, is_remote) {

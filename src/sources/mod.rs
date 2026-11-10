@@ -27,6 +27,11 @@ pub struct Chunk {
     /// Optional mapping from 0-based line index within `text` to the real
     /// line number (used for git diffs where only added lines are kept).
     pub line_map: Option<Vec<usize>>,
+    /// Identity of the scanned text when the source knows one: for git
+    /// diffs, the old and new blob ids (64-bit prefixes). Two chunks with
+    /// the same id hold the same text with the same line numbers, so
+    /// history scans scan it once (see [`crate::dedup`]).
+    pub content_id: Option<u128>,
 }
 
 /// Heuristic: treat data with a NUL byte in the first 8 KiB as binary.
@@ -66,6 +71,7 @@ pub fn text_chunk(
             ..Default::default()
         },
         line_map: None,
+        content_id: None,
     }
 }
 

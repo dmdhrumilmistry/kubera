@@ -508,6 +508,7 @@ pub(crate) fn object_chunks(
                             ..location.clone()
                         },
                         line_map: None,
+                        content_id: None,
                     });
                 }
             },
@@ -524,6 +525,7 @@ pub(crate) fn object_chunks(
         text: String::from_utf8_lossy(&data).into_owned(),
         location,
         line_map: None,
+        content_id: None,
     }]
 }
 

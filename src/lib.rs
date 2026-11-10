@@ -27,6 +27,7 @@ pub mod checkpoint;
 pub mod config;
 pub mod db;
 pub mod decode;
+pub mod dedup;
 pub mod detect;
 pub mod finding;
 pub mod forge;

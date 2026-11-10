@@ -611,6 +611,7 @@ pub fn walk_layer<R: Read>(
                                 ..location.clone()
                             },
                             line_map: None,
+                            content_id: None,
                         })
                     });
                 if let Err(err) = res {
@@ -631,6 +632,7 @@ pub fn walk_layer<R: Read>(
             text: String::from_utf8_lossy(&buf).into_owned(),
             location,
             line_map: None,
+            content_id: None,
         });
     }
     Ok(())
@@ -653,6 +655,7 @@ pub fn walk(img: &Image, max_file_size: u64, sink: &mut dyn FnMut(Chunk)) -> Res
                 ..Default::default()
             },
             line_map: None,
+            content_id: None,
         });
     }
     let mut in_archive: HashMap<&str, &str> = HashMap::new();

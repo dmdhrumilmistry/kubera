@@ -38,6 +38,7 @@ How Kubera is put together: the pipeline from sources to reports, the modules, a
 | `sources` | `fs` (walk, size and binary filters), `archive` (zip/tar/gzip, nested, bounded on decompressed bytes), `git` (hardened `git log -p` parser that maps added lines back to their line numbers, parallel partitions, staged diffs, bare clones), `remote` (URL forms, credential stripping, scoped token headers, forge web links), `image`, `dockerhub` (Hub API listing, then `image` pulls), `github` (issues, comments, Actions logs, wikis, gists), `gitlab` (issues, merge requests, notes, CI job logs, snippets, wikis), `bitbucket` (issues, pull requests, comments, Pipelines logs, snippets), `slack` (channel history, threads), `jira` (JQL search, ADF to text, comments, change history), `confluence` (spaces, storage format to text, comments, versions), `bucket` (S3 SigV4, GCS, Azure Blob Shared Key / SAS), `package` (npm, PyPI, crates.io downloads, digest-verified), `huggingface` (Hub listing, git history, optional LFS files), `kube` (kubeconfig, Secrets, ConfigMaps, workloads). |
 | `decode` | Finds base64, percent-encoded and escaped spans and maps decoded lines back to the original. |
 | `checkpoint` | Resumable history scans (finished commits and findings so far, `0600`). |
+| `dedup` | Repeated file changes in history (same old and new blob) are scanned once and reported at their first commit; results shared across `scan repos`. |
 | `baseline` | `.kubera-baseline.json`: adoption baseline and triage decisions, matched by fingerprint. |
 | `hook` | Installs and removes the git pre-commit hook. |
 | `notify` | Slack and signed webhook alerts. |
@@ -56,6 +57,7 @@ How Kubera is put together: the pipeline from sources to reports, the modules, a
 
 - Keyword prefiltering means most chunks are scanned once by a single automaton, and regexes run only for detectors whose keyword occurs.
 - Files are scanned in parallel with rayon. Git history is listed with `git rev-list`, split into partitions, and diffed by one `git log` per CPU (`-j`); each worker parses its process's output while git is still producing it. Large files and user excludes are skipped by git itself (`core.bigFileThreshold`, exclude pathspecs).
+- A file change repeated in several commits (cherry-picks, copied branches, forks in one `scan repos` run) is scanned once, keyed by the blob ids git prints with `--full-index`, and reported at its first commit in rev-list order, so output does not depend on worker timing.
 - Multi-part pairing is capped at 256 combinations per detector per chunk, which bounds the worst case on adversarial input.
 - Verification is de-duplicated by fingerprint and runs with `--concurrency` in-flight requests; with `--verify-cache`, fresh results of earlier runs are reused without a request.
 

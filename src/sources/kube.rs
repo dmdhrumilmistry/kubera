@@ -297,6 +297,7 @@ fn chunk(cluster: &str, path: String, text: String) -> Chunk {
             ..Default::default()
         },
         line_map: None,
+        content_id: None,
     }
 }
 

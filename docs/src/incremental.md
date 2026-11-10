@@ -27,6 +27,25 @@ Measured on [rust-lang/cargo](https://github.com/rust-lang/cargo) (24,445 commit
 
 See [Benchmarks](benchmarks.md#parallel-history-scanning) for the setup.
 
+### Repeated changes
+
+The same file change often appears in many commits: cherry-picks onto release branches, rebased or copied branches that are kept around, vendored code added on several branches. Git prints the old and new blob ids of every file diff, and with a fixed diff algorithm the added lines depend on those two blobs only. Kubera therefore scans each pair of blobs **once**:
+
+- A secret in a repeated change is reported **once**, at the **first commit that introduced it**: the oldest commit in `git rev-list` order, whichever worker met it first. Output stays deterministic and identical for any `-j`.
+- No secret is lost: the skipped chunks have exactly the text of the scanned one. A secret that is also added by a *different* change (another file, other neighbouring lines) is still reported there too.
+- [Checkpoints](#resumable-scans) remember the repeated changes that produced findings, so a resumed scan reports exactly what an uninterrupted one would.
+- In [`scan repos`](#mass-scanning), the scan results are shared between the repositories of a run (forks, mirrors and repositories that vendor the same code), while every repository still reports its own findings with its own commits, so per-repository state and baselines are unaffected.
+
+What it saves is Kubera's own work on the repeated text (detection and decoding); git still produces every diff, and on most repositories git is the larger cost. Measured on 4 vCPUs (see [Benchmarks](benchmarks.md#repeated-changes)):
+
+| Repository | Repeated file changes | Before | After |
+|---|---:|---:|---:|
+| rust-lang/cargo (24,445 commits) | 6% | 3.71 s | 3.71 s |
+| 9 copies of a branch adding 1,500 real source files (22 MB) | 89% | 1.38 s | **1.04 s** (-25%) |
+| 9 copies of a branch of 2,000 small edits | 89% | 1.00 s | 0.93 s |
+
+Nothing is stored between runs: [`--state`](#scan-only-what-changed) already keeps later runs from reading old commits at all.
+
 ### Skip junk early
 
 The cheapest diff is the one git never produces:
