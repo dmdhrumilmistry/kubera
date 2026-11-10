@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
+use aho_corasick::{AhoCorasick, AhoCorasickBuilder, AhoCorasickKind, MatchKind};
 use anyhow::{Context, Result};
 use regex::Regex;
 
@@ -239,9 +239,15 @@ impl Engine {
         }
         let mut words: Vec<(usize, String)> = kw_index.into_iter().map(|(k, i)| (i, k)).collect();
         words.sort();
+        // Always a DFA: with ~125 keywords, several of them short and
+        // common ("pat", "pk_", "://"), the default contiguous NFA walks
+        // every byte through transitions and the keyword pass ran 3x slower
+        // (1.47s vs 0.48s single-threaded over a 254 MB source tree). The
+        // DFA costs a few hundred KiB, built once per run.
         let keywords = AhoCorasickBuilder::new()
             .ascii_case_insensitive(true)
             .match_kind(MatchKind::Standard)
+            .kind(Some(AhoCorasickKind::DFA))
             .build(words.iter().map(|(_, w)| w))?;
         Ok(Self {
             detectors,
