@@ -1007,3 +1007,160 @@ async fn kubernetes_secrets_configmaps_and_workloads() {
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v.as_array().unwrap().len(), 2);
 }
+
+fn finding_for(t: &Template, p: BTreeMap<String, String>) -> kubera::finding::Finding {
+    kubera::finding::Finding::new(t, p, Default::default())
+}
+
+async fn verify_with_cache(
+    t: &Template,
+    findings: &mut [kubera::finding::Finding],
+    cache: &kubera::verify_cache::Cache,
+) {
+    let map = std::collections::HashMap::from([(t.id.clone(), std::sync::Arc::new(t.clone()))]);
+    verify::verify_findings(&http(), &map, findings, 4, Some(cache)).await;
+    cache.save().unwrap();
+}
+
+/// Rewrite every entry of a cache file as checked `hours` ago.
+fn age_cache(file: &std::path::Path, hours: u64) {
+    let mut data: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(file).unwrap()).unwrap();
+    let then = std::time::SystemTime::now() - std::time::Duration::from_secs(hours * 3600);
+    let secs = then
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    // RFC 3339 by hand (days from civil), so the test needs no date crate.
+    let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    let at = format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        rem / 3600,
+        rem % 3600 / 60,
+        rem % 60
+    );
+    for e in data["entries"].as_object_mut().unwrap().values_mut() {
+        e["checked_at"] = at.clone().into();
+    }
+    std::fs::write(file, data.to_string()).unwrap();
+}
+
+#[tokio::test]
+async fn verify_cache_skips_requests_until_entries_expire() {
+    use kubera::verify_cache::{Cache, Ttl};
+    let server = MockServer::start().await;
+    let t = tpl(&server);
+    Mock::given(path("/me"))
+        .and(header("authorization", "Bearer mk_ab12_Zq8Lw2Pm9Xa1"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"user": {"login": "alice"}})),
+        )
+        .mount(&server)
+        .await;
+    // Another token is rejected (invalid); anything else is a server error
+    // (unknown).
+    Mock::given(path("/me"))
+        .and(header("authorization", "Bearer mk_ab12_000000000000"))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&server)
+        .await;
+    Mock::given(path("/me"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+    let mut unknown = parts();
+    unknown.insert("token".into(), "mk_ab12_999999999999".into());
+    let mut invalid = parts();
+    invalid.insert("token".into(), "mk_ab12_000000000000".into());
+    let all = || {
+        vec![
+            finding_for(&t, parts()),
+            finding_for(&t, parts()), // same secret elsewhere: one request
+            finding_for(&t, invalid.clone()),
+            finding_for(&t, unknown.clone()),
+        ]
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("cache/verify.json");
+    let requests = || async { server.received_requests().await.unwrap().len() };
+    let cached = |f: &kubera::finding::Finding| f.verification.as_ref().unwrap().cached;
+
+    // Run 1: every distinct secret is sent once.
+    let mut f = all();
+    verify_with_cache(&t, &mut f, &Cache::open(&file, Ttl::default())).await;
+    assert_eq!(requests().await, 3);
+    let status: Vec<_> = f.iter().map(|f| f.status().unwrap()).collect();
+    assert_eq!(
+        status,
+        [
+            Status::Verified,
+            Status::Verified,
+            Status::Invalid,
+            Status::Unknown
+        ]
+    );
+    assert!(f.iter().all(|f| !cached(f)));
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.contains("alice"), "details are kept: {text}");
+    assert!(
+        !text.contains("Zq8Lw2Pm9Xa1"),
+        "secret in the cache: {text}"
+    );
+
+    // Run 2 (fresh cache object, same file): only the unknown result is
+    // asked again; cached results say so in JSON.
+    let mut f = all();
+    verify_with_cache(&t, &mut f, &Cache::open(&file, Ttl::default())).await;
+    assert_eq!(requests().await, 4);
+    let live = f[0].verification.as_ref().unwrap();
+    assert!(live.cached && live.checked_at.is_some());
+    assert_eq!(live.status, Status::Verified);
+    assert_eq!(live.details["Owner"], "alice");
+    assert!(cached(&f[1]) && cached(&f[2]) && !cached(&f[3]));
+    let json = serde_json::to_value(f[0].redact()).unwrap();
+    assert_eq!(json["verification"]["cached"], true);
+    let json = serde_json::to_value(f[3].redact()).unwrap();
+    assert!(json["verification"].get("cached").is_none());
+
+    // Two hours later: the live result (1h) expired, the invalid one (24h)
+    // is still reused.
+    age_cache(&file, 2);
+    let mut f = all();
+    verify_with_cache(&t, &mut f, &Cache::open(&file, Ttl::default())).await;
+    assert_eq!(requests().await, 6, "live and unknown verified again");
+    assert!(!cached(&f[0]) && cached(&f[2]));
+
+    // A day later the invalid one expires too.
+    age_cache(&file, 25);
+    let mut f = vec![finding_for(&t, invalid.clone())];
+    verify_with_cache(&t, &mut f, &Cache::open(&file, Ttl::default())).await;
+    assert_eq!(requests().await, 7);
+    assert!(!cached(&f[0]));
+
+    // A TTL of 0 turns reuse off; an explicit re-check (`fresh`) asks the
+    // platform even when a fresh result is cached.
+    let strict = Ttl {
+        invalid: std::time::Duration::ZERO,
+        ..Ttl::default()
+    };
+    let mut f = vec![finding_for(&t, invalid.clone())];
+    verify_with_cache(&t, &mut f, &Cache::open(&file, strict)).await;
+    assert_eq!(requests().await, 8);
+    let cache = Cache::open(&file, Ttl::default());
+    let v = verify::verify_cached(&http(), &t, &invalid, Some(&cache), false).await;
+    assert!(v.cached);
+    assert_eq!(requests().await, 8);
+    let v = verify::verify_cached(&http(), &t, &invalid, Some(&cache), true).await;
+    assert!(!v.cached && v.status == Status::Invalid);
+    assert_eq!(requests().await, 9);
+}

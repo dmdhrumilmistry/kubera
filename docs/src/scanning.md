@@ -156,6 +156,8 @@ Minified bundles (`*.min.js`) and source maps are deliberately **not** excluded:
 | `--no-decode` | Do not decode base64, URL-encoded or escaped text, see [Decoders](#decoders). |
 | `-j, --jobs <n>` | Parallel `git log` workers for history (default 0: one per CPU). |
 | `--concurrency <n>` | Parallel verification requests (default 8). |
+| `--verify-cache[=FILE]` | Reuse verification results of earlier runs, see [Verification cache](#verification-cache). |
+| `--verify-cache-ttl <TTL>` / `--no-verify-cache` | How long cached results are reused (`live=1h,invalid=24h,unknown=0`); turn the cache off. |
 | `--baseline <FILE>` / `--no-baseline` | Use another baseline file, or ignore it, see [Baselines and triage](triage.md). |
 | `--update-baseline` | Record every finding in the baseline file and exit 0. |
 | `--notify-env <VAR>` | Alert the webhook URL in this environment variable, see [Alerts](alerts.md). |
@@ -183,6 +185,31 @@ These global flags work with every command:
 | `unverifiable` | The detector has no verifier (for example private keys). |
 
 Identical secrets found in several places are verified **once**.
+
+### Verification cache
+
+Scheduled CI jobs and nightly [mass scans](incremental.md#mass-scanning) find the same secrets again and again, and `--verify` would send each one to its vendor every time. `--verify-cache` keeps the results between runs and reuses them while they are fresh:
+
+```bash
+kubera scan git . --verify --verify-cache                     # ~/.cache/kubera/verify.json
+kubera scan repos --github-org acme --token-env GH_TOKEN --verify --verify-cache=/ci/cache/verify.json
+kubera scan git . --verify --verify-cache-ttl live=15m,invalid=7d
+```
+
+| Status | Reused for (default) | Why |
+|---|---|---|
+| `verified` (live) | **1 hour** | Short, so a key revoked during incident response shows up as revoked on the next hourly run |
+| `invalid` | **24 hours** | A revoked, expired or fake credential practically never comes back to life |
+| `unknown` | **not cached** | Network errors and rate limits are usually gone by the next run |
+| `unverifiable` | not cached | No request is sent for these anyway |
+
+`--verify-cache-ttl` takes any subset of `live=`, `invalid=` and `unknown=` with durations such as `90s`, `15m`, `1h` or `7d`; a bare duration (`6h`) sets both `live` and `invalid`, and `0` turns caching off for that status. It implies `--verify-cache`. `--no-verify-cache` ignores a cache enabled in [`.kubera.yaml`](configuration.md#verification-cache).
+
+A reused result is always marked, so nobody mistakes it for a fresh check: JSON has `"cached": true` and `"checked_at"` (when the platform was asked) in `verification`, pretty output and the HTML report add a `cached` line (`result from 2026-11-10T09:12:44Z, no request sent`), SARIF says `(verification: verified, cached)`, and the summary counts them (`◆ kubera 3 finding(s)  ● 1 live · ✓ 2 invalid · 3 cached`). Kubera also prints how many results were reused and how many secrets were sent.
+
+Entries are keyed by [fingerprint](configuration.md#fingerprints) and by a hash of the template's verifier, so editing a template verifies its secrets again. The file holds the status, the message and the extracted details (account names, scopes), never a secret value; see [Security](security.md#handling-secrets). Several processes can share one file: each run merges its results with what is on disk, and entries older than 30 days are dropped.
+
+`kubera verify`, `analyze` and `rotate` always ask the platform. In the [TUI](tui.md#verifying-findings), <kbd>V</kbd> and `--verify` use the cache and <kbd>v</kbd> re-checks the selected finding.
 
 What to do with each status, from rotating a live secret to marking an invalid one: [After a scan: triage and response](workflow.md).
 

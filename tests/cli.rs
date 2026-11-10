@@ -795,3 +795,131 @@ fn html_report_is_self_contained_and_redacted() {
     assert!(!html.contains(&fake_github_token()));
     assert!(!html.contains("http://") && !html.contains("src=\"https://"));
 }
+
+#[tokio::test]
+async fn verify_cache_flag_and_config_reuse_results() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/me"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"user": {"login": "alice"}})),
+        )
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path().to_path_buf();
+    std::fs::write(
+        d.join("mock.yaml"),
+        format!(
+            r#"
+id: mock-cli
+name: Mock CLI Key
+detect:
+  keywords: [mkc_]
+  patterns:
+    - name: token
+      regex: '\b(mkc_[A-Za-z0-9]{{16}})\b'
+verify:
+  request:
+    url: {}/me
+    auth: {{ type: bearer, token: "{{{{ token }}}}" }}
+  valid: {{ status: [200] }}
+  extract:
+    - {{ name: owner, label: Owner, json: user.login }}
+"#,
+            server.uri()
+        ),
+    )
+    .unwrap();
+    let secret = format!("mkc_{}", "Zq8Lw2Pm9Xa1Bc3D");
+    let run = |extra: Vec<String>| {
+        let (d, secret) = (d.clone(), secret.clone());
+        tokio::task::spawn_blocking(move || {
+            let mut child = Command::new(env!("CARGO_BIN_EXE_kubera"))
+                .args(["--allow-http", "--no-builtin", "-t", "mock.yaml"])
+                .args(["scan", "stdin", "--verify"])
+                .args(extra)
+                .current_dir(&d)
+                .env("NO_COLOR", "1")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(format!("key = {secret}\n").as_bytes())
+                .unwrap();
+            child.wait_with_output().unwrap()
+        })
+    };
+    let requests = || async { server.received_requests().await.unwrap().len() };
+    let args = |a: &[&str]| -> Vec<String> {
+        a.iter()
+            .map(|s| s.to_string())
+            .chain(["-f".into(), "json".into()])
+            .collect()
+    };
+    let flag = args(&["--verify-cache=cache/v.json"]);
+
+    let out = run(flag.clone()).await.unwrap();
+    let v = json(&out);
+    assert_eq!(v[0]["verification"]["status"], "verified");
+    assert!(v[0]["verification"].get("cached").is_none());
+    assert_eq!(requests().await, 1);
+    let stored = std::fs::read_to_string(d.join("cache/v.json")).unwrap();
+    assert!(!stored.contains(&secret[4..]), "secret in the cache file");
+
+    // Second run: no request; the result says it is cached.
+    let out = run(flag.clone()).await.unwrap();
+    let v = json(&out);
+    assert_eq!(requests().await, 1);
+    assert_eq!(v[0]["verification"]["status"], "verified");
+    assert_eq!(v[0]["verification"]["cached"], true);
+    assert_eq!(v[0]["verification"]["details"]["Owner"], "alice");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("1 result(s) reused without a request"),
+        "{err}"
+    );
+    assert!(err.contains("1 cached"), "{err}");
+
+    // Pretty output marks it too.
+    let out = run(vec!["--verify-cache=cache/v.json".into()])
+        .await
+        .unwrap();
+    let pretty = String::from_utf8_lossy(&out.stdout);
+    assert!(pretty.contains("no request sent"), "{pretty}");
+
+    // The config file enables it as well (path relative to the file), and
+    // --no-verify-cache overrides it.
+    std::fs::write(
+        d.join(".kubera.yaml"),
+        "verify_cache:\n  path: cache/v.json\n  ttl: { live: 2h }\n",
+    )
+    .unwrap();
+    let out = run(args(&[])).await.unwrap();
+    assert_eq!(json(&out)[0]["verification"]["cached"], true);
+    assert_eq!(requests().await, 1);
+    let out = run(args(&["--no-verify-cache"])).await.unwrap();
+    assert!(json(&out)[0]["verification"].get("cached").is_none());
+    assert_eq!(requests().await, 2);
+    // A live TTL of 0 means: always ask.
+    let out = run(args(&["--verify-cache-ttl", "live=0"])).await.unwrap();
+    assert!(json(&out)[0]["verification"].get("cached").is_none());
+    assert_eq!(requests().await, 3);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(d.join("cache/v.json"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+}

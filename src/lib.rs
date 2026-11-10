@@ -50,3 +50,4 @@ pub mod template;
 pub mod tui;
 pub mod update;
 pub mod verify;
+pub mod verify_cache;

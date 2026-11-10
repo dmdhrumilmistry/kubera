@@ -29,6 +29,8 @@ pub struct Services {
     pub runtime: Option<tokio::runtime::Handle>,
     /// Where triage decisions are saved (`x` / `m`); `None` disables them.
     pub baseline: Option<PathBuf>,
+    /// Verification results reused across runs (`--verify-cache`).
+    pub verify_cache: Option<Arc<crate::verify_cache::Cache>>,
 }
 
 impl Services {
@@ -346,9 +348,11 @@ impl App {
         }
     }
 
+    /// Verify the selected finding. An explicit re-check: a cached result
+    /// is not reused (the new one is stored).
     pub fn verify_selected(&mut self) {
         if let Some(f) = self.current().cloned() {
-            self.verify_findings(vec![f]);
+            self.verify_findings(vec![f], true);
         }
     }
 
@@ -363,10 +367,10 @@ impl App {
             self.status = "everything is already verified".into();
             return;
         }
-        self.verify_findings(todo);
+        self.verify_findings(todo, false);
     }
 
-    fn verify_findings(&mut self, list: Vec<Finding>) {
+    fn verify_findings(&mut self, list: Vec<Finding>, fresh: bool) {
         let mut started = 0;
         let mut seen = HashSet::new();
         for f in list {
@@ -381,8 +385,9 @@ impl App {
             let fp = f.fingerprint.clone();
             let parts = f.secret.clone();
             if self.spawn(async move {
-                let out = verify::verify(&svc.http, &t, &parts).await;
-                let _ = tx.send(Msg::Verified(fp, out.verification));
+                let cache = svc.verify_cache.as_deref();
+                let v = verify::verify_cached(&svc.http, &t, &parts, cache, fresh).await;
+                let _ = tx.send(Msg::Verified(fp, v));
             }) {
                 self.verifying.insert(f.fingerprint.clone());
                 started += 1;
@@ -566,12 +571,27 @@ impl App {
                 }
                 if self.verifying.is_empty() {
                     let c = self.counts();
+                    let cached = self
+                        .findings
+                        .iter()
+                        .filter(|f| f.verification.as_ref().is_some_and(|v| v.cached))
+                        .count();
                     self.status = format!(
-                        "verification done: {} live, {} invalid, {} unknown",
+                        "verification done: {} live, {} invalid, {} unknown{}",
                         c.get("live").unwrap_or(&0),
                         c.get("invalid").unwrap_or(&0),
-                        c.get("unknown").unwrap_or(&0)
+                        c.get("unknown").unwrap_or(&0),
+                        if cached > 0 {
+                            format!(" ({cached} from the cache, no request sent)")
+                        } else {
+                            String::new()
+                        }
                     );
+                    if let Some(cache) = &self.svc.verify_cache
+                        && let Err(e) = cache.save()
+                    {
+                        self.status = format!("{}; {e:#}", self.status);
+                    }
                 }
                 self.recompute_visible();
             }

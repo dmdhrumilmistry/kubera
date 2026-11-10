@@ -107,6 +107,26 @@ pub struct Verification {
     /// Labelled values extracted from the verification response.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub details: BTreeMap<String, Value>,
+    /// Reused from the verification cache (`--verify-cache`): no request
+    /// was sent for it in this run.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub cached: bool,
+    /// Cached results: when the platform was asked (RFC 3339, UTC).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checked_at: Option<String>,
+}
+
+impl Verification {
+    /// A result just obtained from the platform.
+    pub fn new(status: Status, message: Option<String>, details: BTreeMap<String, Value>) -> Self {
+        Self {
+            status,
+            message,
+            details,
+            cached: false,
+            checked_at: None,
+        }
+    }
 }
 
 /// Serialized by `-f json`; read back by `remediate` and `purge`.

@@ -40,11 +40,21 @@ max_file_size: 5242880
 # Record every scan in the findings database (kubera serve): true for the
 # default file, or a path relative to this file. --no-db skips it once.
 db: true
+
+# Reuse verification results of earlier runs (--verify-cache):
+# `true` for the defaults, or a path (relative to this file) and TTLs.
+verify_cache:
+  path: .cache/kubera-verify.json
+  ttl: { live: 1h, invalid: 24h, unknown: 0 }
 ```
 
 Unknown keys are rejected, so typos fail loudly instead of being silently ignored.
 
 The full list of default excludes is in [Scanning](scanning.md#default-excludes). `--no-default-excludes` turns them off for one run.
+
+## Verification cache
+
+`verify_cache: true` turns on the [verification cache](scanning.md#verification-cache) for every `--verify` scan, the TUI and the MCP server, at the default location (`$XDG_CACHE_HOME/kubera/verify.json`, else `~/.cache/kubera/verify.json`; `%LOCALAPPDATA%\kubera\verify.json` on Windows). The long form sets the file and how long each status is reused; durations are `90s`, `15m`, `1h`, `7d` or a number of seconds, and `0` turns caching off for that status. `--verify-cache=FILE` and `--verify-cache-ttl` override these settings for one run, `--no-verify-cache` turns the cache off.
 
 ## Baseline file
 

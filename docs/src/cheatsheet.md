@@ -152,6 +152,13 @@ Browse the results in the TUI:
 kubera scan git . --verify -i
 ```
 
+Re-run a scan without re-verifying everything: live results are reused for an hour, invalid ones for a day, and marked `cached`:
+
+```bash
+kubera scan git . --verify --verify-cache
+kubera scan git . --verify --verify-cache-ttl live=15m,invalid=7d
+```
+
 Open the TUI home menu:
 
 ```bash

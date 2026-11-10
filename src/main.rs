@@ -167,6 +167,8 @@ enum Command {
         /// Verify findings as soon as the scan finishes.
         #[arg(long)]
         verify: bool,
+        #[command(flatten)]
+        cache: CacheArgs,
     },
     /// Run an MCP (Model Context Protocol) server on stdio so AI
     /// assistants can scan for secrets. Findings are redacted; secrets never
@@ -186,6 +188,8 @@ enum Command {
         /// Username sent with the git token.
         #[arg(long, value_name = "USER")]
         git_token_user: Option<String>,
+        #[command(flatten)]
+        cache: CacheArgs,
     },
     /// Act on a findings file (`kubera scan ... -f json > findings.json`):
     /// open one GitHub issue per leaked secret. Dry run unless --execute.
@@ -902,6 +906,8 @@ struct ScanArgs {
     /// Concurrent verification requests.
     #[arg(long, default_value_t = 8)]
     concurrency: usize,
+    #[command(flatten)]
+    cache: CacheArgs,
     /// Browse the results in the interactive TUI instead of printing them.
     #[arg(short = 'i', long)]
     interactive: bool,
@@ -914,6 +920,53 @@ struct ScanArgs {
     /// Do not record this scan, even if .kubera.yaml enables `db:`.
     #[arg(long, conflicts_with = "db")]
     no_db: bool,
+}
+
+/// Verification cache flags (scan, tui, mcp).
+#[derive(Args, Clone, Default)]
+struct CacheArgs {
+    /// Reuse verification results of earlier runs instead of asking the
+    /// platform again: live results for 1h, invalid ones for 24h, unknown
+    /// ones never (see --verify-cache-ttl). FILE defaults to
+    /// ~/.cache/kubera/verify.json ($XDG_CACHE_HOME, %LOCALAPPDATA%). It
+    /// holds fingerprints and verification details, no secrets (mode 0600).
+    #[arg(
+        long,
+        value_name = "FILE",
+        num_args = 0..=1,
+        require_equals = true,
+        conflicts_with = "no_verify_cache"
+    )]
+    verify_cache: Option<Option<PathBuf>>,
+    /// How long cached results are reused, per status:
+    /// live=1h,invalid=24h,unknown=0 (any subset; a bare duration such as
+    /// 6h sets live and invalid; 0 turns caching off for that status).
+    /// Implies --verify-cache.
+    #[arg(long, value_name = "TTL", conflicts_with = "no_verify_cache")]
+    verify_cache_ttl: Vec<String>,
+    /// Do not use the verification cache, even if the config file enables it.
+    #[arg(long)]
+    no_verify_cache: bool,
+}
+
+impl CacheArgs {
+    fn resolve(&self, cfg: &Config) -> Result<Option<kubera::verify_cache::Cache>> {
+        kubera::verify_cache::resolve(&kubera::verify_cache::Request {
+            config: cfg.verify_cache.as_ref(),
+            flag: self.verify_cache.clone(),
+            disabled: self.no_verify_cache,
+            ttl: self.verify_cache_ttl.clone(),
+        })
+    }
+}
+
+/// Write the cache, warning (not failing) when that is impossible.
+fn save_cache(cache: Option<&kubera::verify_cache::Cache>) {
+    if let Some(c) = cache
+        && let Err(e) = c.save()
+    {
+        eprintln!("warning: {e:#}");
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -1035,7 +1088,7 @@ fn context(g: &GlobalArgs) -> Result<Ctx> {
 async fn run(cli: Cli) -> Result<u8> {
     let Some(command) = cli.command else {
         if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
-            return cmd_tui(&cli.global, None, false, false);
+            return cmd_tui(&cli.global, None, false, false, &CacheArgs::default());
         }
         use clap::CommandFactory;
         Cli::command().print_help()?;
@@ -1047,7 +1100,8 @@ async fn run(cli: Cli) -> Result<u8> {
             target,
             git,
             verify,
-        } => cmd_tui(&cli.global, target, git, verify),
+            cache,
+        } => cmd_tui(&cli.global, target, git, verify, &cache),
         Command::Verify {
             detector,
             secret,
@@ -1318,8 +1372,10 @@ async fn run(cli: Cli) -> Result<u8> {
             root,
             git_token_env,
             git_token_user,
+            cache,
         } => {
             let ctx = context(&cli.global)?;
+            let verify_cache = cache.resolve(&ctx.cfg)?;
             let engine = Engine::new(ctx.templates.iter().map(|l| l.template.clone()).collect())?;
             let mut filter = Filter::new(&ctx.cfg.excludes(&[], false), &ctx.cfg.allowlist)?;
             filter.suppress(kubera::baseline::Baseline::resolve(None)?.fingerprints());
@@ -1348,6 +1404,7 @@ async fn run(cli: Cli) -> Result<u8> {
                         .max_file_size
                         .unwrap_or(sources::fs::DEFAULT_MAX_FILE_SIZE),
                     allow_http: cli.global.allow_http,
+                    verify_cache,
                 },
             );
             server.serve().await?;
@@ -1380,6 +1437,11 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
     let engine = Engine::new(ctx.templates.iter().map(|l| l.template.clone()).collect())?;
     let mut engine = engine;
     engine.decode = !opts.no_decode;
+    let verify_cache = opts.cache.resolve(&ctx.cfg)?;
+    let cache_flag = opts.cache.verify_cache.is_some() || !opts.cache.verify_cache_ttl.is_empty();
+    if cache_flag && !(opts.verify || opts.only_verified || opts.interactive) {
+        eprintln!("warning: --verify-cache has no effect without --verify");
+    }
     let excludes = ctx
         .cfg
         .excludes(&opts.exclude_paths, opts.no_default_excludes);
@@ -1707,7 +1769,37 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
             .iter()
             .map(|d| (d.template.id.clone(), d.template.clone()))
             .collect();
-        verify::verify_findings(&ctx.http, &map, &mut findings, opts.concurrency).await;
+        verify::verify_findings(
+            &ctx.http,
+            &map,
+            &mut findings,
+            opts.concurrency,
+            verify_cache.as_ref(),
+        )
+        .await;
+        if let Some(c) = &verify_cache {
+            save_cache(Some(c));
+            let mut reused = std::collections::BTreeSet::new();
+            let mut asked = std::collections::BTreeSet::new();
+            for f in &findings {
+                match &f.verification {
+                    Some(v) if v.cached => reused.insert(f.fingerprint.as_str()),
+                    Some(v) if v.status != Status::Unsupported => {
+                        asked.insert(f.fingerprint.as_str())
+                    }
+                    _ => false,
+                };
+            }
+            if !(reused.is_empty() && asked.is_empty()) {
+                eprintln!(
+                    "{} {} result(s) reused without a request, {} secret(s) verified ({})",
+                    ctx.style.dim("verify cache:"),
+                    reused.len(),
+                    asked.len(),
+                    c.path().display()
+                );
+            }
+        }
     }
 
     let mut kinds = opts.results.clone();
@@ -1858,7 +1950,7 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
             bail!("--interactive needs a terminal");
         }
-        let svc = services(ctx, engine, filter, max_size);
+        let svc = services(ctx, engine, filter, max_size, verify_cache);
         tokio::task::block_in_place(|| {
             kubera::tui::run(svc, kubera::tui::Start::Results(findings, label))
         })?;
@@ -3015,8 +3107,15 @@ fn resolve_secret<'a>(
     Ok((t, chosen.parts.clone()))
 }
 
-fn services(ctx: Ctx, engine: Engine, filter: Filter, max_file_size: u64) -> kubera::tui::Services {
+fn services(
+    ctx: Ctx,
+    engine: Engine,
+    filter: Filter,
+    max_file_size: u64,
+    verify_cache: Option<kubera::verify_cache::Cache>,
+) -> kubera::tui::Services {
     kubera::tui::Services {
+        verify_cache: verify_cache.map(Arc::new),
         engine,
         filter,
         templates: ctx.templates,
@@ -3027,11 +3126,18 @@ fn services(ctx: Ctx, engine: Engine, filter: Filter, max_file_size: u64) -> kub
     }
 }
 
-fn cmd_tui(g: &GlobalArgs, target: Option<String>, git: bool, verify: bool) -> Result<u8> {
+fn cmd_tui(
+    g: &GlobalArgs,
+    target: Option<String>,
+    git: bool,
+    verify: bool,
+    cache: &CacheArgs,
+) -> Result<u8> {
     if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
         bail!("the TUI needs an interactive terminal");
     }
     let ctx = context(g)?;
+    let verify_cache = cache.resolve(&ctx.cfg)?;
     let engine = Engine::new(ctx.templates.iter().map(|l| l.template.clone()).collect())?;
     let mut filter = Filter::new(&ctx.cfg.excludes(&[], false), &ctx.cfg.allowlist)?;
     filter.suppress(kubera::baseline::Baseline::resolve(None)?.fingerprints());
@@ -3055,7 +3161,7 @@ fn cmd_tui(g: &GlobalArgs, target: Option<String>, git: bool, verify: bool) -> R
             kubera::tui::Start::Scan(target, label)
         }
     };
-    let svc = services(ctx, engine, filter, max);
+    let svc = services(ctx, engine, filter, max, verify_cache);
     tokio::task::block_in_place(|| {
         if verify {
             kubera::tui::run_with(svc, start, true)

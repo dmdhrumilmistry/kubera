@@ -35,7 +35,7 @@ The list shows each finding's verification status (`●` live, `✓` invalid, `?
 
 ## Verifying findings
 
-Press <kbd>V</kbd> to verify every finding that has not been verified yet, or <kbd>v</kbd> for the selected one (also to retry an `unknown` result). The header counts live and invalid findings, and the status line sums up the result when the last answer is in:
+Press <kbd>V</kbd> to verify every finding that has not been verified yet, or <kbd>v</kbd> for the selected one (also to retry an `unknown` result). With the [verification cache](scanning.md#verification-cache) on (`kubera tui --verify-cache`, `scan ... -i --verify-cache` or `verify_cache:` in `.kubera.yaml`), <kbd>V</kbd> reuses recent results and marks them `cached` in the detail pane; <kbd>v</kbd> always asks the platform again. The header counts live and invalid findings, and the status line sums up the result when the last answer is in:
 
 <img class="kubera-shot" src="images/tui-verified.svg" alt="TUI after verification: live, invalid, unknown and not verifiable findings, and the status line verification done: 1 live, 3 invalid, 1 unknown">
 

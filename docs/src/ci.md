@@ -125,6 +125,8 @@ The same steps by hand, with any way of installing Kubera:
 
 `--verify` sends candidates to vendor APIs. In CI, consider `--only-verified` to cut noise, and remember that CI egress rules must allow the vendor hosts.
 
+Jobs that run often (every push, hourly schedules) keep finding the same secrets. Add `--verify-cache=.kubera-cache/verify.json` and keep that directory between runs (for example with `actions/cache`): results are reused for an hour when live and a day when invalid, so vendors see far fewer requests and rate limits stay out of the way. Reused results are marked `cached`. See [Verification cache](scanning.md#verification-cache).
+
 <div class="kubera-callout warning">
 <p class="kubera-callout-title">Never pass --show-secrets in CI</p>
 

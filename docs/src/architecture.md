@@ -45,6 +45,7 @@ How Kubera is put together: the pipeline from sources to reports, the modules, a
 | `config` | `.kubera.yaml`, path and allowlist `Filter`. |
 | `http` | Prepares template requests (rendering, body encoding, auth), sends them (https-only, no redirects, capped bodies), matchers, extractors, JSON paths, SigV4. |
 | `verify` | Single and batch verification with de-duplication; masks secrets in messages. |
+| `verify_cache` | Opt-in persistent cache of verification results keyed by fingerprint, with per-status TTLs (`0600`, never secrets). |
 | `steps` | Shared step runner and redacted request descriptions for dry runs. |
 | `analyze` / `rotate` | Flows built on `verify` + `steps`; rotation planning, gating and output preservation. |
 | `finding` / `report` / `report_html` | Data model, fingerprints, redaction and output formats, including the self-contained HTML report. |
@@ -56,7 +57,7 @@ How Kubera is put together: the pipeline from sources to reports, the modules, a
 - Keyword prefiltering means most chunks are scanned once by a single automaton, and regexes run only for detectors whose keyword occurs.
 - Files are scanned in parallel with rayon. Git history is listed with `git rev-list`, split into partitions, and diffed by one `git log` per CPU (`-j`); each worker parses its process's output while git is still producing it. Large files and user excludes are skipped by git itself (`core.bigFileThreshold`, exclude pathspecs).
 - Multi-part pairing is capped at 256 combinations per detector per chunk, which bounds the worst case on adversarial input.
-- Verification is de-duplicated by fingerprint and runs with `--concurrency` in-flight requests.
+- Verification is de-duplicated by fingerprint and runs with `--concurrency` in-flight requests; with `--verify-cache`, fresh results of earlier runs are reused without a request.
 
 ## Testing
 

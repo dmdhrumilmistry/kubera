@@ -542,6 +542,9 @@ fn overview(fd: &Finding, app: &App, theme: &Theme) -> Text<'static> {
             if let Some(m) = &v.message {
                 l.push(kv("message", m.clone(), theme));
             }
+            if v.cached {
+                l.push(kv("cached", crate::report::cached_note(v), theme));
+            }
             for (k, val) in &v.details {
                 l.push(kv(k, display_value(val), theme));
             }

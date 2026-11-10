@@ -10,6 +10,7 @@ use crate::finding::{Finding, Status, Verification};
 use crate::http::{self, Http};
 use crate::render::{self, Vars};
 use crate::template::Template;
+use crate::verify_cache::Cache as VerifyCache;
 
 /// Variables available to requests for a given secret.
 pub fn secret_vars(parts: &BTreeMap<String, String>) -> Vars {
@@ -29,11 +30,11 @@ pub async fn verify(http: &Http, t: &Template, parts: &BTreeMap<String, String>)
     let mut vars = secret_vars(parts);
     let Some(v) = &t.verify else {
         return Outcome {
-            verification: Verification {
-                status: Status::Unsupported,
-                message: Some("template has no verifier".into()),
-                details: BTreeMap::new(),
-            },
+            verification: Verification::new(
+                Status::Unsupported,
+                Some("template has no verifier".into()),
+                BTreeMap::new(),
+            ),
             vars,
         };
     };
@@ -113,11 +114,7 @@ pub async fn verify(http: &Http, t: &Template, parts: &BTreeMap<String, String>)
         }
     }
     Outcome {
-        verification: Verification {
-            status,
-            message: message.map(|m| mask_secrets(&m, parts)),
-            details,
-        },
+        verification: Verification::new(status, message.map(|m| mask_secrets(&m, parts)), details),
         vars,
     }
 }
@@ -131,15 +128,43 @@ pub fn mask_secrets(msg: &str, parts: &BTreeMap<String, String>) -> String {
     out
 }
 
+/// Verify one secret through the cache: a fresh cached result is returned
+/// as is (marked [`Verification::cached`], nothing is sent); otherwise the
+/// platform is asked and the result stored. `fresh` skips the lookup (an
+/// explicit re-check) but still stores the new result.
+pub async fn verify_cached(
+    http: &Http,
+    t: &Template,
+    parts: &BTreeMap<String, String>,
+    cache: Option<&VerifyCache>,
+    fresh: bool,
+) -> Verification {
+    let fingerprint = crate::finding::fingerprint(&t.id, parts);
+    if let Some(c) = cache
+        && !fresh
+        && let Some(v) = c.get(&fingerprint, t)
+    {
+        return v;
+    }
+    let v = verify(http, t, parts).await.verification;
+    if let Some(c) = cache {
+        c.put(&fingerprint, t, &v);
+    }
+    v
+}
+
 /// Verify a batch of findings concurrently. Identical secrets are verified
-/// once (keyed by fingerprint) to avoid hammering vendor APIs.
+/// once (keyed by fingerprint) to avoid hammering vendor APIs, and with a
+/// `cache` results of earlier runs are reused while fresh (the caller saves
+/// it).
 pub async fn verify_findings(
     http: &Http,
     templates: &HashMap<String, Arc<Template>>,
     findings: &mut [Finding],
     concurrency: usize,
+    cache: Option<&VerifyCache>,
 ) {
-    let cache: Mutex<HashMap<String, Verification>> = Mutex::new(HashMap::new());
+    let results: Mutex<HashMap<String, Verification>> = Mutex::new(HashMap::new());
     let mut unique: BTreeMap<String, (String, BTreeMap<String, String>)> = BTreeMap::new();
     for f in findings.iter() {
         unique
@@ -148,18 +173,18 @@ pub async fn verify_findings(
     }
     futures::stream::iter(unique)
         .map(|(fp, (det, parts))| {
-            let cache = &cache;
+            let results = &results;
             async move {
                 let Some(t) = templates.get(&det) else { return };
-                let out = verify(http, t, &parts).await;
-                cache.lock().await.insert(fp, out.verification);
+                let v = verify_cached(http, t, &parts, cache, false).await;
+                results.lock().await.insert(fp, v);
             }
         })
         .buffer_unordered(concurrency.max(1))
         .collect::<Vec<()>>()
         .await;
-    let cache = cache.into_inner();
+    let results = results.into_inner();
     for f in findings.iter_mut() {
-        f.verification = cache.get(&f.fingerprint).cloned();
+        f.verification = results.get(&f.fingerprint).cloned();
     }
 }

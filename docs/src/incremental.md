@@ -110,6 +110,8 @@ Forks and archived repositories are skipped unless `--include-forks` / `--includ
 1. **First run:** every repository is cloned once (bare) into `--cache-dir`.
 2. **Later runs:** each mirror is updated with `git fetch --prune`, which downloads only new objects. With `--state`, only never-scanned commits are read.
 
+3. **Verification:** with `--verify --verify-cache`, secrets found again (a leak that is still in history, the same key in several repositories) are not sent to their vendor again while the last result is fresh: 1 hour for live ones, 24 hours for invalid ones. See [Verification cache](scanning.md#verification-cache).
+
 Network, disk I/O and CPU scale with **what changed** since the last passing scan, not with the size of the organization. Repositories are processed `--repo-concurrency` at a time, and each one's history is scanned in [parallel](#parallel-history) with its share of the CPUs. A failure in one repository is reported and doesn't stop the others.
 
 ### Rate limiting
@@ -134,7 +136,7 @@ A nightly job that only reports new leaks (add `--notify-env` to get a Slack mes
     path: ~/.cache/kubera
     key: kubera-${{ github.run_id }}
     restore-keys: kubera-
-- run: kubera scan repos --github-org acme --token-env GH_TOKEN --cache-dir ~/.cache/kubera --state ~/.cache/kubera/state.json --fail
+- run: kubera scan repos --github-org acme --token-env GH_TOKEN --cache-dir ~/.cache/kubera --state ~/.cache/kubera/state.json --verify --verify-cache=$HOME/.cache/kubera/verify.json --fail
   env:
     GH_TOKEN: ${{ secrets.ORG_READ_TOKEN }}
 ```
