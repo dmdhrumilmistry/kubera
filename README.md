@@ -44,7 +44,7 @@
 |  |  |
 |---|---|
 | 🔍 **Detect** | Files, full git history (local, HTTPS, SSH or `github.com/org/repo`), **container images** and stdin, including secrets committed and later deleted, or deleted in a later image layer. Opens **archives** (jar, zip, whl, tar.gz, nested) and **decodes** base64, URL-encoded and escaped values. 89 detectors. |
-| 🌐 **Beyond code** | **GitHub** issues, PRs, review comments, **Actions logs**, wikis and gists; **GitLab** issues, MRs, comments, CI job logs, snippets and wikis; **Bitbucket** issues, PRs, comments and Pipelines logs; **Slack** channels and threads; **S3 / GCS buckets** (and MinIO, R2); **live Kubernetes** Secrets, ConfigMaps and workload env. [GitHub →](https://dmdhrumilmistry.github.io/kubera/github.html) · [GitLab →](https://dmdhrumilmistry.github.io/kubera/gitlab.html) · [Bitbucket →](https://dmdhrumilmistry.github.io/kubera/bitbucket.html) · [Slack →](https://dmdhrumilmistry.github.io/kubera/slack.html) · [Buckets →](https://dmdhrumilmistry.github.io/kubera/buckets.html) · [Kubernetes →](https://dmdhrumilmistry.github.io/kubera/kubernetes.html) |
+| 🌐 **Beyond code** | **GitHub** issues, PRs, review comments, **Actions logs**, wikis and gists; **GitLab** issues, MRs, comments, CI job logs, snippets and wikis; **Bitbucket** issues, PRs, comments and Pipelines logs; **Slack** channels and threads; **Jira** issues, comments and history; **S3 / GCS buckets** (and MinIO, R2); **live Kubernetes** Secrets, ConfigMaps and workload env. [GitHub →](https://dmdhrumilmistry.github.io/kubera/github.html) · [GitLab →](https://dmdhrumilmistry.github.io/kubera/gitlab.html) · [Bitbucket →](https://dmdhrumilmistry.github.io/kubera/bitbucket.html) · [Slack →](https://dmdhrumilmistry.github.io/kubera/slack.html) · [Jira →](https://dmdhrumilmistry.github.io/kubera/jira.html) · [Buckets →](https://dmdhrumilmistry.github.io/kubera/buckets.html) · [Kubernetes →](https://dmdhrumilmistry.github.io/kubera/kubernetes.html) |
 | 🏢 **At scale** | Scan whole **GitHub / GitLab / Bitbucket orgs** with rate-limit handling and cached mirrors; **incremental** runs only read commits added since the last passing scan (47× faster re-scans); **resumable** long scans with `--checkpoint`. |
 | ✅ **Verify** | Asks each platform whether the secret is live, concurrently and de-duplicated. |
 | 🧭 **Analyze** | Owner, scopes, reachable resources and permission probes. |
@@ -95,6 +95,7 @@ kubera scan github --org acme --token-env GH_TOKEN   # issues, PRs, Actions logs
 kubera scan gitlab --group acme --token-env GL_TOKEN # issues, MRs, CI job logs, snippets
 kubera scan bitbucket --workspace acme --token-env BB_TOKEN  # issues, PRs, Pipelines logs
 kubera scan slack --since 2026-01-01 --token-env SLACK_TOKEN # channel messages and threads
+kubera scan jira --site acme.atlassian.net --email-env JIRA_EMAIL --token-env JIRA_TOKEN
 kubera scan bucket s3://acme-backups --verify        # S3 / GCS, archives opened
 kubera scan k8s --verify                             # live cluster: Secrets, ConfigMaps, env
 kubera hook install                                  # block commits that add secrets

@@ -599,6 +599,38 @@ enum ScanSource {
         #[command(flatten)]
         opts: ScanArgs,
     },
+    /// Scan Jira Cloud: issue summaries, descriptions, environments,
+    /// comments and earlier values from the change history.
+    Jira {
+        /// The site, e.g. https://acme.atlassian.net.
+        #[arg(long, value_name = "URL")]
+        site: String,
+        /// JQL selecting the issues [default: every issue, newest first].
+        #[arg(long, value_name = "QUERY", conflicts_with = "project")]
+        jql: Option<String>,
+        /// Only these projects (repeatable).
+        #[arg(long, value_name = "KEY")]
+        project: Vec<String>,
+        /// Environment variable with the Atlassian account email (basic
+        /// auth with --token-env).
+        #[arg(long, value_name = "ENV_VAR", requires = "token_env")]
+        email_env: Option<String>,
+        /// Environment variable with an API token (with --email-env), or a
+        /// bearer token without it. Omit both for public sites.
+        #[arg(long, value_name = "ENV_VAR")]
+        token_env: Option<String>,
+        /// Issues read (in JQL order).
+        #[arg(long, default_value_t = 10_000, value_name = "N")]
+        max_issues: usize,
+        /// Skip the change history (earlier summaries and descriptions).
+        #[arg(long)]
+        no_history: bool,
+        /// Longest rate-limit wait (seconds) before giving up.
+        #[arg(long, default_value_t = 900, value_name = "SECS")]
+        max_rate_wait: u64,
+        #[command(flatten)]
+        opts: ScanArgs,
+    },
     /// Scan a cloud storage bucket: s3://bucket[/prefix] (also MinIO, R2
     /// and other S3-compatible stores with --endpoint-url) or
     /// gs://bucket[/prefix]. Archives inside are opened too.
@@ -1194,6 +1226,7 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         | ScanSource::Gitlab { opts, .. }
         | ScanSource::Bitbucket { opts, .. }
         | ScanSource::Slack { opts, .. }
+        | ScanSource::Jira { opts, .. }
         | ScanSource::Bucket { opts, .. }
         | ScanSource::K8s { opts, .. }
         | ScanSource::Stdin { opts } => opts,
@@ -1319,9 +1352,10 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
             scan::Target::Text(String::new())
         }
         // API sources, scanned by `cmd_scan_api`.
-        ScanSource::Gitlab { .. } | ScanSource::Bitbucket { .. } | ScanSource::Slack { .. } => {
-            scan::Target::Text(String::new())
-        }
+        ScanSource::Gitlab { .. }
+        | ScanSource::Bitbucket { .. }
+        | ScanSource::Slack { .. }
+        | ScanSource::Jira { .. } => scan::Target::Text(String::new()),
         ScanSource::Image {
             image,
             platform,
@@ -1589,6 +1623,7 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
                 .join(", ")
         ),
         ScanSource::Slack { .. } => "Slack".into(),
+        ScanSource::Jira { site, .. } => format!("Jira {site}"),
         ScanSource::Image { image, .. } => image.clone(),
         ScanSource::Bucket { url, .. } => url.clone(),
         ScanSource::K8s { context, .. } => {
@@ -2030,6 +2065,54 @@ async fn cmd_scan_api(
                 max_messages: *max_messages,
             };
             let collected = slack::collect(&client, &o, &progress).await?;
+            for w in &collected.warnings {
+                eprintln!("warning: {w}");
+            }
+            scan::scan_chunks(engine, filter, &collected.chunks)
+        }
+        ScanSource::Jira {
+            site,
+            jql,
+            project,
+            email_env,
+            token_env,
+            max_issues,
+            no_history,
+            max_rate_wait,
+            ..
+        } => {
+            use kubera::sources::jira;
+            let site = jira::site_base(site, g.allow_http)?;
+            let email = env_secret(email_env.as_ref(), "--email-env")?;
+            let token = env_secret(token_env.as_ref(), "--token-env")?;
+            if email.is_some() && token.is_none() {
+                bail!("--email-env needs --token-env (the API token)");
+            }
+            let mut client = kubera::forge::Client::new(
+                token,
+                email,
+                std::time::Duration::from_secs(*max_rate_wait),
+            )?;
+            client.allow_http = g.allow_http;
+            let jql = match (jql, project.is_empty()) {
+                (Some(q), _) => q.clone(),
+                (None, true) => jira::DEFAULT_JQL.to_string(),
+                (None, false) => format!(
+                    "project in ({}) ORDER BY created DESC",
+                    project
+                        .iter()
+                        .map(|p| format!("\"{}\"", p.replace(['"', '\\'], "")))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            };
+            let o = jira::Options {
+                site,
+                jql,
+                max_issues: *max_issues,
+                history: !no_history,
+            };
+            let collected = jira::collect(&client, &o, &progress).await?;
             for w in &collected.warnings {
                 eprintln!("warning: {w}");
             }

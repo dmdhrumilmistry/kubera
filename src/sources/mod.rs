@@ -8,6 +8,7 @@ pub mod git;
 pub mod github;
 pub mod gitlab;
 pub mod image;
+pub mod jira;
 pub mod kube;
 pub mod remote;
 pub mod slack;

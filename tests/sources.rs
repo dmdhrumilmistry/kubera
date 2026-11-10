@@ -449,3 +449,110 @@ async fn slack_history_threads_and_rate_limits() {
     );
     assert_eq!(reply["location"]["repository"], "slack:Acme");
 }
+
+fn adf(text: &str) -> serde_json::Value {
+    serde_json::json!({"type": "doc", "version": 1, "content": [
+        {"type": "paragraph", "content": [{"type": "text", "text": "see below"}]},
+        {"type": "codeBlock", "content": [{"type": "text", "text": text}]}
+    ]})
+}
+
+#[tokio::test]
+async fn jira_issues_comments_and_history() {
+    use base64::Engine as _;
+    let [t1, t2, t3, t4, t5] = fake_tokens();
+    let server = MockServer::start().await;
+    let basic = format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode("dana@acme.example:jira-token")
+    );
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/search/jql"))
+        .and(header("authorization", basic.as_str()))
+        .and(query_param(
+            "jql",
+            r#"project in ("ACME") ORDER BY created DESC"#,
+        ))
+        .and(query_param_is_missing("nextPageToken"))
+        .respond_with(json(serde_json::json!({
+            "issues": [{"key": "ACME-1", "fields": {
+                "summary": "Deploy broken",
+                "description": adf(&format!("export TOKEN={t1}")),
+                "comment": {"total": 2, "comments": [{"id": "10001", "body": adf(&t2)}]}
+            }, "changelog": {"total": 1, "histories": [
+                {"id": "500", "items": [
+                    {"field": "description", "fromString": format!("old: {t3}")},
+                    {"field": "status", "fromString": "Open"}
+                ]}
+            ]}}],
+            "nextPageToken": "p2"
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/search/jql"))
+        .and(query_param("nextPageToken", "p2"))
+        .respond_with(json(serde_json::json!({
+            "issues": [{"key": "ACME-2", "fields": {
+                "summary": format!("leaked {t4}"), "description": null,
+                "comment": {"total": 0, "comments": []}
+            }}],
+            "isLast": true
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/rest/api/3/issue/ACME-1/comment"))
+        .and(query_param("startAt", "1"))
+        .respond_with(json(serde_json::json!({
+            "comments": [{"id": "10002", "body": adf(&t5)}]
+        })))
+        .mount(&server)
+        .await;
+
+    let site = server.uri();
+    let found = run(
+        &[
+            "scan",
+            "jira",
+            "--site",
+            &site,
+            "--project",
+            "ACME",
+            "--email-env",
+            "JIRA_EMAIL",
+            "--token-env",
+            "JIRA_TOKEN",
+        ],
+        &[
+            ("JIRA_EMAIL", "dana@acme.example"),
+            ("JIRA_TOKEN", "jira-token"),
+        ],
+    )
+    .await;
+    assert_eq!(
+        paths(&found, "jira"),
+        vec![
+            "ACME-1",
+            "ACME-1/comment/10001",
+            "ACME-1/comment/10002",
+            "ACME-1/history/500",
+            "ACME-2"
+        ]
+    );
+    let c = found
+        .iter()
+        .find(|f| f["location"]["path"] == "ACME-1/comment/10002")
+        .unwrap();
+    assert_eq!(
+        c["location"]["link"].as_str(),
+        None,
+        "http links are dropped; https ones are kept"
+    );
+    let issue = found
+        .iter()
+        .find(|f| f["location"]["path"] == "ACME-1")
+        .unwrap();
+    // summary, "see below", then the code block.
+    assert_eq!(issue["location"]["line"], 3);
+}

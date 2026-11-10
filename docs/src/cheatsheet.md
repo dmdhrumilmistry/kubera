@@ -84,6 +84,12 @@ Slack channels and threads since the start of the year (bot or user token):
 kubera scan slack --since 2026-01-01 --token-env SLACK_TOKEN
 ```
 
+Jira issues, comments and their edit history (Atlassian email and API token):
+
+```bash
+kubera scan jira --site https://acme.atlassian.net --email-env JIRA_EMAIL --token-env JIRA_TOKEN
+```
+
 An S3 bucket (credentials from `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`):
 
 ```bash

@@ -28,6 +28,7 @@
 - [GitLab issues, MRs and CI logs](gitlab.md)
 - [Bitbucket issues, PRs and Pipelines](bitbucket.md)
 - [Slack messages](slack.md)
+- [Jira and Confluence](jira.md)
 - [Cloud storage buckets](buckets.md)
 - [Kubernetes clusters](kubernetes.md)
 

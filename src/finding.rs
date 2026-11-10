@@ -30,6 +30,8 @@ pub enum SourceKind {
     Bitbucket,
     /// Slack messages and thread replies.
     Slack,
+    /// Jira issues, comments and change history.
+    Jira,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
