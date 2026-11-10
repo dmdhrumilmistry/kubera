@@ -24,6 +24,10 @@ detect_target() {
     case "$arch" in
         x86_64 | amd64) arch=x86_64 ;;
         aarch64 | arm64) arch=aarch64 ;;
+        i386 | i486 | i586 | i686) arch=i686 ;;
+        armv7l | armv8l) arch=armv7 ;;
+        armv6l) arch=armv6 ;;
+        riscv64) arch=riscv64 ;;
         *) arch=unsupported ;;
     esac
     if [ "$os" = "Linux" ] && { [ "$(uname -o 2>/dev/null)" = "Android" ] || [ -n "${TERMUX_VERSION:-}" ]; }; then
@@ -32,9 +36,16 @@ detect_target() {
     case "$os/$arch" in
         Linux/x86_64) echo x86_64-unknown-linux-musl ;;
         Linux/aarch64) echo aarch64-unknown-linux-musl ;;
+        Linux/i686) echo i686-unknown-linux-musl ;;
+        Linux/armv7) echo armv7-unknown-linux-musleabihf ;;
+        Linux/armv6) echo arm-unknown-linux-musleabihf ;;
+        Linux/riscv64) echo riscv64gc-unknown-linux-gnu ;;
         Android/aarch64) echo aarch64-linux-android ;;
+        Android/armv7) echo armv7-linux-androideabi ;;
+        Android/x86_64) echo x86_64-linux-android ;;
         Darwin/x86_64) echo x86_64-apple-darwin ;;
         Darwin/aarch64) echo aarch64-apple-darwin ;;
+        FreeBSD/x86_64) echo x86_64-unknown-freebsd ;;
         *) echo "" ;;
     esac
 }
@@ -78,7 +89,7 @@ main() {
 
     if [ -n "${KUBERA_INSTALL_DIR:-}" ]; then
         dir="$KUBERA_INSTALL_DIR"
-    elif [ "$target" = "aarch64-linux-android" ] && [ -n "${PREFIX:-}" ]; then
+    elif [ "${target%-linux-android*}" != "$target" ] && [ -n "${PREFIX:-}" ]; then
         dir="$PREFIX/bin"
     else
         dir="$HOME/.local/bin"
