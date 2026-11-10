@@ -32,6 +32,8 @@ pub enum SourceKind {
     Slack,
     /// Jira issues, comments and change history.
     Jira,
+    /// Confluence pages, blog posts and comments.
+    Confluence,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

@@ -90,6 +90,12 @@ Jira issues, comments and their edit history (Atlassian email and API token):
 kubera scan jira --site https://acme.atlassian.net --email-env JIRA_EMAIL --token-env JIRA_TOKEN
 ```
 
+Confluence pages, blog posts, comments and the last 10 versions of each page:
+
+```bash
+kubera scan confluence --site https://acme.atlassian.net --max-versions 10 --email-env JIRA_EMAIL --token-env JIRA_TOKEN
+```
+
 An S3 bucket (credentials from `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`):
 
 ```bash

@@ -357,8 +357,9 @@ impl Client {
 
     /// Every item of a paginated list endpoint, up to `max` items. A page is
     /// a JSON array or an object wrapping one (`{"values": [...]}`); the next
-    /// page comes from `Link: rel="next"` or a `next` URL in the body
-    /// (Bitbucket, Docker Hub), and is only followed on the same origin.
+    /// page comes from `Link: rel="next"` or a `next` / `_links.next` URL in
+    /// the body (Bitbucket, Docker Hub, Confluence; absolute or relative),
+    /// and is only followed on the same origin.
     pub async fn paginate(&self, kind: Kind, url: &str, max: usize) -> Result<Vec<Value>> {
         let base = reqwest::Url::parse(url).context("invalid API url")?;
         let mut next = Some(base.clone());
@@ -391,6 +392,7 @@ impl Client {
             }
             let candidate = link_next(&headers).or_else(|| {
                 json.get("next")
+                    .or_else(|| json.pointer("/_links/next"))
                     .and_then(Value::as_str)
                     .filter(|n| !n.is_empty())
                     .map(str::to_string)

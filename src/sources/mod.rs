@@ -3,6 +3,7 @@
 pub mod archive;
 pub mod bitbucket;
 pub mod bucket;
+pub mod confluence;
 pub mod fs;
 pub mod git;
 pub mod github;

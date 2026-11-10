@@ -556,3 +556,104 @@ async fn jira_issues_comments_and_history() {
     // summary, "see below", then the code block.
     assert_eq!(issue["location"]["line"], 3);
 }
+
+#[tokio::test]
+async fn confluence_pages_comments_and_versions() {
+    use wiremock::matchers::path_regex;
+    let [t1, t2, t3, t4, t5] = fake_tokens();
+    let server = MockServer::start().await;
+    let storage = |html: String| serde_json::json!({"storage": {"value": html}});
+    let api = "/wiki/api/v2";
+    Mock::given(method("GET"))
+        .and(path(format!("{api}/spaces")))
+        .and(query_param("keys", "OPS"))
+        .and(header("authorization", "Bearer conf-token"))
+        .respond_with(json(
+            serde_json::json!({"results": [{"id": "100", "key": "OPS"}]}),
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("{api}/spaces/100/pages")))
+        .and(query_param_is_missing("cursor"))
+        .respond_with(json(serde_json::json!({
+            "results": [{"id": "1", "title": "Runbook", "version": {"number": 2},
+                "_links": {"webui": "/spaces/OPS/pages/1/Runbook"},
+                "body": storage(format!(
+                    "<p>Deploy:</p><ac:structured-macro ac:name=\"code\"><ac:plain-text-body><![CDATA[TOKEN={t1}]]></ac:plain-text-body></ac:structured-macro>"
+                ))}],
+            "_links": {"next": format!("{api}/spaces/100/pages?cursor=abc&body-format=storage")}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("{api}/spaces/100/pages")))
+        .and(query_param("cursor", "abc"))
+        .respond_with(json(serde_json::json!({"results": [
+            {"id": "2", "title": "Old", "version": {"number": 1},
+             "body": storage(format!("<p>key&nbsp;{t4}</p>"))}
+        ]})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("{api}/spaces/100/blogposts")))
+        .respond_with(json(serde_json::json!({"results": [
+            {"id": "9", "title": "News", "body": storage(format!("<p>{t5}</p>"))}
+        ]})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("{api}/pages/1/footer-comments")))
+        .respond_with(json(serde_json::json!({"results": [
+            {"id": "50", "body": storage(format!("<p>try <code>{t2}</code></p>"))}
+        ]})))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex("-comments$"))
+        .respond_with(json(serde_json::json!({"results": []})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("{api}/pages/1")))
+        .and(query_param("version", "1"))
+        .respond_with(json(serde_json::json!({
+            "id": "1", "title": "Runbook", "body": storage(format!("<p>first draft {t3}</p>"))
+        })))
+        .mount(&server)
+        .await;
+
+    let site = server.uri();
+    let found = run(
+        &[
+            "scan",
+            "confluence",
+            "--site",
+            &site,
+            "--space",
+            "OPS",
+            "--max-versions",
+            "5",
+            "--token-env",
+            "CONF",
+        ],
+        &[("CONF", "conf-token")],
+    )
+    .await;
+    assert_eq!(
+        paths(&found, "confluence"),
+        vec![
+            "OPS/blogposts/9",
+            "OPS/pages/1",
+            "OPS/pages/1/comments/50",
+            "OPS/pages/1/versions/1",
+            "OPS/pages/2"
+        ]
+    );
+    let page = found
+        .iter()
+        .find(|f| f["location"]["path"] == "OPS/pages/1")
+        .unwrap();
+    assert_eq!(page["location"]["line"], 3);
+}

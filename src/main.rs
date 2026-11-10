@@ -631,6 +631,39 @@ enum ScanSource {
         #[command(flatten)]
         opts: ScanArgs,
     },
+    /// Scan Confluence Cloud: page and blog post bodies, their comments,
+    /// and optionally earlier page versions.
+    Confluence {
+        /// The site, e.g. https://acme.atlassian.net.
+        #[arg(long, value_name = "URL")]
+        site: String,
+        /// Only these space keys (repeatable) [default: every space].
+        #[arg(long, value_name = "KEY")]
+        space: Vec<String>,
+        /// What to scan (comma separated) [default: all].
+        #[arg(long, value_enum, value_delimiter = ',')]
+        what: Vec<kubera::sources::confluence::What>,
+        /// Environment variable with the Atlassian account email (basic
+        /// auth with --token-env).
+        #[arg(long, value_name = "ENV_VAR", requires = "token_env")]
+        email_env: Option<String>,
+        /// Environment variable with an API token (with --email-env), or a
+        /// bearer token without it. Omit both for public sites.
+        #[arg(long, value_name = "ENV_VAR")]
+        token_env: Option<String>,
+        /// Pages (and blog posts) read per space.
+        #[arg(long, default_value_t = 10_000, value_name = "N")]
+        max_pages: usize,
+        /// Earlier versions read per page, newest first (secrets edited
+        /// out stay in the history). One request per version.
+        #[arg(long, default_value_t = 0, value_name = "N")]
+        max_versions: usize,
+        /// Longest rate-limit wait (seconds) before giving up.
+        #[arg(long, default_value_t = 900, value_name = "SECS")]
+        max_rate_wait: u64,
+        #[command(flatten)]
+        opts: ScanArgs,
+    },
     /// Scan a cloud storage bucket: s3://bucket[/prefix] (also MinIO, R2
     /// and other S3-compatible stores with --endpoint-url) or
     /// gs://bucket[/prefix]. Archives inside are opened too.
@@ -1227,6 +1260,7 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         | ScanSource::Bitbucket { opts, .. }
         | ScanSource::Slack { opts, .. }
         | ScanSource::Jira { opts, .. }
+        | ScanSource::Confluence { opts, .. }
         | ScanSource::Bucket { opts, .. }
         | ScanSource::K8s { opts, .. }
         | ScanSource::Stdin { opts } => opts,
@@ -1355,7 +1389,8 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         ScanSource::Gitlab { .. }
         | ScanSource::Bitbucket { .. }
         | ScanSource::Slack { .. }
-        | ScanSource::Jira { .. } => scan::Target::Text(String::new()),
+        | ScanSource::Jira { .. }
+        | ScanSource::Confluence { .. } => scan::Target::Text(String::new()),
         ScanSource::Image {
             image,
             platform,
@@ -1624,6 +1659,7 @@ async fn cmd_scan(g: &GlobalArgs, source: ScanSource) -> Result<u8> {
         ),
         ScanSource::Slack { .. } => "Slack".into(),
         ScanSource::Jira { site, .. } => format!("Jira {site}"),
+        ScanSource::Confluence { site, .. } => format!("Confluence {site}"),
         ScanSource::Image { image, .. } => image.clone(),
         ScanSource::Bucket { url, .. } => url.clone(),
         ScanSource::K8s { context, .. } => {
@@ -2113,6 +2149,45 @@ async fn cmd_scan_api(
                 history: !no_history,
             };
             let collected = jira::collect(&client, &o, &progress).await?;
+            for w in &collected.warnings {
+                eprintln!("warning: {w}");
+            }
+            scan::scan_chunks(engine, filter, &collected.chunks)
+        }
+        ScanSource::Confluence {
+            site,
+            space,
+            what,
+            email_env,
+            token_env,
+            max_pages,
+            max_versions,
+            max_rate_wait,
+            ..
+        } => {
+            use kubera::sources::{confluence, jira};
+            let site = jira::site_base(site, g.allow_http)?;
+            let site = site.strip_suffix("/wiki").unwrap_or(&site).to_string();
+            let email = env_secret(email_env.as_ref(), "--email-env")?;
+            let token = env_secret(token_env.as_ref(), "--token-env")?;
+            let mut client = kubera::forge::Client::new(
+                token,
+                email,
+                std::time::Duration::from_secs(*max_rate_wait),
+            )?;
+            client.allow_http = g.allow_http;
+            let o = confluence::Options {
+                site,
+                spaces: space.clone(),
+                what: if what.is_empty() {
+                    confluence::ALL.to_vec()
+                } else {
+                    what.clone()
+                },
+                max_pages: *max_pages,
+                max_versions: *max_versions,
+            };
+            let collected = confluence::collect(&client, &o, &progress).await?;
             for w in &collected.warnings {
                 eprintln!("warning: {w}");
             }
