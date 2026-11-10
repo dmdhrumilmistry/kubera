@@ -6,8 +6,9 @@ name: Release
 #     vX.Y.Z (from Cargo.toml, or the `version` input, which must match)
 #     is created by the release step on the commit that was built.
 # Either way, a release consists of:
-#   * prebuilt binaries for Linux (static musl), macOS, Windows and Android
-#     (Termux) attached to a GitHub release, with SHA-256 checksums;
+#   * prebuilt binaries for Linux (x86_64, aarch64, i686, armv7, armv6,
+#     riscv64), Android/Termux (aarch64, armv7, x86_64), macOS (Intel, Apple
+#     silicon), Windows (x86_64, ARM64) and FreeBSD (x86_64), attached to a GitHub release, with SHA-256 checksums;
 #   * the `kubera-cli` crate on crates.io (secret CARGO_REGISTRY_TOKEN);
 #   * a multi-arch container image, ghcr.io/<owner>/kubera:<version> and
 #     :latest, built from the same static Linux binaries.
@@ -117,16 +118,30 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Linux: static musl binaries (any distro), glibc for RISC-V.
           - { target: x86_64-unknown-linux-musl, os: ubuntu-latest }
           - { target: aarch64-unknown-linux-musl, os: ubuntu-latest }
+          - { target: i686-unknown-linux-musl, os: ubuntu-latest }
+          - { target: armv7-unknown-linux-musleabihf, os: ubuntu-latest }
+          - { target: arm-unknown-linux-musleabihf, os: ubuntu-latest }
+          - { target: riscv64gc-unknown-linux-gnu, os: ubuntu-latest }
+          # Android / Termux.
           - { target: aarch64-linux-android, os: ubuntu-latest }
+          - { target: armv7-linux-androideabi, os: ubuntu-latest }
+          - { target: x86_64-linux-android, os: ubuntu-latest }
+          # macOS, Windows, FreeBSD.
           - { target: x86_64-apple-darwin, os: macos-latest }
           - { target: aarch64-apple-darwin, os: macos-latest }
           - { target: x86_64-pc-windows-msvc, os: windows-latest }
+          - { target: aarch64-pc-windows-msvc, os: windows-latest }
+          - { target: x86_64-unknown-freebsd, os: ubuntu-latest }
     steps:
+      # Completing an existing release builds from the tagged source, so
+      # every asset of a release comes from the same code.
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          ref: ${{ needs.check.outputs.mode == 'complete' && needs.check.outputs.tag || github.sha }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -194,7 +209,19 @@ jobs:
         run: |
           set -euo pipefail
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "release $TAG already exists; keeping it"
+            # Keep what is published; add only assets the release lacks
+            # (e.g. targets added after it was cut). Never overwrite.
+            have=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name')
+            missing=()
+            for f in "$DIST"/*; do
+              grep -qxF "$(basename "$f")" <<< "$have" || missing+=("$f")
+            done
+            if [ "${#missing[@]}" -gt 0 ]; then
+              echo "adding ${#missing[@]} asset(s) to $TAG"
+              gh release upload "$TAG" "${missing[@]}" --repo "$GITHUB_REPOSITORY"
+            else
+              echo "release $TAG already has every asset"
+            fi
             exit 0
           fi
           if [ "$GITHUB_EVENT_NAME" = "push" ]; then
@@ -227,7 +254,7 @@ jobs:
           cargo publish --locked
 
   image:
-    name: Container image (linux/amd64, linux/arm64)
+    name: Container image (linux/amd64, linux/arm64, linux/arm/v7)
     needs: [check, build]
     runs-on: ubuntu-latest
     permissions:
@@ -240,13 +267,14 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
-          pattern: kubera-*-unknown-linux-musl
+          pattern: kubera-*-unknown-linux-musl*
           merge-multiple: true
       - name: Unpack static binaries per architecture
         run: |
           set -euo pipefail
-          for pair in x86_64:amd64 aarch64:arm64; do
-            target="${pair%%:*}-unknown-linux-musl"; arch="${pair##*:}"
+          for pair in x86_64-unknown-linux-musl:amd64 aarch64-unknown-linux-musl:arm64 \
+                      armv7-unknown-linux-musleabihf:arm; do
+            target="${pair%%:*}"; arch="${pair##*:}"
             ( cd artifacts && sha256sum -c "kubera-$target.tar.gz.sha256" )
             mkdir -p "dist/linux-$arch"
             tar -xzf "artifacts/kubera-$target.tar.gz" -C "dist/linux-$arch" --strip-components=1 "kubera-$target/kubera"
@@ -272,7 +300,7 @@ jobs:
         with:
           context: .
           target: prebuilt
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
           push: ${{ needs.check.outputs.release == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
