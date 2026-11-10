@@ -202,6 +202,23 @@ make install DESTDIR=/tmp/pkg PREFIX=/usr   # staged install for packaging
 - `git` on `PATH` for `kubera scan git`, `scan repos`, `scan staged` and the pre-commit hook.
 - Outbound HTTPS to vendor APIs, only when you use `--verify`, `verify`, `analyze` or `rotate`.
 
+## Updating
+
+Installed with `install.sh`, `install.ps1` or from a release archive? Kubera updates itself:
+
+```bash
+kubera update --check            # is there a newer release? (changes nothing)
+kubera update                    # install the latest release, after a confirmation
+kubera update --yes              # no prompt (needed in scripts and CI)
+kubera update --version v0.2.0   # a specific release, also to downgrade
+```
+
+- **Only when you ask.** Kubera never checks for updates in the background and sends nothing anywhere. `kubera update` makes unauthenticated requests to the GitHub releases API and downloads over HTTPS. The download redirect is followed only to GitHub's own hosts (`github.com`, `api.github.com`, `objects.githubusercontent.com`, `release-assets.githubusercontent.com`).
+- **Verified before anything changes.** The archive for your platform (the same one `install.sh` picks) must match the release's `.sha256` file and the digest GitHub reports for the asset. Set `KUBERA_VERIFY_ATTESTATION=1` to also require a valid build provenance attestation (runs `gh attestation verify`; needs the GitHub CLI, logged in).
+- **Atomic.** The new binary is written next to the old one, flushed to disk and run once (`--version`) before it replaces the old one with a single rename. On Windows the running `kubera.exe` is first renamed to `kubera.exe.old`, which is removed on the next update. If anything fails, the installed binary is left as it was.
+- **Package managers stay in charge.** If kubera was installed by Homebrew, Nix, Scoop, winget, cargo or a system package manager (for example `kubera-bin` from the AUR in `/usr/bin`), `kubera update` refuses and prints the right command instead, such as `brew upgrade kubera` or `cargo install kubera-cli --locked`. `--check` still reports whether a newer release exists.
+- Without a terminal, `kubera update` refuses unless you pass `--yes`.
+
 ## Checking the install
 
 ```bash

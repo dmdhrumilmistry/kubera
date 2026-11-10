@@ -309,3 +309,18 @@ Scan with your own templates as well as the builtin ones:
 ```bash
 kubera -t templates.d scan fs .
 ```
+
+## Keep kubera up to date
+
+Check for a newer release, then install it (SHA-256 verified, atomic; see [Updating](installation.md#updating)):
+
+```bash
+kubera update --check
+kubera update
+```
+
+In scripts, skip the prompt:
+
+```bash
+kubera update --yes
+```

@@ -109,6 +109,10 @@ A template decides where a matched secret is sent. Only load templates you trust
 
 See [Verifying a release](installation.md#verifying-a-release) for the commands.
 
+## Self-update
+
+`kubera update` runs only when you invoke it: no background checks, no telemetry, no credentials sent. It talks HTTPS to GitHub's API and download hosts only (redirects are followed one hop at a time and must stay on them), checks the archive against the release's `.sha256` file and GitHub's asset digest before writing anything, runs the new binary once, and then swaps it in with an atomic rename, so a failure leaves the old binary untouched. It refuses to replace a binary that a package manager owns. See [Updating](installation.md#updating).
+
 ## Reporting vulnerabilities
 
 Please report security issues privately through [GitHub security advisories](https://github.com/dmdhrumilmistry/kubera/security/advisories/new) rather than in public issues.

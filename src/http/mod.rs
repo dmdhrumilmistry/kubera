@@ -65,21 +65,28 @@ pub struct Response {
     pub json: Option<Value>,
 }
 
+/// A client builder with Kubera's defaults: its user agent, redirects never
+/// followed automatically, a connect timeout, and explicit trust roots on
+/// Android.
+pub fn client_builder() -> reqwest::ClientBuilder {
+    #[allow(unused_mut)]
+    let mut builder = reqwest::Client::builder()
+        .user_agent(concat!("kubera/", env!("CARGO_PKG_VERSION")))
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(10));
+    // The OS verifier needs a JVM on Android (unavailable to a native CLI
+    // such as under Termux), so verify against explicit roots there.
+    #[cfg(target_os = "android")]
+    {
+        let (roots, _source) = tls::android_roots();
+        builder = builder.tls_certs_only(roots);
+    }
+    builder
+}
+
 impl Http {
     pub fn new(opts: HttpOptions) -> Result<Self> {
-        #[allow(unused_mut)]
-        let mut builder = reqwest::Client::builder()
-            .user_agent(concat!("kubera/", env!("CARGO_PKG_VERSION")))
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(Duration::from_secs(10));
-        // The OS verifier needs a JVM on Android (unavailable to a native CLI
-        // such as under Termux), so verify against explicit roots there.
-        #[cfg(target_os = "android")]
-        {
-            let (roots, _source) = tls::android_roots();
-            builder = builder.tls_certs_only(roots);
-        }
-        let client = builder.build().context("building HTTP client")?;
+        let client = client_builder().build().context("building HTTP client")?;
         Ok(Self { client, opts })
     }
 

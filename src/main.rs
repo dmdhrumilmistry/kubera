@@ -276,6 +276,20 @@ enum Command {
         #[command(subcommand)]
         cmd: HookCmd,
     },
+    /// Update kubera to the latest GitHub release. Contacts GitHub only when
+    /// you run it; the download is SHA-256 verified before anything changes.
+    Update {
+        /// Only report whether a newer release exists.
+        #[arg(long)]
+        check: bool,
+        /// Install this release (e.g. v0.3.0) instead of the latest; may
+        /// downgrade.
+        #[arg(long, value_name = "TAG")]
+        version: Option<String>,
+        /// Skip the confirmation prompt (required when stdin is not a TTY).
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -984,6 +998,11 @@ async fn run(cli: Cli) -> Result<u8> {
             Ok(0)
         }
         Command::Templates { cmd } => cmd_templates(&cli.global, cmd),
+        Command::Update {
+            check,
+            version,
+            yes,
+        } => cmd_update(check, version.as_deref(), yes).await,
         Command::Hook { cmd } => {
             let st = Style {
                 color: report::use_color(),
@@ -2200,6 +2219,137 @@ fn print_analysis(rep: &analyze::Report, st: &Style) {
             );
         }
     }
+}
+
+/// `kubera update`: see `kubera::update` for the security properties.
+async fn cmd_update(check: bool, version: Option<&str>, yes: bool) -> Result<u8> {
+    use kubera::update::{self, Updater};
+
+    let st = Style {
+        color: report::use_color(),
+    };
+    let current = update::current_version();
+    let exe = std::env::current_exe().context("locating the running executable")?;
+    // Replace the real file, not a symlink pointing at it.
+    let real = exe.canonicalize().unwrap_or_else(|_| exe.clone());
+    let cargo_home = std::env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .or_else(|| std::env::var_os("USERPROFILE"))
+                .map(|h| PathBuf::from(h).join(".cargo"))
+        });
+    let manager = update::managed_by(&exe, cargo_home.as_deref())
+        .or_else(|| update::managed_by(&real, cargo_home.as_deref()));
+    let target = update::platform_target();
+    if let Some(tag) = version {
+        update::normalize_tag(tag)?;
+    }
+    // Refuse before any network call when there is nothing we may do.
+    if !check {
+        if let Some(m) = manager {
+            bail!(
+                "{} is managed by {}; update it with: {}",
+                real.display(),
+                m.name(),
+                m.upgrade_command()
+            );
+        }
+        if target.is_none() {
+            bail!(
+                "no prebuilt release exists for {}; update from source: cargo install kubera-cli --locked",
+                update::BUILD_TARGET
+            );
+        }
+        update::check_writable(&real)?;
+        if !yes && !std::io::stdin().is_terminal() {
+            bail!("stdin is not interactive; pass --yes to update");
+        }
+    }
+
+    let updater = Updater::new(update::Source::default())?;
+    let release = updater.release(version).await?;
+    let newer = release.version > current;
+
+    if check {
+        if release.version == current {
+            println!("kubera {current} is up to date");
+        } else if newer {
+            println!(
+                "{} kubera {} is available (running {current}): {}",
+                st.yellow("!"),
+                release.version,
+                format_args!(
+                    "https://github.com/{}/releases/tag/{}",
+                    update::REPO,
+                    release.tag
+                )
+            );
+        } else {
+            println!("kubera {current} is newer than release {}", release.version);
+        }
+        match (manager, target) {
+            (Some(m), _) => println!(
+                "installed with {}; update with: {}",
+                m.name(),
+                m.upgrade_command()
+            ),
+            (None, None) => println!(
+                "no prebuilt release exists for {}; update from source: cargo install kubera-cli --locked",
+                update::BUILD_TARGET
+            ),
+            (None, Some(_)) if newer => println!("run `kubera update` to install it"),
+            _ => {}
+        }
+        return Ok(0);
+    }
+    let target = target.expect("checked above");
+
+    if release.version == current {
+        println!("kubera {current} is up to date");
+        return Ok(0);
+    }
+    if !newer && version.is_none() {
+        println!(
+            "kubera {current} is newer than the latest release ({})",
+            release.version
+        );
+        return Ok(0);
+    }
+
+    if !yes {
+        eprint!(
+            "Replace {} (kubera {current}) with kubera {}{}? [y/N] ",
+            real.display(),
+            release.version,
+            if newer { "" } else { ", a downgrade" }
+        );
+        std::io::stderr().flush()?;
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+            eprintln!("aborted");
+            return Ok(1);
+        }
+    }
+
+    let asset = update::asset_name(target);
+    eprintln!("downloading {asset} ({})", release.tag);
+    let archive = updater.download(&release, target).await?;
+    eprintln!("{} SHA-256 verified", st.green("✓"));
+    if std::env::var("KUBERA_VERIFY_ATTESTATION").as_deref() == Ok("1") {
+        update::verify_attestation(&archive, &asset)?;
+        eprintln!("{} build provenance attestation verified", st.green("✓"));
+    }
+    let binary = update::extract_binary(&archive, target)?;
+    update::replace_exe(&real, &binary, &release.version)?;
+    println!(
+        "{} updated {} from {current} to {}",
+        st.green("✓"),
+        real.display(),
+        release.version
+    );
+    Ok(0)
 }
 
 struct RotateFlags {

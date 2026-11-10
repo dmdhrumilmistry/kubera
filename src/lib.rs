@@ -48,4 +48,5 @@ pub mod steps;
 pub mod store;
 pub mod template;
 pub mod tui;
+pub mod update;
 pub mod verify;
