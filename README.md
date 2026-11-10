@@ -14,7 +14,8 @@
 <p align="center">
   <b>Kubera</b> is a fast, template-driven secret scanner written in Rust.<br>
   It finds leaked credentials in code, git history, whole GitHub/GitLab/Bitbucket orgs, container images,<br>
-  GitHub issues and Actions logs, S3/GCS buckets and live Kubernetes clusters,<br>
+  issues and CI logs on GitHub, GitLab and Bitbucket, Slack, Jira and Confluence, published packages,<br>
+  Hugging Face repositories, S3/GCS/Azure buckets and live Kubernetes clusters,<br>
   checks whether they are <b>live</b>, shows what they can <b>access</b>, and <b>rotates or revokes</b> them.<br>
   89 detectors; adding a platform takes one YAML file, not new code.
 </p>

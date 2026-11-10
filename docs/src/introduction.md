@@ -35,7 +35,11 @@ kubera scan git https://github.com/acme/payments.git --verify -i
   <a class="kubera-card" href="incremental.html"><strong>A whole organization</strong><p>GitHub, GitLab or Bitbucket, with cached mirrors and incremental re-scans.</p><code>kubera scan repos --github-org acme</code></a>
   <a class="kubera-card" href="containers.html"><strong>Container images</strong><p>Every layer plus ENV and build history. No Docker needed.</p><code>kubera scan image ghcr.io/acme/api:1.4.2</code></a>
   <a class="kubera-card" href="github.html"><strong>GitHub beyond code</strong><p>Issues, pull requests, review comments, Actions logs, wikis and gists.</p><code>kubera scan github --org acme</code></a>
-  <a class="kubera-card" href="buckets.html"><strong>Buckets</strong><p>S3, S3-compatible stores and Google Cloud Storage, archives opened.</p><code>kubera scan bucket s3://acme-backups</code></a>
+  <a class="kubera-card" href="gitlab.html"><strong>GitLab and Bitbucket beyond code</strong><p>Issues, merge and pull requests, comments, CI and Pipelines logs, snippets.</p><code>kubera scan gitlab --group acme</code></a>
+  <a class="kubera-card" href="slack.html"><strong>Slack, Jira and Confluence</strong><p>Channel messages and threads, tickets and their history, wiki pages and versions.</p><code>kubera scan slack --token-env SLACK_TOKEN</code></a>
+  <a class="kubera-card" href="packages.html"><strong>Published packages</strong><p>What users install from npm, PyPI and crates.io, digest-verified.</p><code>kubera scan package npm:@acme/cli</code></a>
+  <a class="kubera-card" href="huggingface.html"><strong>Hugging Face</strong><p>Models, datasets and Spaces: full git history, LFS files on request.</p><code>kubera scan huggingface acme</code></a>
+  <a class="kubera-card" href="buckets.html"><strong>Buckets</strong><p>S3, S3-compatible stores, Google Cloud Storage and Azure Blob, archives opened.</p><code>kubera scan bucket s3://acme-backups</code></a>
   <a class="kubera-card" href="kubernetes.html"><strong>Kubernetes</strong><p>Secrets, ConfigMaps and workload env of a live cluster, read-only.</p><code>kubera scan k8s</code></a>
   <a class="kubera-card" href="ci.html"><strong>CI and pre-commit</strong><p>A GitHub Action, a container image and a hook that blocks leaking commits.</p><code>kubera hook install</code></a>
   <a class="kubera-card" href="writing-templates.html"><strong>Your own detectors</strong><p>Add a platform with one YAML file: regexes, verification, rotation.</p><code>kubera templates new acme-key</code></a>
