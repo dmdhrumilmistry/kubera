@@ -58,8 +58,8 @@ pub fn text_chunk(
         text,
         location: Location {
             source,
-            repository: Some(repository.to_string()),
-            path: Some(path),
+            repository: Some(printable(repository)),
+            path: Some(printable(&path)),
             link: link
                 .filter(|l| l.starts_with("https://"))
                 .map(str::to_string),
@@ -67,6 +67,14 @@ pub fn text_chunk(
         },
         line_map: None,
     }
+}
+
+/// `s` with control characters (escape sequences, newlines) replaced:
+/// names from an API answer end up in terminal output.
+pub(crate) fn printable(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_control() { '?' } else { c })
+        .collect()
 }
 
 /// Chunks of a CI log: escape codes removed, split at `max` bytes.
@@ -159,6 +167,19 @@ mod tests {
                 ("dddd\n".to_string(), Some(vec![4])),
             ]
         );
+    }
+
+    #[test]
+    fn api_names_are_printable() {
+        let c = text_chunk(
+            crate::finding::SourceKind::GitLab,
+            "host/a",
+            "jobs/1 (\x1b[31mred\n)".into(),
+            Some("http://x"),
+            String::new(),
+        );
+        assert_eq!(c.location.path.as_deref(), Some("jobs/1 (?[31mred?)"));
+        assert_eq!(c.location.link, None);
     }
 
     #[test]

@@ -15,7 +15,7 @@ use anyhow::Result;
 use serde_json::Value;
 
 use super::Chunk;
-use crate::finding::{Location, SourceKind};
+use crate::finding::SourceKind;
 use crate::forge::Client;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -71,19 +71,7 @@ pub fn web_base(api: &str) -> String {
 }
 
 fn text_chunk(repo: &str, path: String, link: Option<&str>, text: String) -> Chunk {
-    Chunk {
-        text,
-        location: Location {
-            source: SourceKind::GitHub,
-            repository: Some(repo.to_string()),
-            path: Some(path),
-            link: link
-                .filter(|l| l.starts_with("https://"))
-                .map(str::to_string),
-            ..Default::default()
-        },
-        line_map: None,
-    }
+    super::text_chunk(SourceKind::GitHub, repo, path, link, text)
 }
 
 fn s<'a>(v: &'a Value, key: &str) -> &'a str {

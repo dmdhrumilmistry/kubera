@@ -450,7 +450,7 @@ pub async fn scan(
             let location = Location {
                 source: SourceKind::Package,
                 repository: Some(label),
-                path: Some(a.file.clone()),
+                path: Some(super::printable(&a.file)),
                 link: Some(link(p, &a.version)),
                 ..Default::default()
             };

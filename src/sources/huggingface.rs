@@ -191,7 +191,7 @@ pub async fn lfs_chunks(
         let location = Location {
             source: SourceKind::HuggingFace,
             repository: Some(repository.clone()),
-            path: Some(path.to_string()),
+            path: Some(super::printable(path)),
             link: Some(format!("{web}/blob/main/{enc_path}")).filter(|l| l.starts_with("https://")),
             ..Default::default()
         };
