@@ -31,6 +31,7 @@
 - [CI and GitHub Action](ci.md)
 - [Pre-commit hook](hooks.md)
 - [Alerts: Slack and webhooks](alerts.md)
+- [Secret stores after rotation](secret-stores.md)
 - [MCP server for AI assistants](mcp.md)
 
 # Templates

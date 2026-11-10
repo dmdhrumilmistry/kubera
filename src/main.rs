@@ -135,6 +135,24 @@ enum Command {
         /// instead of printing it.
         #[arg(short = 'o', long, value_name = "FILE")]
         output_file: Option<PathBuf>,
+        /// After a successful rotation, also write the new credential where
+        /// its consumers read it (repeatable):
+        /// `github:<owner>/<repo>:<SECRET_NAME>[=<output>]`,
+        /// `vault:<mount>/<path>#<key>[=<output>]`,
+        /// `aws-sm:<secret-id>[#<json-key>][=<output>]`.
+        #[arg(long = "store", value_name = "DEST")]
+        store: Vec<String>,
+        /// Environment variable with a GitHub token that may write Actions
+        /// secrets (for `github:` stores).
+        #[arg(long, value_name = "ENV_VAR")]
+        store_token_env: Option<String>,
+        /// GitHub API base for `github:` stores (GitHub Enterprise:
+        /// https://ghe.example.com/api/v3).
+        #[arg(long, value_name = "URL")]
+        store_github_api: Option<String>,
+        /// AWS region for `aws-sm:` stores [default: $AWS_REGION].
+        #[arg(long, value_name = "REGION")]
+        store_region: Option<String>,
         #[arg(long, value_enum, default_value_t = OutFormat::Pretty)]
         format: OutFormat,
     },
@@ -707,6 +725,10 @@ async fn run(cli: Cli) -> Result<u8> {
             force,
             set,
             output_file,
+            store,
+            store_token_env,
+            store_github_api,
+            store_region,
             format,
         } => {
             let ctx = context(&cli.global)?;
@@ -729,6 +751,13 @@ async fn run(cli: Cli) -> Result<u8> {
                     force,
                     stdin_used: secret.secret_stdin,
                     output_file,
+                    stores: store,
+                    store_config: kubera::store::Config::from_env(
+                        store_token_env.as_deref(),
+                        store_github_api.as_deref(),
+                        store_region.as_deref(),
+                        cli.global.allow_http,
+                    ),
                     format,
                 },
             )
@@ -1866,6 +1895,8 @@ struct RotateFlags {
     force: bool,
     stdin_used: bool,
     output_file: Option<PathBuf>,
+    stores: Vec<String>,
+    store_config: kubera::store::Config,
     format: OutFormat,
 }
 
@@ -1893,6 +1924,33 @@ async fn cmd_rotate(
         bail!("{} already exists; refusing to overwrite", p.display());
     }
 
+    // Secret stores are parsed and checked before anything is sent, so a
+    // typo never surfaces after the old credential is gone.
+    use kubera::store;
+    if !f.stores.is_empty() && r.steps.is_empty() {
+        bail!(
+            "`{}` has no automated rotation, so there is no new credential to --store",
+            t.id
+        );
+    }
+    let (outs, default_out) = store::outputs_of(t);
+    let specs = f
+        .stores
+        .iter()
+        .map(|s| store::parse(s, &outs, default_out.as_deref()))
+        .collect::<Result<Vec<_>>>()?;
+    let groups = store::group(&specs)?;
+    let problems = f.store_config.problems(&groups);
+    if f.execute && !problems.is_empty() {
+        bail!(
+            "cannot update the secret stores (nothing was rotated):\n  {}",
+            problems.join("\n  ")
+        );
+    }
+    for p in &problems {
+        eprintln!("warning: {p}");
+    }
+
     let mut opts = rotate::Options {
         execute: false,
         force: f.force,
@@ -1903,7 +1961,8 @@ async fn cmd_rotate(
         if f.stdin_used || !std::io::stdin().is_terminal() {
             bail!("stdin is not interactive; pass --yes to confirm the rotation");
         }
-        let plan = rotate::rotate(&ctx.http, t, parts, &opts).await?;
+        let mut plan = rotate::rotate(&ctx.http, t, parts, &opts).await?;
+        plan.stores = store::plan(&f.store_config, &groups);
         print_rotation(&plan, st);
         eprint!(
             "\n{} This will call {}'s API and may revoke the current credential.\n\
@@ -1925,17 +1984,73 @@ async fn cmd_rotate(
         }
     }
 
+    // Read what the stores need (GitHub public keys) before rotating: a bad
+    // token fails here, while the old credential still works.
+    let keys = if f.execute && !groups.is_empty() {
+        store::preflight(&ctx.http, &f.store_config, &groups)
+            .await
+            .context("secret store check failed; nothing was rotated")?
+    } else {
+        Default::default()
+    };
+
     opts.execute = f.execute;
     let mut rep = rotate::rotate(&ctx.http, t, parts, &opts).await?;
+    let new_outputs = rep.outputs.clone();
+    // Outputs that are safe somewhere and need not be printed.
+    let mut secured: std::collections::BTreeSet<String> = Default::default();
 
-    // Persist the new credential before printing anything else.
+    // Persist the new credential before anything else can fail.
     if let Some(path) = &f.output_file
         && !rep.outputs.is_empty()
     {
         write_private(path, &serde_json::to_vec_pretty(&rep.outputs)?)?;
         eprintln!("new credential written to {}", path.display());
-        rep.outputs.clear();
+        secured.extend(rep.outputs.keys().cloned());
     }
+
+    let mut store_failed = false;
+    if !rep.executed {
+        rep.stores = store::plan(&f.store_config, &groups);
+    } else if !groups.is_empty() {
+        if rep.completed && !new_outputs.is_empty() {
+            rep.stores = store::write_all(
+                &ctx.http,
+                &f.store_config,
+                &groups,
+                &keys,
+                &new_outputs,
+                parts,
+            )
+            .await;
+            // An output counts as secured only if every store that wanted
+            // it got it: a failed store needs the value to be fixed by hand.
+            let mut stored = std::collections::BTreeSet::new();
+            let mut missing = std::collections::BTreeSet::new();
+            for (g, res) in groups.iter().zip(&rep.stores) {
+                let outs = g.entries.iter().map(|(_, o)| o.clone());
+                if res.ok {
+                    stored.extend(outs);
+                } else {
+                    store_failed = true;
+                    missing.extend(outs);
+                }
+            }
+            secured.extend(stored.difference(&missing).cloned());
+        } else {
+            store_failed = true;
+            rep.stores = store::plan(&f.store_config, &groups)
+                .into_iter()
+                .map(|mut s| {
+                    s.error = Some("skipped: the rotation did not complete".into());
+                    s
+                })
+                .collect();
+        }
+    }
+    // A credential that did not reach a store or the output file is
+    // printed (once), so it is never lost.
+    rep.outputs.retain(|k, _| !secured.contains(k));
 
     let mut shown = rep.clone();
     shown.steps = shown.steps.iter().map(|s| s.redacted()).collect();
@@ -1943,7 +2058,13 @@ async fn cmd_rotate(
         OutFormat::Json => println!("{}", serde_json::to_string_pretty(&shown)?),
         OutFormat::Pretty => print_rotation(&shown, st),
     }
-    Ok(if rep.executed && !rep.completed { 2 } else { 0 })
+    Ok(if rep.executed && !rep.completed {
+        2
+    } else if store_failed {
+        4
+    } else {
+        0
+    })
 }
 
 fn print_rotation(rep: &rotate::Report, st: &Style) {
@@ -1996,6 +2117,43 @@ fn print_rotation(rep: &rotate::Report, st: &Style) {
             println!(
                 "\n{}",
                 st.red("Rotation did NOT complete - review the steps above and finish manually.")
+            );
+        }
+    }
+    if !rep.stores.is_empty() {
+        if rep.executed {
+            println!("\n{}", st.bold("Secret stores"));
+        } else {
+            println!(
+                "\n{} {}",
+                st.bold("Secret store updates"),
+                st.dim("(after a successful rotation, with --execute)")
+            );
+        }
+        for s in &rep.stores {
+            let mark = match (s.executed, s.ok) {
+                (false, _) if s.error.is_none() => st.dim("·"),
+                (_, true) => st.green("✔"),
+                _ => st.red("✘"),
+            };
+            println!(
+                "  {mark} {} {}",
+                st.bold(&s.target),
+                st.dim(&format!("({})", s.values.join(", ")))
+            );
+            if !s.executed {
+                for l in s.plan.lines() {
+                    println!("     {l}");
+                }
+            }
+            if let Some(e) = &s.error {
+                println!("      {e}");
+            }
+        }
+        if rep.stores.iter().any(|s| s.executed && !s.ok) {
+            println!(
+                "\n{}",
+                st.red("A secret store was NOT updated - the new credential is below (or in --output-file); store it by hand.")
             );
         }
     }

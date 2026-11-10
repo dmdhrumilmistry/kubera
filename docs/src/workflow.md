@@ -142,7 +142,14 @@ Many platforms have no rotation API (Stripe, OpenAI, Figma, ...). For those, `ku
 
 ### 4. Update every consumer
 
-Put the new credential wherever the old one was used: the secret manager, CI secrets, deployment environment, other services. Redeploy, and check that things still work. Some rotations keep the old credential around for a rollback: AWS, for example, **deactivates** the leaked key instead of deleting it. Delete it once the new key is deployed, as the plan's instructions say.
+Put the new credential wherever the old one was used: the secret manager, CI secrets, deployment environment, other services. Kubera can do the common ones as part of the rotation: `--store` writes the new credential to a GitHub Actions secret, Vault or AWS Secrets Manager once the rotation succeeds, without printing it:
+
+```bash
+kubera rotate gitlab-pat --secret-env LEAKED_TOKEN --execute \
+  --store github:acme/payments:GITLAB_TOKEN --store-token-env GH_ADMIN_TOKEN
+```
+
+See [Secret stores after rotation](secret-stores.md). Redeploy, and check that things still work. Some rotations keep the old credential around for a rollback: AWS, for example, **deactivates** the leaked key instead of deleting it. Delete it once the new key is deployed, as the plan's instructions say.
 
 ### 5. Verify again
 
@@ -278,6 +285,7 @@ More in [Baselines and triage](triage.md).
 | <kbd>a</kbd> | `kubera analyze <detector>` |
 | <kbd>p</kbd> | `kubera rotate <detector>` (dry run) |
 | Not in the TUI | `kubera rotate <detector> --execute -o new.json` |
+| Not in the TUI | `kubera rotate <detector> --execute --store github:<owner>/<repo>:<NAME>` |
 | Mark every finding at once | `kubera scan git . --update-baseline` (decision `baseline`) |
 | <kbd>e</kbd> | `kubera scan git <repo> --verify -f json > findings.json` |
 

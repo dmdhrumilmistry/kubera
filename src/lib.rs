@@ -42,6 +42,7 @@ pub mod scan;
 pub mod sources;
 pub mod state;
 pub mod steps;
+pub mod store;
 pub mod template;
 pub mod tui;
 pub mod verify;

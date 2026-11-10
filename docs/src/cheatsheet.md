@@ -138,6 +138,12 @@ The same for a single-part secret, read from an environment variable:
 kubera rotate gitlab-pat --secret-env LEAKED_TOKEN --execute -o new-gitlab-token.json
 ```
 
+Rotate it and put the new token straight into a GitHub Actions secret (and Vault), without printing it:
+
+```bash
+kubera rotate gitlab-pat --secret-env LEAKED_TOKEN --execute --store github:acme/payments:GITLAB_TOKEN --store-token-env GH_ADMIN_TOKEN --store 'vault:secret/ci/gitlab#token'
+```
+
 Confirm the old credential is dead (exit code `2` = invalid):
 
 ```bash

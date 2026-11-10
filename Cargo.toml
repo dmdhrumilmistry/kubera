@@ -29,6 +29,8 @@ anyhow = "1.0.104"
 base64 = "0.23.1"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 clap = { version = "4.6.7", features = ["derive", "env"] }
+# Sealed boxes for GitHub Actions secrets (pure Rust, libsodium compatible).
+crypto_box = { version = "0.9.1", features = ["seal"] }
 flate2 = "1.1.11"
 futures = "0.3.34"
 globset = "0.4.21"
@@ -59,6 +61,7 @@ webpki-root-certs = "1"
 
 [dev-dependencies]
 base64 = "0.23.1"
+crypto_box = { version = "0.9.1", features = ["seal"] }
 flate2 = "1.1.11"
 hex = "0.4.3"
 serde_json = "1.0.154"

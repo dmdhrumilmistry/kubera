@@ -34,6 +34,7 @@ Kubera handles live credentials, so it is conservative by default.
 4. **Fail-stop, never lose a key.** Steps stop at the first failure, and any credential already created is still returned.
 5. **Private output.** `--output-file` creates a *new* file with mode `0600` and refuses to overwrite an existing one.
 6. **Reversible where possible.** Builtin templates create the replacement before revoking, and deactivate instead of deleting when the platform allows it.
+7. **Secret stores** (`--store`) are checked before the rotation starts (tokens present, HTTPS, GitHub public key readable) and written only after every step succeeded. Store credentials come from environment variables, GitHub secrets are encrypted locally with the repository's public key, and a failed store write prints the new credential rather than losing it. See [Secret stores](secret-stores.md).
 
 ## Repository credentials
 

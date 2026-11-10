@@ -49,6 +49,7 @@
 | ✅ **Verify** | Asks each platform whether the secret is live, concurrently and de-duplicated. |
 | 🧭 **Analyze** | Owner, scopes, reachable resources and permission probes. |
 | 🔁 **Rotate** | Dry-run plan by default; vendor API calls only with `--execute` and confirmation. Manual runbooks for platforms with no API. |
+| 🔐 **Close the loop** | `rotate --store` writes the new credential to **GitHub Actions secrets** (sealed-box encrypted locally), **Vault** KV v2 or **AWS Secrets Manager**, checked before anything rotates and never lost if a store fails. [Details →](https://dmdhrumilmistry.github.io/kubera/secret-stores.html) |
 | 🖥️ **Interactive** | A keyboard-driven TUI, hidden secret prompts, and auto-identification of pasted secrets. |
 | 🗂️ **Triage** | A committed **baseline** so CI only fails on new leaks; mark false positives (`x`) or accepted risks (`m`) in the TUI. [Details →](https://dmdhrumilmistry.github.io/kubera/triage.html) |
 | 🛡️ **Prevent** | A **pre-commit hook** (`kubera hook install`, or the pre-commit framework), a **GitHub Action** with code scanning, and a **Docker image**. [CI →](https://dmdhrumilmistry.github.io/kubera/ci.html) |
@@ -95,6 +96,7 @@ kubera verify                            # "Paste the secret (hidden):" → iden
 kubera analyze gitlab-pat --secret-env TOKEN
 kubera rotate  gitlab-pat --secret-env TOKEN                        # dry run: shows the plan
 kubera rotate  gitlab-pat --secret-env TOKEN --execute -o new.json  # rotate, new token saved 0600
+kubera rotate  gitlab-pat --secret-env TOKEN --execute --store github:acme/api:GITLAB_TOKEN --store-token-env GH_TOKEN  # straight into an Actions secret
 ```
 
 ## Interactive TUI

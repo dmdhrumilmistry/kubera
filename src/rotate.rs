@@ -44,6 +44,9 @@ pub struct Report {
     /// The new credential (template `outputs`). Contains raw secrets.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub outputs: BTreeMap<String, String>,
+    /// Secret store updates (`--store`): planned, or their results.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub stores: Vec<crate::store::StoreResult>,
 }
 
 pub struct Options {
@@ -123,6 +126,7 @@ pub async fn rotate(
         steps: Vec::new(),
         completed: false,
         outputs: BTreeMap::new(),
+        stores: Vec::new(),
     };
 
     let secrets: Vec<String> = parts.values().cloned().collect();
