@@ -255,7 +255,7 @@ jobs:
           cargo cyclonedx --format json --spec-version 1.5 --target all --override-filename "kubera-$TAG.cdx"
           mkdir -p "$RUNNER_TEMP/sbom"
           mv "kubera-$TAG.cdx.json" "$RUNNER_TEMP/sbom/"
-      - uses: sigstore/cosign-installer@v4
+      - uses: sigstore/cosign-installer@v4.1.3
       # Keyless signatures and provenance for what the release holds, never
       # replacing anything published: in complete mode only missing
       # signatures are added. Everything is signed as published (downloaded
@@ -416,7 +416,7 @@ jobs:
           path: ${{ runner.temp }}/packaging
           include-hidden-files: true # aur/.SRCINFO
           if-no-files-found: error
-      - uses: sigstore/cosign-installer@v4
+      - uses: sigstore/cosign-installer@v4.1.3
       # Like the archives: add what is missing, never replace an asset.
       - name: Attach to the release
         id: attach
@@ -549,7 +549,7 @@ jobs:
           provenance: mode=max
       # Each push is a new digest, so it is always signed: complete mode
       # pushes the image again and signs that, nothing published is re-signed.
-      - uses: sigstore/cosign-installer@v4
+      - uses: sigstore/cosign-installer@v4.1.3
         if: needs.check.outputs.release == 'true'
       - name: Sign the image (keyless)
         if: needs.check.outputs.release == 'true'
